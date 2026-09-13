@@ -1,0 +1,37 @@
+/* Impression A4 — seul le conteneur #print est imprimé. */
+
+@media print {
+  @page { size: A4; margin: 14mm 12mm; }
+
+  body { background: #fff; }
+  .rail, .topbar, .drawer, #toasts, .no-print { display: none !important; }
+  .main { padding: 0 !important; }
+  .view { display: none !important; }
+
+  #print { display: block !important; }
+
+  #print {
+    font-size: 10.5pt;
+    color: #000;
+  }
+  #print h1 { font-size: 16pt; margin: 0 0 2mm; }
+  #print h2 {
+    font-size: 12.5pt;
+    margin: 6mm 0 2mm;
+    border-bottom: 1px solid #000;
+    padding-bottom: 1mm;
+    break-after: avoid;
+  }
+  #print h3 { font-size: 11pt; margin: 3.5mm 0 1.5mm; break-after: avoid; }
+  #print table { width: 100%; border-collapse: collapse; margin-bottom: 3mm; }
+  #print th, #print td { border: 1px solid #999; padding: 1.4mm 2mm; font-size: 9.5pt; text-align: left; }
+  #print th { background: #eee; }
+  #print .print-section { break-inside: auto; }
+  #print .print-day { break-inside: avoid; margin-bottom: 4mm; }
+  #print .print-meta { font-size: 9pt; color: #444; margin-bottom: 4mm; }
+  #print .check { display: inline-block; width: 3.5mm; height: 3.5mm; border: 1px solid #000; margin-right: 2mm; vertical-align: -0.5mm; }
+  #print .nums { font-variant-numeric: tabular-nums; }
+  #print ul { margin: 0 0 2mm; padding-left: 5mm; }
+}
+
+#print { display: none; }
