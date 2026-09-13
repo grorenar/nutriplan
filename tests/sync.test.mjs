@@ -111,6 +111,16 @@ state.settings.cycle = { startWeekday: 2, duration: 4 };
 state.settings.budget = 115;
 state.foods[0].lastUsed = '2026-09-01T10:00:00.000Z';
 state.foods[0].favorite = true;
+// paramètres de préparation personnalisés + saisie par unités
+const dinoIndex = state.foods.length;
+state.foods.push({
+  id: 'f_dino', name: 'Cuisse de dinosaure', category: 'proteine', brand: 'Jurassic',
+  kcal: 150, protein: 25, carbs: 0, fat: 6, fiber: 0,
+  referenceState: 'cru', cookedFactor: 0.75, unitName: 'cuisse', gramsPerUnit: 250, fractionable: false,
+  unitEntry: true, price: 19.9, packageWeight: 500, batchAllowed: true, favorite: false, lastUsed: null,
+  cookingMethod: 'Four', cookingTemp: 200, cookingTime: 35, prepTime: 10, equipment: 'Four',
+  instructions: 'Cuire entière, laisser reposer, trancher.',
+});
 const f = (n) => seedFoods().find((x) => x.name.toLowerCase().includes(n)).id;
 const item = (foodId, t, j, opts = {}) => ({
   id: `it_${Math.random().toString(36).slice(2, 8)}`,
@@ -128,9 +138,9 @@ state.meals = [
   { id: 'm3', dayIndex: 1, mealType: 'lunch', name: '', sameComposition: true, items: [] },
   { id: 'm4', dayIndex: 1, mealType: 'dinner', name: '', sameComposition: true, items: [] },
 ];
-state.breakfasts = [{ id: 'b1', name: 'Skyr avoine', sameComposition: true,
+state.breakfasts = [{ id: 'b1', name: 'Skyr avoine', sameComposition: true, cycleUses: 3,
   items: [item(f('skyr'), 150, 150, { state: 'pret' })] }];
-state.snacksAfternoon = [{ id: 's1', name: 'Wasa poulet', sameComposition: true,
+state.snacksAfternoon = [{ id: 's1', name: 'Wasa poulet', sameComposition: true, cycleUses: 2,
   items: [item(f('pain croustillant'), 33, 22, { state: 'pret' })] }];
 state.snacksEvening = [];
 state.shopping.purchased = { [f('riz basmati')]: true };
@@ -205,6 +215,17 @@ check('ingrédient libre conservé',
   m1.items.some((i) => i.free?.name === 'Curry' && i.free.quantity === 'au goût'));
 check('sameComposition conservé', back.meals.find((m) => m.id === 'm2').sameComposition === false);
 check('catalogue petits-déjeuners conservé', back.breakfasts.length === 1 && back.breakfasts[0].items.length === 1);
+check('compteur d’utilisation du cycle conservé',
+  back.breakfasts[0].cycleUses === 3 && back.snacksAfternoon[0].cycleUses === 2,
+  `${back.breakfasts[0].cycleUses} / ${back.snacksAfternoon[0].cycleUses}`);
+const dino = back.foods.find((x) => x.id === 'f_dino');
+check('paramètres de cuisson personnalisés conservés',
+  dino.cookingMethod === 'Four' && dino.cookingTemp === 200 && dino.cookingTime === 35 && dino.prepTime === 10,
+  `${dino.cookingMethod} ${dino.cookingTemp} ${dino.cookingTime}`);
+check('consignes libres conservées', /Cuire entière/.test(dino.instructions));
+check('matériel conservé', dino.equipment === 'Four');
+check('rendement cru → cuit conservé', Number(dino.cookedFactor) === 0.75);
+check('mode de saisie par unités conservé', dino.unitEntry === true && dino.gramsPerUnit === 250);
 check('catalogue collations 16 h conservé', back.snacksAfternoon.length === 1);
 check('collations du soir vides', back.snacksEvening.length === 0);
 check('cases "acheté" conservées', back.shopping.purchased[f('riz basmati')] === true);

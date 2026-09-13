@@ -5,23 +5,50 @@
 
 import { convertGrams, toReferenceGrams, PERSONS, mealMacros } from './nutrition.js';
 
-/** Besoins agrégés par aliment, sur un sous-ensemble de repas. */
-export function aggregateNeeds(meals, foodsById) {
+/**
+ * Sources d'un cycle : les repas du planning (déjeuners/dîners) + les options
+ * de catalogue effectivement utilisées (compteur cycleUses > 0).
+ * Les catalogues restent indépendants des jours : seul ce compteur les fait
+ * entrer dans le cycle.
+ */
+export function cycleSources(state) {
+  const sources = state.meals.map((m) => ({ items: m.items, factor: 1, meal: m, dayIndex: m.dayIndex, mealType: m.mealType }));
+  const catalogs = [
+    ['breakfasts', 'breakfast'],
+    ['snacksAfternoon', 'snack_afternoon'],
+    ['snacksEvening', 'snack_evening'],
+  ];
+  for (const [key, mealType] of catalogs) {
+    for (const option of state[key] || []) {
+      const factor = Number(option.cycleUses) || 0;
+      if (factor > 0) sources.push({ items: option.items, factor, option, mealType });
+    }
+  }
+  return sources;
+}
+
+/**
+ * Besoins agrégés par aliment sur une liste de sources.
+ * Chaque source est un objet { items, factor } : un repas du planning compte
+ * une fois, une option de catalogue compte autant de fois qu'elle est utilisée.
+ */
+export function aggregateNeeds(sources, foodsById) {
   const out = {}; // foodId -> { food, refGrams, servedGrams, uses, days:Set }
-  for (const meal of meals) {
-    for (const it of meal.items) {
+  for (const source of sources) {
+    const factor = Number(source.factor) > 0 ? Number(source.factor) : 1;
+    for (const it of source.items) {
       if (!it.foodId) continue;
       const food = foodsById[it.foodId];
       if (!food) continue;
       const served = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
       if (!served) continue;
       const state = it.state || food.referenceState;
-      const ref = toReferenceGrams(food, served, state);
+      const ref = toReferenceGrams(food, served, state) * factor;
       if (!out[food.id]) out[food.id] = { food, refGrams: 0, servedGrams: 0, uses: 0, days: new Set() };
       out[food.id].refGrams += ref;
-      out[food.id].servedGrams += served;
-      out[food.id].uses += 1;
-      out[food.id].days.add(meal.dayIndex);
+      out[food.id].servedGrams += served * factor;
+      out[food.id].uses += factor;
+      if (source.dayIndex !== undefined) out[food.id].days.add(source.dayIndex);
     }
   }
   return out;
@@ -43,64 +70,150 @@ export function batchSessions(settings) {
   return sessions;
 }
 
-const isCooked = (food) => food.referenceState === 'cru';
+/** L'aliment demande-t-il une cuisson ? Critère générique, fondé sur ses propriétés. */
+export const needsCooking = (food) =>
+  Boolean(food) && (food.referenceState === 'cru' || Boolean(food.cookingMethod));
 
-/** Note de préparation spécifique (viande entière). */
+/**
+ * Trois catégories, déduites uniquement des propriétés de l'aliment :
+ *   batch    — préparé pendant la session et conservé (batchAllowed)
+ *   cook     — cuisson nécessaire mais non batchable : à cuire le jour même
+ *   assemble — prêt à consommer : à assembler le jour même
+ */
+export function batchCategory(food) {
+  if (!food) return 'assemble';
+  if (food.batchAllowed) return 'batch';
+  return needsCooking(food) ? 'cook' : 'assemble';
+}
+
+export const BATCH_CATEGORY_LABEL = {
+  batch: 'À préparer en batch',
+  cook: 'À cuire le jour même',
+  assemble: 'À assembler le jour même',
+};
+
+/** Consignes de préparation saisies dans la fiche aliment (jamais codées en dur). */
 export function preparationNote(food) {
-  if (/poulet|dinde|volaille|filet mignon/i.test(food.name) && food.referenceState === 'cru') {
-    return 'Cuire les filets entiers, laisser tiédir, puis couper en dés.';
-  }
-  return null;
+  return food?.instructions ? String(food.instructions) : null;
+}
+
+/** Résumé lisible de la méthode de cuisson d'un aliment. */
+export function cookingSummary(food) {
+  if (!food) return null;
+  const parts = [];
+  if (food.cookingMethod) parts.push(food.cookingMethod);
+  if (food.cookingTemp) parts.push(`${food.cookingTemp} °C`);
+  if (food.cookingTime) parts.push(`${food.cookingTime} min`);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+/** Quantité telle qu'elle sera servie dans la gamelle (cuite si l'aliment se cuit). */
+function servedGrams(food, qty, itemState) {
+  const state = itemState || food.referenceState;
+  if (needsCooking(food) && food.referenceState === 'cru') return convertGrams(food, qty, state, 'cuit');
+  return qty;
 }
 
 /**
- * Plan de batch cooking : composants agrégés par session (pas de recettes).
- * Retourne aussi les aliments non batchables à cuisiner le jour même.
+ * Plan de batch cooking : composants agrégés par session (pas de recettes),
+ * plan opératoire de préparation, et détail des gamelles à remplir.
+ * Cette fonction ne modifie jamais le planning : elle le lit.
  */
 export function buildBatchPlan(state, foodsById) {
   const sessions = batchSessions(state.settings);
-  const plan = sessions.map((s) => {
+  return sessions.map((s) => {
     const meals = state.meals.filter((m) => m.dayIndex >= s.startDay && m.dayIndex <= s.endDay);
     const needs = aggregateNeeds(meals, foodsById);
+
+    // ---- A. à préparer en batch
     const components = [];
     for (const entry of Object.values(needs)) {
-      const { food, refGrams, servedGrams } = entry;
-      if (!food.batchAllowed) continue;
-      const cookedGrams = isCooked(food) ? convertGrams(food, refGrams, 'cru', 'cuit') : refGrams;
+      const { food, refGrams } = entry;
+      if (batchCategory(food) !== 'batch') continue;
+      const cooked = needsCooking(food) && food.referenceState === 'cru'
+        ? convertGrams(food, refGrams, 'cru', 'cuit')
+        : refGrams;
       const key = `${s.index}:${food.id}`;
       const prepared = state.batch.overrides[key];
+      const preparedRaw = prepared ?? refGrams;
       components.push({
         key,
         food,
         requiredRaw: refGrams,
-        requiredCooked: cookedGrams,
-        servedGrams,
-        preparedRaw: prepared ?? refGrams,
+        requiredCooked: cooked,
+        preparedRaw,
+        preparedCooked: needsCooking(food) && food.referenceState === 'cru'
+          ? convertGrams(food, preparedRaw, 'cru', 'cuit')
+          : preparedRaw,
+        yieldPct: Math.round((Number(food.cookedFactor) || 1) * 100),
+        method: food.cookingMethod || '',
+        temperature: food.cookingTemp ?? null,
+        duration: food.cookingTime ?? null,
+        prepTime: food.prepTime ?? null,
+        equipment: food.equipment || '',
         note: preparationNote(food),
-        needsCooking: isCooked(food),
+        summary: cookingSummary(food),
+        needsCooking: needsCooking(food),
       });
     }
     components.sort((a, b) => b.requiredRaw - a.requiredRaw);
 
-    // aliments non batchables nécessitant une cuisson : jour même
-    const sameDay = [];
+    // ---- B et C : par repas concerné
+    const cookSameDay = [];
+    const assembleSameDay = [];
     for (const meal of meals) {
       for (const it of meal.items) {
         const food = it.foodId && foodsById[it.foodId];
-        if (!food || food.batchAllowed || !isCooked(food)) continue;
-        const served = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
-        if (!served) continue;
-        sameDay.push({
+        if (!food) continue;
+        const cat = batchCategory(food);
+        if (cat === 'batch') continue;
+        const total = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
+        if (!total) continue;
+        const row = {
           food,
           dayIndex: meal.dayIndex,
           mealType: meal.mealType,
-          grams: toReferenceGrams(food, served, it.state || food.referenceState),
-        });
+          grams: toReferenceGrams(food, total, it.state || food.referenceState),
+          summary: cookingSummary(food),
+          note: preparationNote(food),
+        };
+        (cat === 'cook' ? cookSameDay : assembleSameDay).push(row);
       }
     }
-    return { ...s, components, sameDay, mealCount: meals.length };
+
+    // ---- gamelles : ce qu'il faut répartir, personne par personne
+    const gamelles = meals.map((meal) => ({
+      mealId: meal.id,
+      dayIndex: meal.dayIndex,
+      mealType: meal.mealType,
+      name: meal.name || '',
+      persons: Object.fromEntries(
+        PERSONS.map((person) => [
+          person,
+          meal.items
+            .map((it) => {
+              if (!it.foodId) {
+                return it.free ? { free: true, name: it.free.name, quantity: it.free.quantity, category: 'free' } : null;
+              }
+              const food = foodsById[it.foodId];
+              const qty = it.qty?.[person] || 0;
+              if (!food || !qty) return null;
+              return {
+                free: false,
+                food,
+                name: food.name,
+                category: batchCategory(food),
+                grams: servedGrams(food, qty, it.state),
+                cooked: needsCooking(food) && food.referenceState === 'cru',
+              };
+            })
+            .filter(Boolean),
+        ])
+      ),
+    }));
+
+    return { ...s, components, cookSameDay, assembleSameDay, gamelles, mealCount: meals.length };
   });
-  return plan;
 }
 
 /* ------------------------------------------------------------------ */
@@ -108,7 +221,7 @@ export function buildBatchPlan(state, foodsById) {
 /* ------------------------------------------------------------------ */
 
 export function buildShoppingList(state, foodsById) {
-  const needs = aggregateNeeds(state.meals, foodsById);
+  const needs = aggregateNeeds(cycleSources(state), foodsById);
   const lines = Object.values(needs).map((entry) => {
     const { food, refGrams } = entry;
     const pack = Number(food.packageWeight) > 0 ? Number(food.packageWeight) : null;
@@ -139,7 +252,7 @@ export function buildShoppingList(state, foodsById) {
 /* ------------------------------------------------------------------ */
 
 export function optimizeSuggestions(state, foodsById) {
-  const needs = aggregateNeeds(state.meals, foodsById);
+  const needs = aggregateNeeds(cycleSources(state), foodsById);
   const entries = Object.values(needs);
   const suggestions = [];
 

@@ -9,9 +9,13 @@
 import {
   autoAdjust, adjustQuantities, mealMacros, macrosFor, evaluate, diagnose,
   initialQuantity, roundQuantity, convertGrams, toReferenceGrams, profileOf,
+  snapQuantity, toUnits, fromUnits, isWholeUnitFood, MACRO_KEYS,
 } from '../js/core/nutrition.js';
-import { buildBatchPlan, buildShoppingList } from '../js/core/derive.js';
+import {
+  buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
+} from '../js/core/derive.js';
 import { seedFoods } from '../js/core/seed-foods.js';
+import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
 
 /* ---------------------------------------------------------------- harnais */
 
@@ -304,6 +308,61 @@ test('Unités — aliments non fractionnables et unités pratiques', () => {
   check('arrondi borné reste un multiple', big % gEgg === 0, `${big} g`);
 });
 
+test('Unités — multiple entier de gramsPerUnit, quelle que soit la saisie', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 }; // 1 tranche = 13 g, non fractionnable
+  info(`${wasa.name} : ${wasa.gramsPerUnit} g/unité, fractionnable = ${wasa.fractionable}`);
+
+  // saisie en grammes : toute valeur est ramenée au multiple le plus proche
+  for (const [entry, expected] of [[13, 13], [20, 26], [25, 26], [31, 26], [39, 39], [52, 52], [0, 0]]) {
+    check(`saisie ${entry} g → ${expected} g`, snapQuantity(wasa, entry) === expected, `${snapQuantity(wasa, entry)}`);
+  }
+  check('une saisie positive donne au moins une unité', snapQuantity(wasa, 3) === 13);
+  check('0 g reste 0 g (ingrédient absent pour la personne)', snapQuantity(wasa, 0) === 0);
+
+  // saisie en unités
+  for (const u of [1, 2, 3, 4]) {
+    check(`${u} unité(s) → ${u * 13} g`, snapQuantity(wasa, fromUnits(wasa, u)) === u * 13);
+  }
+  check('2,4 unités saisies → 2 unités', snapQuantity(wasa, fromUnits(wasa, 2.4)) === 26);
+  check('conversion grammes → unités', toUnits(wasa, 39) === 3);
+
+  // règle générique : n'importe quel aliment non fractionnable
+  const generic = { name: 'Aliment X', category: 'autre', gramsPerUnit: 37, fractionable: false,
+    kcal: 100, protein: 5, carbs: 10, fat: 3, referenceState: 'pret' };
+  check('règle générique (37 g/unité)', snapQuantity(generic, 100) === 111, `${snapQuantity(generic, 100)}`);
+  check('aliment fractionnable non contraint', snapQuantity({ ...generic, fractionable: true }, 100) === 100);
+  check('aliment sans unité non contraint', snapQuantity({ ...generic, gramsPerUnit: 0 }, 100) === 100);
+  check('isWholeUnitFood générique', isWholeUnitFood(generic) && !isWholeUnitFood({ ...generic, fractionable: true }));
+
+  // l'ajustement automatique respecte la contrainte, sur tous les types de repas
+  const localById = { ...byId, [generic.name]: generic };
+  for (const [label, targets] of [['déjeuner', LUNCH], ['collation', SNACK]]) {
+    const items = [item(F('Œuf entier')), item(wasa, 26), item(F('Skyr'))];
+    const map = { ...byId, [wasa.id]: wasa };
+    for (let i = 0; i < 3; i++) autoAdjust(items, map, targets);
+    const ok = items.every((it) => {
+      const f = map[it.foodId];
+      return PERSONS_EVERY(it, f);
+    });
+    check(`ajustement (${label}) : toutes les quantités restent des multiples`, ok,
+      items.map((it) => `${map[it.foodId].name} ${it.qty.thomas}/${it.qty.julie}`).join(' | '));
+  }
+  check('quantité initiale proposée déjà en multiples', initialQuantity(wasa) % 13 === 0, `${initialQuantity(wasa)}`);
+  check('borne haute respectée en multiples', roundQuantity(wasa, 5000, 0, 400) % 13 === 0);
+});
+
+function PERSONS_EVERY(it, food) {
+  if (!isWholeUnitFood(food)) return true;
+  return ['thomas', 'julie'].every((p) => (it.qty[p] || 0) % food.gramsPerUnit === 0);
+}
+
+test('Macros — les glucides s’affichent "G"', () => {
+  const labels = MACRO_KEYS.map((m) => m.label);
+  check('libellés P / G / L', labels.join('') === 'kcalPGL', labels.join(' '));
+  const ev = evaluate({ kcal: 100, protein: 10, carbs: 10, fat: 5 }, LUNCH.thomas);
+  check('aucun libellé "C" résiduel', !ev.rows.some((r) => r.label === 'C'));
+});
+
 /* ================================================================ CRU / CUIT */
 
 test('Cru / cuit — conversions et macros', () => {
@@ -360,7 +419,7 @@ function batchState(overrides = {}) {
   };
 }
 
-test('Batch — agrégation par session, cru/cuit, exclusions', () => {
+test('Batch — agrégation par session et trois catégories', () => {
   const s = batchState();
   const plan = buildBatchPlan(s, byId);
   check('deux sessions pour 4 jours et 3 jours de conservation', plan.length === 2,
@@ -372,7 +431,6 @@ test('Batch — agrégation par session, cru/cuit, exclusions', () => {
   info(`poulet session 1 : ${poulet.requiredRaw} g crus → ${poulet.requiredCooked.toFixed(0)} g cuits`);
   check('poulet agrégé sur les deux personnes', poulet.requiredRaw === 1160, `${poulet.requiredRaw} g`);
   check('conversion cru → cuit correcte', Math.abs(poulet.requiredCooked - 1160 * 0.7) < 0.01);
-  check('note de préparation du poulet présente', /filets entiers/.test(poulet.note || ''));
 
   const riz = s1.components.find((c) => c.food.name.includes('Riz'));
   check('riz agrégé (jours 1 et 2)', riz.requiredRaw === 320, `${riz.requiredRaw} g`);
@@ -382,10 +440,23 @@ test('Batch — agrégation par session, cru/cuit, exclusions', () => {
   check('œufs exclus du batch', !names.some((n) => n.includes('Œuf')));
   check('wrap exclu du batch', !names.some((n) => n.includes('Wrap')));
 
-  const sameDayNames = s1.sameDay.map((x) => x.food.name);
-  check('cabillaud signalé en cuisson du jour', sameDayNames.some((n) => n.toLowerCase().includes('cabillaud')));
-  check('œufs signalés en cuisson du jour', sameDayNames.some((n) => n.includes('Œuf')));
-  check('cabillaud rattaché au bon jour', s1.sameDay.find((x) => x.food.name.toLowerCase().includes('cabillaud')).dayIndex === 1);
+  // --- trois catégories, déduites des propriétés des aliments
+  check('catégorie "batch" pour un aliment batchable', batchCategory(F('Blanc de poulet')) === 'batch');
+  check('catégorie "cuisson du jour" pour le poisson', batchCategory(F('Cabillaud')) === 'cook');
+  check('catégorie "cuisson du jour" pour les œufs', batchCategory(F('Œuf entier')) === 'cook');
+  check('catégorie "assemblage" pour le wrap', batchCategory(F('Wrap')) === 'assemble');
+  check('catégorie "assemblage" pour le skyr', batchCategory(F('Skyr')) === 'assemble');
+  check('catégorie "assemblage" pour le pain croustillant', batchCategory(F('Pain croustillant')) === 'assemble');
+
+  const cookNames = s1.cookSameDay.map((x) => x.food.name.toLowerCase());
+  const assembleNames = s1.assembleSameDay.map((x) => x.food.name.toLowerCase());
+  check('cabillaud dans "à cuire le jour même"', cookNames.some((n) => n.includes('cabillaud')));
+  check('œufs dans "à cuire le jour même"', cookNames.some((n) => n.includes('œuf')));
+  check('wrap dans "à assembler le jour même"', assembleNames.some((n) => n.includes('wrap')));
+  check('aucun aliment batchable dans les deux autres catégories',
+    ![...cookNames, ...assembleNames].some((n) => n.includes('poulet') || n.includes('riz')));
+  check('cabillaud rattaché au bon jour',
+    s1.cookSameDay.find((x) => x.food.name.toLowerCase().includes('cabillaud')).dayIndex === 1);
 
   const s2 = plan[1];
   check('session 2 = jour 4 uniquement', s2.startDay === 3 && s2.endDay === 3);
@@ -401,9 +472,67 @@ test('Batch — agrégation par session, cru/cuit, exclusions', () => {
   check('quantité préparée manuelle prise en compte', p3.preparedRaw === 1500);
   check('besoin inchangé par la modification', p3.requiredRaw === 1160);
   check('surplus correct', p3.preparedRaw - p3.requiredRaw === 340);
-
-  // le planning n'est jamais modifié par le batch
+  check('quantité cuite attendue recalculée', Math.abs(p3.preparedCooked - 1500 * 0.7) < 0.01);
   check('planning intact après calcul du batch', JSON.stringify(s3.meals) === mealsBefore);
+});
+
+test('Batch — plan opératoire : méthode, rendement, gamelles', () => {
+  const s = batchState();
+  const sess = buildBatchPlan(s, byId)[0];
+  const poulet = sess.components.find((c) => c.food.name.includes('Blanc de poulet'));
+  info(`poulet : ${poulet.method} ${poulet.temperature} °C ${poulet.duration} min, rendement ${poulet.yieldPct} %`);
+  check('méthode de cuisson reprise de la fiche aliment', poulet.method === 'Four');
+  check('température reprise', poulet.temperature === 180);
+  check('durée reprise', poulet.duration === 25);
+  check('temps de préparation repris', poulet.prepTime === 10);
+  check('matériel repris', /Four/.test(poulet.equipment));
+  check('rendement cru → cuit affiché en %', poulet.yieldPct === 70);
+  check('consignes libres reprises (donnée, pas règle codée)', /filets entiers/.test(poulet.note || ''));
+  check('résumé de cuisson lisible', cookingSummary(F('Blanc de poulet')) === 'Four · 180 °C · 25 min');
+
+  // gamelles : quoi répartir, personne par personne
+  check('une gamelle par repas de la session', sess.gamelles.length === 6,
+    sess.gamelles.map((g) => `J${g.dayIndex + 1}${g.mealType === 'lunch' ? 'M' : 'S'}`).join(' '));
+  const g1 = sess.gamelles[0];
+  const tPoulet = g1.persons.thomas.find((e) => !e.free && e.name.includes('poulet'));
+  const jPoulet = g1.persons.julie.find((e) => !e.free && e.name.includes('poulet'));
+  info(`gamelle J1 midi — Thomas ${tPoulet.grams.toFixed(0)} g de poulet cuit, Julie ${jPoulet.grams.toFixed(0)} g`);
+  check('quantités de gamelle exprimées cuites', tPoulet.cooked === true);
+  check('Thomas : 180 g crus → 126 g cuits', Math.abs(tPoulet.grams - 126) < 0.01, `${tPoulet.grams}`);
+  check('Julie : 130 g crus → 91 g cuits', Math.abs(jPoulet.grams - 91) < 0.01, `${jPoulet.grams}`);
+  check('Thomas et Julie restent indépendants dans les gamelles', tPoulet.grams !== jPoulet.grams);
+  check('chaque ligne de gamelle porte sa catégorie',
+    g1.persons.thomas.every((e) => ['batch', 'cook', 'assemble', 'free'].includes(e.category)));
+  const isWrap = (e) => !e.free && /wrap|tortilla/i.test(e.name);
+  const gWrap = sess.gamelles.find((g) => g.persons.thomas.some(isWrap));
+  check('le wrap apparaît dans la gamelle en catégorie assemblage',
+    gWrap.persons.thomas.find(isWrap).category === 'assemble');
+  check('une gamelle vide reste vide côté Julie si la quantité est nulle',
+    sess.gamelles.every((g) => g.persons.julie.every((e) => e.free || e.grams > 0)));
+});
+
+test('Fiche aliment — paramètres de cuisson personnalisés repris dans le plan', () => {
+  const dino = {
+    id: 'f_dino', name: 'Cuisse de dinosaure', category: 'proteine', brand: '',
+    kcal: 150, protein: 25, carbs: 0, fat: 6, fiber: 0,
+    referenceState: 'cru', cookedFactor: 0.75, unitName: '', gramsPerUnit: 0, fractionable: true,
+    price: null, packageWeight: null, batchAllowed: true, favorite: false, lastUsed: null, unitEntry: false,
+    cookingMethod: 'Four', cookingTemp: 200, cookingTime: 35, prepTime: 10, equipment: 'Four',
+    instructions: 'Sortir 20 min avant, cuire entier, trancher après repos.',
+  };
+  const local = { ...byId, f_dino: dino };
+  const s = batchState();
+  s.foods = [...s.foods, dino];
+  s.meals[0].items = [item(dino, 0, { thomas: 200, julie: 150 })];
+  const sess = buildBatchPlan(s, local)[0];
+  const c = sess.components.find((x) => x.food.id === 'f_dino');
+  check('aliment personnalisé présent dans le batch', !!c);
+  check('méthode personnalisée', c.method === 'Four' && c.temperature === 200 && c.duration === 35);
+  check('rendement personnalisé', c.yieldPct === 75);
+  check('quantité cuite attendue', Math.abs(c.requiredCooked - 350 * 0.75) < 0.01, `${c.requiredCooked}`);
+  check('consignes personnalisées reprises', /Sortir 20 min/.test(c.note));
+  check('aucune méthode imposée si la fiche est vide',
+    preparationNote({ instructions: '' }) === null && cookingSummary({ name: 'X' }) === null);
 });
 
 /* ================================================================ COURSES */
@@ -439,6 +568,80 @@ test('Courses — besoin, conditionnements, surplus, budget', () => {
   // budget
   check('total du cycle calculé', Math.abs(buildShoppingList(s, local).total - 20.7) < 0.001);
   check('dépassement calculé mais non bloquant', buildShoppingList({ ...s, settings: { ...s.settings, budget: 10 } }, local).overBudget > 0);
+});
+
+test('Courses — petits-déjeuners et collations utilisés dans le cycle', () => {
+  const base = batchState();
+  base.meals = [mkMeal(0, 'lunch', [item(F('Riz basmati'), 0, { thomas: 100, julie: 80 })])];
+  base.breakfasts = [
+    { id: 'b1', name: 'Skyr + avoine', sameComposition: true, cycleUses: 0,
+      items: [item(F('Skyr'), 0, { thomas: 150, julie: 150 }), item(F('Flocons'), 0, { thomas: 80, julie: 60 })] },
+    { id: 'b2', name: 'Option non utilisée', sameComposition: true, cycleUses: 0,
+      items: [item(F('Pain de mie'), 0, { thomas: 66, julie: 33 })] },
+  ];
+  base.snacksAfternoon = [
+    { id: 's1', name: 'Skyr fruits rouges', sameComposition: true, cycleUses: 0,
+      items: [item(F('Skyr'), 0, { thomas: 150, julie: 150 }), item(F('Fruits rouges'), 0, { thomas: 100, julie: 100 })] },
+  ];
+  base.snacksEvening = [
+    { id: 'e1', name: 'Amandes', sameComposition: true, cycleUses: 0, items: [item(F('Amandes'), 0, { thomas: 20, julie: 15 })] },
+  ];
+
+  const names = (st) => buildShoppingList(st, byId).lines.map((l) => l.food.name);
+  check('option non utilisée : absente des courses', !names(base).some((n) => n.includes('Skyr')));
+  check('seul le repas du planning est compté', names(base).length === 1, names(base).join(', '));
+
+  // on déclare les utilisations dans le cycle
+  base.breakfasts[0].cycleUses = 4;
+  base.snacksAfternoon[0].cycleUses = 2;
+  base.snacksEvening[0].cycleUses = 1;
+  const list = buildShoppingList(base, byId);
+  const line = (frag) => list.lines.find((l) => l.food.name.toLowerCase().includes(frag));
+  info(list.lines.map((l) => `${l.food.name} ${Math.round(l.required)} g`).join(' | '));
+
+  check('petit-déjeuner utilisé 4 fois : flocons = 4 × 140 g', Math.abs(line('flocons').required - 560) < 0.01,
+    `${line('flocons').required}`);
+  check('skyr agrégé sur le petit-déjeuner ET la collation',
+    Math.abs(line('skyr').required - (4 * 300 + 2 * 300)) < 0.01, `${line('skyr').required}`);
+  check('collation du soir comptée une fois', Math.abs(line('amandes').required - 35) < 0.01);
+  check('option toujours non utilisée : absente', !list.lines.some((l) => l.food.name.includes('Pain de mie')));
+  check('repas du planning toujours compté', Math.abs(line('riz').required - 180) < 0.01);
+  check('conditionnements appliqués comme pour les repas',
+    line('skyr').packages === Math.ceil(1800 / line('skyr').packageWeight), `${line('skyr').packages} paquets`);
+  check('surplus et prix calculés', line('skyr').surplus >= 0 && line('skyr').cost > 0);
+  check('cases "acheté" disponibles pour ces aliments', line('flocons').purchased === false);
+
+  // cycleSources : le catalogue n'entre dans le cycle que par son compteur
+  check('cycleSources reflète les utilisations',
+    cycleSources(base).filter((x) => x.option).map((x) => x.factor).join(',') === '4,2,1');
+  base.breakfasts[0].cycleUses = 0;
+  check('compteur remis à zéro : aliments retirés des courses',
+    !buildShoppingList(base, byId).lines.some((l) => l.food.name.includes('Flocons')));
+});
+
+test('Doublons — avertissement à la création, jamais de fusion', () => {
+  const bank = seedFoods();
+  const candidate = { id: 'f_new', name: 'Pain croustillant fibres', brand: 'Wasa', category: 'feculent',
+    kcal: 335, protein: 10, carbs: 60, fat: 1.5, gramsPerUnit: 13, fractionable: false };
+  const existing = { ...bank.find((f) => f.name.includes('Pain croustillant')), brand: 'Wasa', gramsPerUnit: 13 };
+  const withBrand = bank.map((f) => (f.id === existing.id ? existing : f));
+
+  const hits = findSimilarFoods(candidate, withBrand);
+  info(hits.map((h) => `${h.food.name} (${h.score.toFixed(2)}) ${h.reasons.join(', ')}`).join(' | '));
+  check('produit très proche détecté', hits.length > 0);
+  check('raisons explicites', hits[0].reasons.length >= 2, hits[0].reasons.join(', '));
+  check('la banque n’est pas modifiée', withBrand.length === bank.length);
+
+  check('aliment sans rapport : aucun avertissement',
+    findSimilarFoods({ name: 'Cuisse de dinosaure', category: 'proteine', kcal: 150 }, bank).length === 0);
+  check('deux aliments proches mais de catégories différentes ne sont pas rapprochés',
+    findSimilarFoods({ name: 'Huile de coco', category: 'fruit', kcal: 900 }, bank).length === 0);
+  check('un aliment ne se détecte pas lui-même',
+    !findSimilarFoods(bank[0], bank).some((h) => h.food.id === bank[0].id));
+
+  const groups = findDuplicateGroups(bank);
+  info(`banque initiale : ${groups.length} groupe(s) signalé(s) — ${groups.map((g) => g.food.name).join(', ')}`);
+  check('contrôle d’import : peu de faux positifs sur la banque livrée', groups.length <= 3);
 });
 
 /* ================================================================ LIBRES */

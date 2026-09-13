@@ -93,6 +93,13 @@ const foodRow = (f) => ({
   batch_allowed: f.batchAllowed,
   favorite: f.favorite,
   last_used: f.lastUsed || null,
+  unit_entry: f.unitEntry === true,
+  cooking_method: f.cookingMethod || null,
+  cooking_temp: f.cookingTemp ?? null,
+  cooking_time: f.cookingTime ?? null,
+  prep_time: f.prepTime ?? null,
+  equipment: f.equipment || null,
+  instructions: f.instructions || null,
 });
 
 const foodFromRow = (r) => ({
@@ -114,6 +121,13 @@ const foodFromRow = (r) => ({
   packageWeight: r.package_weight,
   batchAllowed: r.batch_allowed,
   favorite: r.favorite,
+  unitEntry: r.unit_entry === true,
+  cookingMethod: r.cooking_method || '',
+  cookingTemp: r.cooking_temp ?? null,
+  cookingTime: r.cooking_time ?? null,
+  prepTime: r.prep_time ?? null,
+  equipment: r.equipment || '',
+  instructions: r.instructions || '',
   // PostgreSQL renvoie un autre format ISO : on renormalise pour garder
   // un tri des "aliments récents" cohérent entre les appareils.
   lastUsed: r.last_used ? new Date(r.last_used).toISOString() : null,
@@ -186,7 +200,9 @@ export function stateToTables(s) {
   }));
   const meal_items = s.meals.flatMap((m) => m.items.flatMap((it) => itemRows(it, 'meal_id', m.id)));
 
-  const breakfast_options = s.breakfasts.map((o) => ({ id: o.id, name: o.name, same_composition: o.sameComposition }));
+  const breakfast_options = s.breakfasts.map((o) => ({
+    id: o.id, name: o.name, same_composition: o.sameComposition, cycle_uses: Number(o.cycleUses) || 0,
+  }));
   const breakfast_items = s.breakfasts.flatMap((o) => o.items.flatMap((it) => itemRows(it, 'option_id', o.id)));
 
   const snackSets = [
@@ -194,7 +210,9 @@ export function stateToTables(s) {
     ['snack_evening', s.snacksEvening],
   ];
   const snack_options = snackSets.flatMap(([type, list]) =>
-    list.map((o) => ({ id: o.id, type, name: o.name, same_composition: o.sameComposition }))
+    list.map((o) => ({
+      id: o.id, type, name: o.name, same_composition: o.sameComposition, cycle_uses: Number(o.cycleUses) || 0,
+    }))
   );
   const snack_items = snackSets.flatMap(([, list]) =>
     list.flatMap((o) => o.items.flatMap((it) => itemRows(it, 'option_id', o.id)))
@@ -261,6 +279,7 @@ export function tablesToState(t) {
     id: o.id,
     name: o.name,
     sameComposition: o.same_composition !== false,
+    cycleUses: Number(o.cycle_uses) || 0,
     items: itemsFromRows(t.breakfast_items || [], 'option_id', o.id),
   }));
 
@@ -271,6 +290,7 @@ export function tablesToState(t) {
         id: o.id,
         name: o.name,
         sameComposition: o.same_composition !== false,
+        cycleUses: Number(o.cycle_uses) || 0,
         items: itemsFromRows(t.snack_items || [], 'option_id', o.id),
       }));
   s.snacksAfternoon = snacks('snack_afternoon');

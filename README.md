@@ -19,6 +19,7 @@ js/core/nutrition.js      MOTEUR : macros, conversions cru/cuit, ajustement auto
 js/core/seed-foods.js     banque alimentaire initiale (~95 aliments génériques)
 js/core/store.js          état applicatif, localStorage, export/import
 js/core/derive.js         batch cooking, liste de courses, budget, suggestions
+js/core/similarity.js     détection d'aliments similaires (avertissement uniquement)
 js/core/sync.js           Supabase : auth + envoi/récupération atomiques
 js/views/*.js             une vue par écran + l'éditeur de repas partagé
 supabase/schema.sql       schéma PostgreSQL + RLS par compte + fonction transactionnelle
@@ -37,11 +38,12 @@ connaissent ni le stockage ni le réseau. Ce sont des fonctions pures, directeme
 ```
 foods[]            id, name, category, brand, kcal, protein, carbs, fat, fiber,
                    referenceState, cookedFactor, unitName, gramsPerUnit, fractionable,
-                   price, packageWeight, batchAllowed, favorite
+                   unitEntry, price, packageWeight, batchAllowed, favorite,
+                   cookingMethod, cookingTemp, cookingTime, prepTime, equipment, instructions
 settings           targets{thomas|julie}{day|breakfast|lunch|snack_afternoon|dinner|snack_evening}
                    tolerance, cycle{startWeekday,duration}, budget, batch{enabled,maxDays}, autoAdjust
 meals[]            id, dayIndex, mealType(lunch|dinner), name, sameComposition, items[]
-breakfasts[]       id, name, sameComposition, items[]     (catalogue, sans jour ni date)
+breakfasts[]       id, name, sameComposition, cycleUses, items[]   (catalogue, sans jour ni date)
 snacksAfternoon[]  idem
 snacksEvening[]    idem
 items[]            id, foodId|null, free{name,quantity}|null, state,
@@ -87,6 +89,13 @@ Trois garde-fous encadrent ce calcul :
 La quantité finale est arrondie : pas de la catégorie pour les aliments fractionnables, unités
 entières pour les autres (jamais 1,37 œuf).
 
+**Unités.** Pour tout aliment non fractionnable possédant un poids par unité, la quantité stockée
+est toujours un multiple entier de ce poids — que tu saisisses en unités (3 tranches) ou en grammes
+(25 g deviennent 22 g pour une tranche de 11 g). La règle est générique et s'applique partout :
+planning, petits-déjeuners, collations, ajustement automatique, batch, courses. Le bouton
+« Saisie : … » sur la ligne d'ingrédient bascule entre unités et grammes ; les calculs internes
+restent en grammes dans les deux cas.
+
 | Catégorie | Bornes | Ancrage | Comportement |
 |---|---|---|---|
 | Protéine | 50–250 g | 0,15 | variable principale |
@@ -113,10 +122,10 @@ Garanties de l'algorithme :
 |---|---|
 | Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication, bouton « Optimiser le cycle » (suggestions uniquement) |
 | Aliments | banque complète, recherche, favoris, création/modification/suppression |
-| Petits-déjeuners | catalogue indépendant, sans jour ni date |
-| Collations | catalogues 16 h et soir |
-| Batch cooking | composants agrégés par session de conservation, cru/cuit, quantités préparées modifiables, liste « cuisson du jour » |
-| Courses | besoin vs quantité à acheter (conditionnements), surplus, prix, cases à cocher, budget |
+| Petits-déjeuners | catalogue indépendant, sans jour ni date ; un compteur « utilisée N fois dans ce cycle » les fait entrer dans les courses |
+| Collations | catalogues 16 h et soir, même fonctionnement |
+| Batch cooking | plan opératoire par session : **à préparer en batch** (méthode, température, durée, rendement, quantités crues et cuites, consignes), **à cuire le jour même**, **à assembler le jour même**, puis le détail de chaque gamelle personne par personne |
+| Courses | tout le cycle (déjeuners, dîners et options de catalogue utilisées) : besoin vs quantité à acheter, surplus, prix, cases à cocher, budget |
 | Paramètres | objectifs, cycle, budget, batch, export/import JSON, réinitialisation du cycle, compte |
 
 Le bouton **Imprimer** (en haut à droite) permet de choisir les sections : planning, batch,
@@ -185,7 +194,20 @@ automatiquement au retour de la connexion (ou via Paramètres → Envoyer vers l
 Comme Thomas et Julie n'utilisent jamais l'application en même temps, la synchronisation est un
 remplacement complet : aucune gestion de conflit.
 
-## 6. Tests
+## 6. Fiche aliment
+
+Chaque aliment porte ses propres paramètres de préparation : méthode de cuisson, température,
+durée, temps de préparation, matériel, consignes libres, et le coefficient cru → cuit (affiché en
+rendement %). Le plan de batch reprend ces informations telles quelles — aucune méthode, aucune
+association et aucune habitude alimentaire n'est codée dans l'application. Les valeurs livrées avec
+la banque initiale sont des données par défaut, modifiables ou supprimables.
+
+À la création d'un aliment, un avertissement **non bloquant** signale les produits déjà présents
+qui lui ressemblent (nom proche, même marque, même poids par unité, valeurs voisines) ; le bouton
+devient « Créer quand même ». Le même contrôle tourne après un import JSON et liste les doublons
+possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
+
+## 7. Tests
 
 ```bash
 node tests/engine.test.mjs    # moteur, batch, courses, unités, cru/cuit — sans dépendance
@@ -201,12 +223,12 @@ apt-get install -y postgresql && service postgresql start
 node tests/sync.test.mjs
 ```
 
-## 7. Sauvegarde
+## 8. Sauvegarde
 
 Paramètres → Données → **Exporter en JSON** produit un fichier complet (banque, objectifs,
 planning, catalogues, paramètres). **Importer un JSON** le restaure intégralement.
 
-## 8. Données livrées
+## 9. Données livrées
 
 La banque initiale contient des aliments courants avec des valeurs **génériques** : protéines,
 féculents, légumes, fruits, produits laitiers, matières grasses, oléagineux, pains et wraps.

@@ -3,10 +3,12 @@
 import { getState, update } from '../core/store.js';
 import { CATEGORIES, STATES } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid, euros } from '../core/util.js';
+import { findSimilarFoods } from '../core/similarity.js';
 
 let query = '';
 let cat = 'all';
 let editing = null; // id d'aliment ou 'new'
+let similarWarning = null; // { list, pending } — avertissement doublon, jamais bloquant
 
 export function render(root) {
   const s = getState();
@@ -29,7 +31,7 @@ export function render(root) {
     <div class="card">
       <table>
         <thead><tr>
-          <th>Aliment</th><th class="nums">kcal</th><th class="nums">P</th><th class="nums">C</th><th class="nums">L</th>
+          <th>Aliment</th><th class="nums">kcal</th><th class="nums">P</th><th class="nums">G</th><th class="nums">L</th>
           <th>État</th><th>Unité</th><th class="nums">Prix</th><th>Batch</th><th></th>
         </tr></thead>
         <tbody>
@@ -67,11 +69,14 @@ const blank = () => ({
   id: `f_${uid('custom')}`, name: '', category: 'autre', brand: '',
   kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0,
   referenceState: 'pret', cookedFactor: 1, unitName: '', gramsPerUnit: 0,
-  fractionable: true, price: null, packageWeight: null, batchAllowed: false, favorite: false, lastUsed: null,
+  fractionable: true, unitEntry: false, price: null, packageWeight: null,
+  batchAllowed: false, favorite: false, lastUsed: null,
+  cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
 });
 
 function formPanel(s) {
-  const f = editing === 'new' ? blank() : s.foods.find((x) => x.id === editing);
+  // en cas d'avertissement de doublon, on ré-affiche la saisie en cours telle quelle
+  const f = editing === 'new' ? (similarWarning?.pending || blank()) : s.foods.find((x) => x.id === editing);
   if (!f) return '';
   const n = (v) => (v === null || v === undefined ? '' : v);
   return `<div class="drawer" data-form-backdrop>
@@ -109,6 +114,8 @@ function formPanel(s) {
             <input type="number" step="1" data-f="gramsPerUnit" value="${n(f.gramsPerUnit)}"></label>
         </div>
         <label class="check" style="margin-top:8px"><input type="checkbox" data-f="fractionable" ${f.fractionable ? 'checked' : ''}> Unité fractionnable (sinon quantités par unité entière)</label>
+        <label class="check" style="margin-top:6px"><input type="checkbox" data-f="unitEntry" ${f.unitEntry ? 'checked' : ''}> Saisir les quantités en unités plutôt qu'en grammes</label>
+        <small style="display:block;margin-top:4px">Un aliment non fractionnable ne peut exister qu'en multiples entiers de son poids par unité, quelle que soit la façon dont la quantité est saisie.</small>
         <h3 style="margin:16px 0 6px">Achat</h3>
         <div class="grid grid--3">
           <label class="field">Prix du conditionnement (€)
@@ -117,14 +124,48 @@ function formPanel(s) {
             <input type="number" step="1" data-f="packageWeight" value="${n(f.packageWeight)}"></label>
         </div>
         <label class="check" style="margin-top:8px"><input type="checkbox" data-f="batchAllowed" ${f.batchAllowed ? 'checked' : ''}> Autorisé en batch cooking</label>
+        <h3 style="margin:16px 0 6px">Préparation</h3>
+        <div class="grid grid--3">
+          <label class="field">Méthode de cuisson
+            <input type="text" data-f="cookingMethod" value="${esc(f.cookingMethod || '')}" placeholder="Four, poêle, vapeur…"></label>
+          <label class="field">Température (°C)
+            <input type="number" step="5" data-f="cookingTemp" value="${n(f.cookingTemp)}"></label>
+          <label class="field">Durée de cuisson (min)
+            <input type="number" step="1" data-f="cookingTime" value="${n(f.cookingTime)}"></label>
+          <label class="field">Temps de préparation (min)
+            <input type="number" step="1" data-f="prepTime" value="${n(f.prepTime)}"></label>
+          <label class="field">Matériel
+            <input type="text" data-f="equipment" value="${esc(f.equipment || '')}" placeholder="Four, sauteuse…"></label>
+        </div>
+        <label class="field" style="margin-top:8px">Consignes libres
+          <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
+        <small style="display:block;margin-top:4px">Rendement cru → cuit actuel : ${num((f.cookedFactor || 1) * 100, 0)} %. Ces informations sont reprises telles quelles dans le plan de batch.</small>
         <label class="check" style="margin-top:6px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>
+        ${similarWarning ? similarBox() : ''}
         <div class="row" style="margin-top:18px">
-          <button class="btn btn--primary" data-save="${f.id}">Enregistrer</button>
+          <button class="btn btn--primary" data-save="${f.id}">${similarWarning ? 'Créer quand même' : 'Enregistrer'}</button>
           ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${f.id}">Supprimer</button>`}
         </div>
         <small style="display:block;margin-top:10px">Les valeurs livrées par défaut sont génériques. Pour un produit de marque, recopie les valeurs de l'emballage.</small>
       </div>
     </div>
+  </div>`;
+}
+
+/** Avertissement non bloquant : un aliment très proche existe déjà. */
+function similarBox() {
+  return `<div class="card" style="margin-top:14px;border-color:#ecd7ae;background:var(--warn-bg)">
+    <strong>Aliment${similarWarning.list.length > 1 ? 's' : ''} similaire${similarWarning.list.length > 1 ? 's' : ''} détecté${similarWarning.list.length > 1 ? 's' : ''}</strong>
+    <ul style="margin:6px 0 0;padding-left:18px">
+      ${similarWarning.list
+        .map(
+          (x) => `<li>${esc(x.food.name)}${x.food.brand ? ` — ${esc(x.food.brand)}` : ''}${
+            x.food.gramsPerUnit ? ` — ${num(x.food.gramsPerUnit, 0)} g/${esc(x.food.unitName || 'unité')}` : ''
+          } <span class="tag">${esc(x.reasons.join(', '))}</span></li>`
+        )
+        .join('')}
+    </ul>
+    <small>Vérifie qu'il ne s'agit pas du même produit. Rien n'est fusionné ni supprimé automatiquement.</small>
   </div>`;
 }
 
@@ -158,10 +199,10 @@ function wire(root) {
     c.addEventListener('click', (e) => { cat = e.currentTarget.dataset.cat; render(root); })
   );
 
-  root.querySelector('[data-new]')?.addEventListener('click', () => { editing = 'new'; render(root); });
+  root.querySelector('[data-new]')?.addEventListener('click', () => { editing = 'new'; similarWarning = null; render(root); });
 
   root.querySelectorAll('[data-edit]').forEach((b) =>
-    b.addEventListener('click', (e) => { editing = e.currentTarget.dataset.edit; render(root); })
+    b.addEventListener('click', (e) => { editing = e.currentTarget.dataset.edit; similarWarning = null; render(root); })
   );
 
   root.querySelectorAll('[data-fav]').forEach((b) =>
@@ -174,17 +215,30 @@ function wire(root) {
     })
   );
 
-  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { editing = null; render(root); });
+  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { editing = null; similarWarning = null; render(root); });
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.formBackdrop !== undefined) { editing = null; render(root); }
+    if (e.target.dataset.formBackdrop !== undefined) { editing = null; similarWarning = null; render(root); }
   });
 
   root.querySelector('[data-save]')?.addEventListener('click', (e) => {
     const id = e.currentTarget.dataset.save;
     const s = getState();
-    const base = editing === 'new' ? { ...blank(), id } : s.foods.find((x) => x.id === id);
+    const base = editing === 'new' ? { ...(similarWarning?.pending || blank()), id } : s.foods.find((x) => x.id === id);
     const data = readForm(root, base);
     if (!data.name) { toast('Le nom est obligatoire', 'error'); return; }
+
+    // Détection de doublon à la création : avertissement, jamais blocage.
+    if (editing === 'new' && !similarWarning) {
+      const list = findSimilarFoods(data, s.foods);
+      if (list.length) {
+        similarWarning = { list, pending: data };
+        render(root);
+        toast('Un aliment similaire existe déjà — vérifie avant de créer');
+        return;
+      }
+    }
+    similarWarning = null;
+
     update((st) => {
       const idx = st.foods.findIndex((x) => x.id === id);
       if (idx >= 0) st.foods[idx] = data;

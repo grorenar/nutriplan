@@ -38,6 +38,7 @@ function renderCatalog(root, kind) {
       <span class="spacer"></span>
       <button class="btn btn--primary" data-new>Nouvelle option</button>
     </div>
+    <small style="display:block;margin:-6px 0 10px">Les catalogues sont indépendants des jours. Indique simplement combien de fois une option est utilisée dans le cycle : ses aliments entrent alors dans la liste de courses.</small>
     ${
       list.length
         ? `<div class="grid grid--2">${list.map((o) => card(o, byId, s, kind)).join('')}</div>`
@@ -53,6 +54,17 @@ function renderCatalog(root, kind) {
   root.querySelectorAll('[data-edit]').forEach((b) =>
     b.addEventListener('click', (e) => openEditor(kind, e.currentTarget.dataset.edit))
   );
+  root.querySelectorAll('[data-uses]').forEach((b) =>
+    b.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.uses;
+      const delta = Number(e.currentTarget.dataset.delta);
+      update((st) => {
+        const o = st[catalogKey(kind)].find((x) => x.id === id);
+        if (o) o.cycleUses = Math.max(0, (Number(o.cycleUses) || 0) + delta);
+      });
+    })
+  );
+
   root.querySelectorAll('[data-dup]').forEach((b) =>
     b.addEventListener('click', (e) => {
       const id = e.currentTarget.dataset.dup;
@@ -95,6 +107,13 @@ function card(opt, byId, s, kind) {
     <div class="meal-card__name">${esc(opt.name || 'Sans nom')}</div>
     <div class="meal-card__ing">${esc(ings || 'Aucun ingrédient')}</div>
     ${opt.items.length ? blocks : ''}
+    <div class="row row--tight" style="margin:8px 0 2px">
+      <small>Utilisée dans ce cycle :</small>
+      <button class="btn btn--sm" data-uses="${opt.id}" data-delta="-1" aria-label="Retirer une utilisation">−</button>
+      <strong class="nums">${opt.cycleUses || 0}</strong>
+      <button class="btn btn--sm" data-uses="${opt.id}" data-delta="1" aria-label="Ajouter une utilisation">+</button>
+      <small>${opt.cycleUses ? '→ comptée dans les courses' : '→ non comptée dans les courses'}</small>
+    </div>
     <div class="meal-card__actions">
       <button class="btn btn--sm btn--primary" data-edit="${opt.id}">Modifier</button>
       <button class="btn btn--sm" data-dup="${opt.id}">Dupliquer</button>

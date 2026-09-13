@@ -76,6 +76,7 @@ check('4 ingrédients', $$('#drawer .item').length === 4);
 const macros = $$('#drawer .macro').slice(0, 4).map((m) => m.textContent.replace(/\s+/g, ' ').trim());
 console.log(`        ${macros.join(' | ')}`);
 check('macros affichées sans clic supplémentaire', macros.length === 4);
+check('glucides affichés "G" et non "C"', macros.some((m) => / G$/.test(m)) && !macros.some((m) => / C$/.test(m)), macros.join(' | '));
 check('les 4 macros de Thomas sont dans la cible',
   $$('#drawer .macro').slice(0, 4).every((m) => m.classList.contains('is-ok')));
 
@@ -96,6 +97,40 @@ click($('#drawer [data-free-add]'));
 check('curry ajouté au repas', $$('#drawer .item').length === 5 && /Curry/.test($('#drawer').textContent));
 check('curry marqué hors macros', /non compté dans les macros/.test($('#drawer').textContent));
 
+console.log('\n— Stabilité de la recherche');
+const panelBefore = $('#drawer .drawer__panel');
+const searchEl = $('#drawer [data-search]');
+type(searchEl, '');
+searchEl.focus();
+for (const chunk of ['s', 'k', 'y']) type(searchEl, searchEl.value + chunk);
+check('le champ de recherche garde le focus', document.activeElement === $('#drawer [data-search]'));
+check('la fenêtre n’est pas reconstruite', $('#drawer .drawer__panel') === panelBefore);
+check('le texte saisi est conservé', $('#drawer [data-search]').value === 'sky', $('#drawer [data-search]').value);
+check('seuls les résultats changent', $$('#drawer [data-add]').every((b) => /skyr/i.test(b.textContent)));
+type($('#drawer [data-search]'), '');
+
+console.log('\n— Saisie en unités et multiples stricts');
+type($('#drawer [data-search]'), 'croustillant');
+click($$('#drawer [data-add]')[0]);
+const wasaRow = $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent));
+check('aliment à l’unité ajouté', !!wasaRow);
+check('mention des multiples affichée', /multiples de 11 g/.test(wasaRow.textContent));
+const wasaInput = wasaRow.querySelector('[data-qty]');
+check('saisie en unités par défaut', wasaInput.dataset.unitmode === '1');
+change(wasaInput, '3');
+let wasaQty = () => {
+  const st = JSON.parse(localStorage.getItem('nutriplan.state.v1'));
+  const it = st.meals[0].items.find((i) => /wasa|croustillant/.test(i.foodId));
+  return it ? it.qty.thomas : null;
+};
+check('3 tranches = 33 g stockés', wasaQty() === 33, `${wasaQty()} g`);
+click(wasaRow.querySelector('[data-unit-toggle]'));
+const wasaRow2 = $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent));
+check('bascule en grammes', wasaRow2.querySelector('[data-qty]').dataset.unitmode === '0');
+change(wasaRow2.querySelector('[data-qty]'), '25');
+check('25 g saisis → 22 g (multiple de 11)', wasaQty() === 22, `${wasaQty()} g`);
+click($$('#drawer .item').find((el) => /croustillant/i.test(el.textContent)).querySelector('[data-del]'));
+
 console.log('\n— Aliments récents');
 type($('#drawer [data-search]'), ''); // la recherche filtre aussi l'onglet Récents
 click($('#drawer [data-cat="recent"]'));
@@ -105,6 +140,43 @@ check('les aliments utilisés apparaissent dans "Récents"',
 click($('#drawer [data-close]'));
 check('éditeur fermé', !$('#drawer .drawer__panel'));
 check('macros visibles sur la carte du planning', $$('.meal-card .macro').length >= 8);
+
+console.log('\n— Détection de doublons');
+click($('[data-view="foods"]'));
+await wait();
+click($('[data-new]'));
+const setField = (name, v) => { const el = $(`[data-f="${name}"]`); el.value = v; };
+setField('name', 'Blanc de poulet');
+setField('kcal', '110');
+click($('[data-save]'));
+await wait();
+check('avertissement de doublon affiché', /similaire/i.test($('#view').textContent));
+check('création toujours possible', /Créer quand même/.test($('#view').textContent));
+click($('[data-save]'));
+await wait();
+const foodsAfter = JSON.parse(localStorage.getItem('nutriplan.state.v1')).foods;
+check('l’aliment est créé malgré l’avertissement',
+  foodsAfter.filter((f) => f.name === 'Blanc de poulet').length === 2);
+check('aucun aliment fusionné ni supprimé', foodsAfter.length === 89, `${foodsAfter.length}`);
+
+console.log('\n— Catalogues et courses du cycle');
+click($('[data-view="breakfasts"]'));
+await wait();
+click($('[data-new]'));
+await wait();
+type($('#drawer [data-search]'), 'flocons');
+click($$('#drawer [data-add]')[0]);
+click($('#drawer [data-close]'));
+click($('[data-view="shopping"]'));
+await wait();
+check('option non utilisée : absente des courses', !/flocons/i.test($('#view').textContent));
+click($('[data-view="breakfasts"]'));
+await wait();
+click($$('[data-uses][data-delta="1"]')[0]);
+click($$('[data-uses][data-delta="1"]')[0]);
+click($('[data-view="shopping"]'));
+await wait();
+check('option utilisée 2 fois : présente dans les courses', /flocons/i.test($('#view').textContent));
 
 console.log('\n— Navigation complète');
 for (const id of ['foods', 'breakfasts', 'snacks', 'batch', 'shopping', 'settings']) {
@@ -128,6 +200,12 @@ check('composants de batch listés', !!prep);
 change(prep, '1500');
 check('quantité préparée modifiable', $$('[data-prep]')[0].value === '1500');
 check('note de préparation du poulet affichée', /filets entiers/.test($('#view').textContent));
+check('trois catégories affichées',
+  /À préparer en batch/.test($('#view').textContent) &&
+  /À cuire le jour même/.test($('#view').textContent) &&
+  /À assembler le jour même/.test($('#view').textContent));
+check('plan opératoire : méthode et température', /Four/.test($('#view').textContent) && /180 °C/.test($('#view').textContent));
+check('détail des gamelles présent', /Détail des gamelles/.test($('#view').textContent));
 
 console.log('\n— Impression');
 click($('#print-btn'));

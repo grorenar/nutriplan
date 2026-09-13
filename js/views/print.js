@@ -2,7 +2,7 @@
 
 import { getState, foodsById } from '../core/store.js';
 import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core/nutrition.js';
-import { buildBatchPlan, buildShoppingList } from '../core/derive.js';
+import { buildBatchPlan, buildShoppingList, BATCH_CATEGORY_LABEL } from '../core/derive.js';
 import { dayName, esc, grams, euros, num } from '../core/util.js';
 
 export function openPrintDialog() {
@@ -79,7 +79,7 @@ function planningSection(s, byId) {
         .map((m) => {
           const mt = PERSONS.map((p) => {
             const macros = mealMacros(m.items, byId, p);
-            return `${PERSON_LABEL[p]} : ${num(macros.kcal, 0)} kcal, ${num(macros.protein, 0)} P, ${num(macros.carbs, 0)} C, ${num(macros.fat, 0)} L`;
+            return `${PERSON_LABEL[p]} : ${num(macros.kcal, 0)} kcal, ${num(macros.protein, 0)} P, ${num(macros.carbs, 0)} G, ${num(macros.fat, 0)} L`;
           }).join(' · ');
           return `<p><strong>${esc(MEAL_TYPES[m.mealType])} — ${esc(m.name || 'sans nom')}</strong><br>
             ${m.items.length ? `<ul>${m.items.map((it) => `<li>${itemLine(it, byId)}</li>`).join('')}</ul>` : '<em>Non composé</em>'}
@@ -93,31 +93,71 @@ function planningSection(s, byId) {
 
 function batchSection(s, byId) {
   const plan = buildBatchPlan(s, byId);
+  const startWeekday = s.settings.cycle.startWeekday;
+  const slot = (d, type) => `${dayName(startWeekday, d).toLowerCase()} ${type === 'lunch' ? 'midi' : 'soir'}`;
+
+  const sameDay = (rows) =>
+    rows.length
+      ? `<ul>${rows
+          .map(
+            (r) => `<li>${esc(slot(r.dayIndex, r.mealType))} : ${esc(r.food.name)}, ${grams(r.grams)}${
+              r.summary ? ` — ${esc(r.summary)}` : ''
+            }</li>`
+          )
+          .join('')}</ul>`
+      : '<p>Rien dans cette catégorie.</p>';
+
   return `<div class="print-section"><h2>Batch cooking</h2>
     ${plan
       .map(
         (sess) => `<h3>Session ${sess.index + 1} — jours ${sess.startDay + 1} à ${sess.endDay + 1}</h3>
-      <table><thead><tr><th>Composant</th><th>Besoin</th><th>À préparer</th><th>Préparé</th><th>Note</th></tr></thead>
+      <p>Gamelles à préparer : ${sess.gamelles.map((g) => esc(slot(g.dayIndex, g.mealType))).join(', ') || 'aucune'}.</p>
+
+      <p><strong>${BATCH_CATEGORY_LABEL.batch}</strong></p>
+      <table><thead><tr>
+        <th>Composant</th><th>À sortir</th><th>Cuit nécessaire</th><th>Je prépare</th><th>Cuit attendu</th><th>Méthode et consignes</th>
+      </tr></thead>
       <tbody>${
         sess.components.length
           ? sess.components
               .map(
-                (c) => `<tr><td>${esc(c.food.name)}</td>
-          <td class="nums">${c.needsCooking ? `${grams(c.requiredCooked)} cuits` : grams(c.requiredRaw)}</td>
-          <td class="nums">${c.needsCooking ? `${grams(c.requiredRaw)} crus` : '—'}</td>
+                (c) => `<tr>
+          <td>${esc(c.food.name)}</td>
+          <td class="nums">${grams(c.requiredRaw)}${c.needsCooking ? ' crus' : ''}</td>
+          <td class="nums">${grams(c.requiredCooked)}${c.needsCooking ? ' cuits' : ''}</td>
           <td class="nums">${grams(c.preparedRaw)}</td>
-          <td>${esc(c.note || '')}</td></tr>`
+          <td class="nums">${grams(c.preparedCooked)}</td>
+          <td>${[c.summary, c.prepTime ? `préparation ${c.prepTime} min` : '', c.equipment, c.needsCooking ? `rendement ${c.yieldPct} %` : '', c.note]
+            .filter(Boolean)
+            .map(esc)
+            .join(' · ')}</td></tr>`
               )
               .join('')
-          : '<tr><td colspan="5">Aucun composant batchable.</td></tr>'
+          : '<tr><td colspan="6">Aucun composant batchable.</td></tr>'
       }</tbody></table>
-      ${
-        sess.sameDay.length
-          ? `<p><strong>Cuisson du jour :</strong></p><ul>${sess.sameDay
-              .map((x) => `<li>Jour ${x.dayIndex + 1} — ${esc(MEAL_TYPES[x.mealType])} : ${esc(x.food.name)}, ${grams(x.grams)}</li>`)
-              .join('')}</ul>`
-          : ''
-      }`
+
+      <p><strong>${BATCH_CATEGORY_LABEL.cook}</strong></p>${sameDay(sess.cookSameDay)}
+      <p><strong>${BATCH_CATEGORY_LABEL.assemble}</strong></p>${sameDay(sess.assembleSameDay)}
+
+      <p><strong>Détail des gamelles</strong></p>
+      ${sess.gamelles
+        .filter((g) => PERSONS.some((p) => g.persons[p].length))
+        .map(
+          (g) => `<div class="print-day"><h3>Gamelle ${esc(slot(g.dayIndex, g.mealType))}${g.name ? ` — ${esc(g.name)}` : ''}</h3>
+            ${PERSONS.map(
+              (p) => `<p><strong>${PERSON_LABEL[p]}</strong></p><ul>${
+                g.persons[p]
+                  .map((e) =>
+                    e.free
+                      ? `<li>${esc(e.name)} — ${esc(e.quantity || 'au goût')}</li>`
+                      : `<li>${grams(e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''}</li>`
+                  )
+                  .join('') || '<li>rien</li>'
+              }</ul>`
+            ).join('')}
+          </div>`
+        )
+        .join('')}`
       )
       .join('')}
   </div>`;

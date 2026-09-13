@@ -125,7 +125,7 @@ export function mealMacros(items, foodsById, person) {
 export const MACRO_KEYS = [
   { key: 'kcal', target: 'kcal', label: 'kcal', unit: '' },
   { key: 'protein', target: 'protein', label: 'P', unit: 'g' },
-  { key: 'carbs', target: 'carbs', label: 'C', unit: 'g' },
+  { key: 'carbs', target: 'carbs', label: 'G', unit: 'g' },
   { key: 'fat', target: 'fat', label: 'L', unit: 'g' },
 ];
 
@@ -179,11 +179,36 @@ export function evaluate(macros, target, tolerance = 0.05) {
 const WEIGHTS = { kcal: 0.35, protein: 1.4, carbs: 1.0, fat: 1.0 };
 
 /** Arrondi final tenant compte des unités non fractionnables. */
+/** Un aliment est-il saisi par unités entières ? (générique : tout aliment non fractionnable) */
+export const isUnitFood = (food) => Boolean(food && Number(food.gramsPerUnit) > 0);
+export const isWholeUnitFood = (food) => isUnitFood(food) && food.fractionable === false;
+
+/** Grammes -> unités (nombre décimal). */
+export const toUnits = (food, grams) => (isUnitFood(food) ? grams / Number(food.gramsPerUnit) : null);
+
+/** Unités -> grammes. */
+export const fromUnits = (food, units) => (isUnitFood(food) ? units * Number(food.gramsPerUnit) : units);
+
+/**
+ * Contrainte ABSOLUE sur les quantités : un aliment non fractionnable ne peut
+ * exister qu'en multiples entiers de gramsPerUnit, quelle que soit la manière
+ * dont la quantité a été obtenue (saisie en grammes, saisie en unités,
+ * ajustement automatique, duplication, import…).
+ * 0 g reste possible : l'ingrédient est alors simplement absent pour la personne.
+ */
+export function snapQuantity(food, qty) {
+  const value = Math.max(0, Number(qty) || 0);
+  if (!isWholeUnitFood(food)) return value;
+  if (value <= 0) return 0;
+  const g = Number(food.gramsPerUnit);
+  return Math.max(1, Math.round(value / g)) * g;
+}
+
 export function roundQuantity(food, qty, min = 0, max = Infinity) {
   const p = profileOf(food);
   // Aliment non fractionnable : uniquement des unités entières (jamais 1,37 œuf).
-  if (food.gramsPerUnit > 0 && food.fractionable === false) {
-    const g = food.gramsPerUnit;
+  if (isWholeUnitFood(food)) {
+    const g = Number(food.gramsPerUnit);
     let units = Math.max(1, Math.round(qty / g));
     if (units * g > max) units = Math.max(1, Math.floor(max / g));
     if (units * g < min) units = Math.ceil(min / g);
@@ -206,7 +231,7 @@ export function initialQuantity(food) {
 
 /**
  * Cœur de l'application : ajuste les quantités des ingrédients DÉVERROUILLÉS
- * pour rapprocher simultanément kcal / P / C / L des objectifs.
+ * pour rapprocher simultanément kcal / P / G / L des objectifs.
  *
  * Méthode : descente par coordonnées sur un coût quadratique convexe
  *   coût = Σ_macro  w · ((valeur - cible) / cible)²  +  Σ_ingrédient  λ · ((q - q₀) / échelle)²

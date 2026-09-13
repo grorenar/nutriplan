@@ -3,9 +3,11 @@
 import { getState, update, exportJSON, importJSON, resetCycle, ensureCycleMeals, defaultState, backupInfo, restoreBackup } from '../core/store.js';
 import { PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core/nutrition.js';
 import { WEEKDAYS, esc, num, toast, downloadFile } from '../core/util.js';
+import { findDuplicateGroups } from '../core/similarity.js';
 import * as sync from '../core/sync.js';
 
 const TYPES = ['day', 'breakfast', 'lunch', 'snack_afternoon', 'dinner', 'snack_evening'];
+let importReport = null; // doublons probables repérés au dernier import
 let account = { user: null, checked: false };
 
 export async function render(root) {
@@ -55,7 +57,21 @@ export async function render(root) {
         <span class="spacer"></span>
         <button class="btn btn--danger" data-reset-cycle>Réinitialiser le cycle</button>
       </div>
-      <small>La réinitialisation du cycle efface le planning, les achats cochés et les quantités de batch. Elle ne touche ni à la banque alimentaire, ni aux objectifs, ni aux catalogues.</small>
+      <small>La réinitialisation du cycle efface le planning, les achats cochés, les quantités de batch et les compteurs d'utilisation des catalogues. Elle ne touche ni à la banque alimentaire, ni aux objectifs, ni aux options des catalogues.</small>
+      ${
+        importReport
+          ? `<div class="card" style="margin-top:12px;border-color:#ecd7ae;background:var(--warn-bg)">
+              <strong>Doublons possibles dans la banque importée</strong>
+              <ul style="margin:6px 0 0;padding-left:18px">
+                ${importReport
+                  .map((g) => `<li>${esc(g.food.name)} ~ ${g.similar.map((x) => esc(x.food.name)).join(', ')}</li>`)
+                  .join('')}
+              </ul>
+              <small>Aucun aliment n'a été fusionné ni supprimé : vérifie-les dans l'écran Aliments.</small>
+              <div class="row" style="margin-top:8px"><button class="btn btn--sm" data-dismiss-import>Masquer</button></div>
+            </div>`
+          : ''
+      }
     </div>
 
     <div class="card">
@@ -151,12 +167,17 @@ function wire(root) {
     if (!confirm('Importer cette sauvegarde ? Les données actuelles seront remplacées.')) return;
     try {
       importJSON(await file.text());
-      toast('Sauvegarde importée');
+      // contrôle non bloquant : la banque importée contient-elle des doublons probables ?
+      const groups = findDuplicateGroups(getState().foods);
+      importReport = groups.length ? groups : null;
+      toast(groups.length ? `Sauvegarde importée — ${groups.length} doublon(s) possible(s)` : 'Sauvegarde importée');
       render(root);
     } catch (err) {
       toast(`Import impossible : ${err.message}`, 'error');
     }
   });
+
+  root.querySelector('[data-dismiss-import]')?.addEventListener('click', () => { importReport = null; render(root); });
 
   root.querySelector('[data-reset-cycle]')?.addEventListener('click', () => {
     if (!confirm('Réinitialiser le cycle ? Le planning, les achats cochés et les quantités de batch seront effacés. La banque alimentaire, les objectifs et les catalogues sont conservés.')) return;

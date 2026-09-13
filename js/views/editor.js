@@ -7,6 +7,7 @@ import { getState, update, foodsById, newItem, newFreeItem, catalogKey } from '.
 import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
   mealMacros, macrosFor, evaluate, autoAdjust, initialQuantity, diagnose,
+  snapQuantity, isUnitFood, isWholeUnitFood, toUnits, fromUnits,
 } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid } from '../core/util.js';
 
@@ -95,33 +96,43 @@ export function renderEditor() {
   const tol = state.settings.tolerance;
   const typeLabel = MEAL_TYPES[targetType()];
 
-  host.innerHTML = `
-    <div class="drawer" data-close-backdrop>
-      <div class="drawer__panel" role="dialog" aria-label="Édition du repas">
-        <div class="drawer__head">
-          <div class="row">
-            <span class="pill pill--accent">${esc(typeLabel)}</span>
-            ${ctx.kind === 'meal' ? `<span class="tag">Jour ${entity.dayIndex + 1}</span>` : ''}
-            <span class="spacer"></span>
-            <button class="btn btn--ghost" data-close>Fermer</button>
-          </div>
-          <div class="row" style="margin-top:8px">
-            <input type="text" data-name value="${esc(entity.name)}" placeholder="Nom du repas (facultatif)" style="flex:1;min-width:180px">
-          </div>
-          <div class="row" style="margin-top:8px">
-            <label class="check"><input type="checkbox" data-same ${entity.sameComposition ? 'checked' : ''}> Même composition Thomas / Julie</label>
-            <span class="spacer"></span>
-            <label class="check"><input type="checkbox" data-auto ${state.settings.autoAdjust ? 'checked' : ''}> Ajustement auto</label>
-            <button class="btn btn--sm" data-adjust>Ajuster maintenant</button>
-          </div>
-        </div>
-        <div class="drawer__body">
-          ${renderSummary(entity, byId, targets, tol, state)}
-          ${renderItems(entity, byId, state)}
-          ${renderPicker(state, entity)}
-        </div>
-      </div>
+  const head = `
+    <div class="row">
+      <span class="pill pill--accent">${esc(typeLabel)}</span>
+      ${ctx.kind === 'meal' ? `<span class="tag">Jour ${entity.dayIndex + 1}</span>` : ''}
+      <span class="spacer"></span>
+      <button class="btn btn--ghost" data-close>Fermer</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" data-name value="${esc(entity.name)}" placeholder="Nom du repas (facultatif)" style="flex:1;min-width:180px">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="check"><input type="checkbox" data-same ${entity.sameComposition ? 'checked' : ''}> Même composition Thomas / Julie</label>
+      <span class="spacer"></span>
+      <label class="check"><input type="checkbox" data-auto ${state.settings.autoAdjust ? 'checked' : ''}> Ajustement auto</label>
+      <button class="btn btn--sm" data-adjust>Ajuster maintenant</button>
     </div>`;
+
+  const body = `
+    ${renderSummary(entity, byId, targets, tol, state)}
+    ${renderItems(entity, byId, state)}
+    ${renderPicker(state, entity)}`;
+
+  // Le panneau n'est créé qu'à l'ouverture : les re-rendus suivants remplacent
+  // seulement son contenu, donc pas de réapparition ni d'animation rejouée.
+  let panel = host.querySelector('.drawer__panel');
+  if (!panel) {
+    host.innerHTML = `
+      <div class="drawer" data-close-backdrop>
+        <div class="drawer__panel" role="dialog" aria-label="Édition du repas">
+          <div class="drawer__head"></div>
+          <div class="drawer__body"></div>
+        </div>
+      </div>`;
+    panel = host.querySelector('.drawer__panel');
+  }
+  panel.querySelector('.drawer__head').innerHTML = head;
+  panel.querySelector('.drawer__body').innerHTML = body;
 
   host.querySelector('.drawer__body').scrollTop = scroll;
   wire(host, entity);
@@ -156,11 +167,20 @@ function renderSummary(entity, byId, targets, tol, state) {
   return `<div class="card">${blocks}</div>`;
 }
 
+/** Libellé d'unité au pluriel simple ("2 tranches", "2 c. à soupe"). */
+function unitLabel(food, count) {
+  const name = food.unitName || 'unité';
+  const plural = Math.abs(count) >= 2 && !/^c\./.test(name) ? 's' : '';
+  return `${name}${plural}`;
+}
+
+/** Équivalence affichée sous le champ de saisie. */
 function unitHint(food, qty) {
-  if (!food.gramsPerUnit || !food.unitName) return '';
-  const u = qty / food.gramsPerUnit;
-  const txt = food.fractionable ? num(u, 1) : Math.round(u);
-  return `≈ ${txt} ${esc(food.unitName)}${Math.abs(u) >= 2 && !/^c\./.test(food.unitName) ? 's' : ''}`;
+  if (!isUnitFood(food)) return '';
+  const u = toUnits(food, qty);
+  if (food.unitEntry) return `= ${num(qty, 0)} g`;
+  const txt = isWholeUnitFood(food) ? Math.round(u) : num(u, 1);
+  return `≈ ${txt} ${esc(unitLabel(food, u))}`;
 }
 
 function renderItems(entity, byId, state) {
@@ -192,20 +212,27 @@ function renderItems(entity, byId, state) {
         ${STATES.map((s) => `<option value="${s.id}" ${(it.state || food.referenceState) === s.id ? 'selected' : ''}>${s.label}</option>`).join('')}
       </select>`;
 
+      // Saisie en unités ou en grammes ; dans les deux cas, la quantité stockée
+      // reste un multiple entier de gramsPerUnit pour un aliment non fractionnable.
+      const unitMode = isUnitFood(food) && food.unitEntry;
+      const step = unitMode ? (isWholeUnitFood(food) ? 1 : 0.5) : 1;
+
       const qtyBoxes = PERSONS.map((person) => {
         const qty = it.qty[person] || 0;
         const m = macrosFor(food, qty, it.state || food.referenceState);
         const locked = !!it.locked[person];
+        const shown = unitMode ? num(toUnits(food, qty), isWholeUnitFood(food) ? 0 : 1) : num(qty, 1);
         return `<div class="qty-box">
           <span class="person-name person-name--${person}">${PERSON_LABEL[person]}</span>
           <div class="qty-box__row">
-            <input type="number" min="0" step="1" inputmode="numeric" value="${num(qty, 1).replace(',', '.')}"
-                   data-qty="${it.id}" data-person="${person}" aria-label="Quantité ${PERSON_LABEL[person]}">
-            <span class="item__unit">g</span>
+            <input type="number" min="0" step="${step}" inputmode="decimal" value="${String(shown).replace(',', '.')}"
+                   data-qty="${it.id}" data-person="${person}" data-unitmode="${unitMode ? '1' : '0'}"
+                   aria-label="Quantité ${PERSON_LABEL[person]}">
+            <span class="item__unit">${unitMode ? esc(unitLabel(food, toUnits(food, qty))) : 'g'}</span>
             <button class="lock" data-lock="${it.id}" data-person="${person}" aria-pressed="${locked}"
                     title="${locked ? 'Quantité verrouillée' : 'Quantité ajustable'}">${locked ? '🔒' : '🔓'}</button>
           </div>
-          <small class="nums">${num(m.kcal, 0)} kcal · ${num(m.protein, 0)} P · ${num(m.carbs, 0)} C · ${num(m.fat, 0)} L</small>
+          <small class="nums">${num(m.kcal, 0)} kcal · ${num(m.protein, 0)} P · ${num(m.carbs, 0)} G · ${num(m.fat, 0)} L</small>
           <small>${unitHint(food, qty)}</small>
         </div>`;
       }).join('');
@@ -215,7 +242,14 @@ function renderItems(entity, byId, state) {
         <div class="item__main">
           <div class="item__name">${esc(food.name)}${food.brand ? ` <span class="tag">${esc(food.brand)}</span>` : ''}</div>
           <div class="item__meta">${esc(cat)}${food.batchAllowed ? '' : ' · cuisson du jour'}</div>
-          <div class="row row--tight" style="margin-top:6px">${stateSel}</div>
+          <div class="row row--tight" style="margin-top:6px">${stateSel}
+            ${
+              isUnitFood(food)
+                ? `<button class="btn btn--sm" data-unit-toggle="${food.id}">Saisie : ${food.unitEntry ? esc(unitLabel(food, 1)) : 'grammes'}</button>`
+                : ''
+            }
+            ${isWholeUnitFood(food) ? `<span class="tag">multiples de ${num(food.gramsPerUnit, 0)} g</span>` : ''}
+          </div>
           <div class="item__qty" style="margin-top:8px">${qtyBoxes}</div>
         </div>
         <div class="item__tools">
@@ -228,15 +262,47 @@ function renderItems(entity, byId, state) {
   return `<div class="items" style="margin:12px 0">${rows}</div>`;
 }
 
-function renderPicker(state, entity) {
+/** Liste filtrée des aliments proposés (recherche + filtres). */
+function pickerList(state) {
   const q = normalize(pickerQuery);
   let list = state.foods;
   if (pickerCategory === 'fav') list = list.filter((f) => f.favorite);
   else if (pickerCategory === 'recent') list = list.filter((f) => f.lastUsed).sort((a, b) => (b.lastUsed > a.lastUsed ? 1 : -1));
   else if (pickerCategory !== 'all') list = list.filter((f) => f.category === pickerCategory);
   if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
-  list = list.slice(0, 40);
+  return list.slice(0, 40);
+}
 
+/** HTML de la seule liste de résultats. */
+function pickerResults(state) {
+  const list = pickerList(state);
+  if (!list.length) {
+    return `<div style="padding:12px" class="muted">Aucun aliment ne correspond. Crée-le dans l'écran Aliments, ou ajoute-le comme ingrédient libre.</div>`;
+  }
+  return list
+    .map(
+      (f) => `<button data-add="${f.id}">
+        <strong>${esc(f.name)}</strong>${f.favorite ? ' ★' : ''}
+        <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} G / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})${
+        isWholeUnitFood(f) ? ` · ${num(f.gramsPerUnit, 0)} g / ${esc(f.unitName || 'unité')}` : ''
+      }</div>
+      </button>`
+    )
+    .join('');
+}
+
+/**
+ * Met à jour UNIQUEMENT la liste des résultats : la fenêtre reste en place et
+ * le champ de recherche conserve son focus et son curseur.
+ */
+function updateResults() {
+  const box = host?.querySelector('.picker__results');
+  if (!box) return;
+  box.innerHTML = pickerResults(getState());
+  box.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
+}
+
+function renderPicker(state, entity) {
   const chips = [
     ['all', 'Tous'],
     ['fav', 'Favoris'],
@@ -248,17 +314,6 @@ function renderPicker(state, entity) {
         `<button class="chip" data-cat="${id}" aria-pressed="${pickerCategory === id}">${esc(label)}</button>`
     )
     .join('');
-
-  const results = list.length
-    ? list
-        .map(
-          (f) => `<button data-add="${f.id}">
-            <strong>${esc(f.name)}</strong>${f.favorite ? ' ★' : ''}
-            <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} C / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})</div>
-          </button>`
-        )
-        .join('')
-    : `<div style="padding:12px" class="muted">Aucun aliment. Crée-le dans l'écran Aliments, ou ajoute-le comme ingrédient libre.</div>`;
 
   const personSelector = entity.sameComposition
     ? ''
@@ -274,7 +329,7 @@ function renderPicker(state, entity) {
     ${personSelector}
     <input type="text" data-search value="${esc(pickerQuery)}" placeholder="Rechercher un aliment…">
     <div class="chips" style="margin:10px 0">${chips}</div>
-    <div class="picker__results" style="position:static;border:1px solid var(--line);border-radius:var(--radius-sm);max-height:260px">${results}</div>
+    <div class="picker__results" style="position:static;border:1px solid var(--line);border-radius:var(--radius-sm);max-height:260px">${pickerResults(state)}</div>
     <div class="row" style="margin-top:12px">
       <input type="text" data-free-name placeholder="Ingrédient libre (ex. curry)" style="flex:2;min-width:150px">
       <input type="text" data-free-qty placeholder="Quantité (ex. au goût)" style="flex:1;min-width:120px">
@@ -287,6 +342,23 @@ function renderPicker(state, entity) {
 /* ------------------------------------------------------------------ */
 /* Interactions                                                        */
 /* ------------------------------------------------------------------ */
+
+/** Ajout d'un aliment au repas en cours (quantité initiale proposée puis ajustée). */
+function onAddFood(e) {
+  const foodId = e.currentTarget.dataset.add;
+  const food = getState().foods.find((f) => f.id === foodId);
+  if (!food) return;
+  const qty = initialQuantity(food);
+  mutate((en, s) => {
+    const item = newItem(foodId, qty, food.referenceState);
+    if (!en.sameComposition && addFor !== 'both') {
+      for (const p of PERSONS) item.qty[p] = p === addFor ? qty : 0;
+    }
+    en.items.push(item);
+    const f = s.foods.find((x) => x.id === foodId);
+    if (f) f.lastUsed = new Date().toISOString();
+  });
+}
 
 function wire(root, entity) {
   root.querySelector('[data-close]')?.addEventListener('click', closeEditor);
@@ -327,15 +399,27 @@ function wire(root, entity) {
     input.addEventListener('change', (e) => {
       const id = e.target.dataset.qty;
       const person = e.target.dataset.person;
-      const value = Math.max(0, Number(String(e.target.value).replace(',', '.')) || 0);
-      mutate((en) => {
+      const inUnits = e.target.dataset.unitmode === '1';
+      const raw = Math.max(0, Number(String(e.target.value).replace(',', '.')) || 0);
+      mutate((en, st) => {
         const it = en.items.find((i) => i.id === id);
         if (!it) return;
-        it.qty[person] = value;
-        if (en.sameComposition) {
-          // rien de plus : chaque personne garde sa propre quantité
-        }
+        const food = st.foods.find((f) => f.id === it.foodId);
+        const grams = inUnits && food ? fromUnits(food, raw) : raw;
+        // contrainte absolue : multiple entier de gramsPerUnit si non fractionnable
+        it.qty[person] = snapQuantity(food, grams);
       }, { pinned: [id] });
+    });
+  });
+
+  root.querySelectorAll('[data-unit-toggle]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const foodId = e.currentTarget.dataset.unitToggle;
+      update((st) => {
+        const f = st.foods.find((x) => x.id === foodId);
+        if (f) f.unitEntry = !f.unitEntry;
+      });
+      renderEditor();
     });
   });
 
@@ -387,12 +471,21 @@ function wire(root, entity) {
     });
   });
 
-  const search = root.querySelector('[data-search]');
-  search?.addEventListener('input', (e) => {
+  // La recherche ne reconstruit QUE la liste des résultats : le champ garde le
+  // focus et la fenêtre ne se réaffiche pas à chaque frappe.
+  root.querySelector('[data-search]')?.addEventListener('input', (e) => {
     pickerQuery = e.target.value;
-    renderEditor();
-    const s2 = document.querySelector('[data-search]');
-    if (s2) { s2.focus(); s2.setSelectionRange(s2.value.length, s2.value.length); }
+    updateResults();
+  });
+
+  root.querySelectorAll('[data-cat]').forEach((chip) => {
+    chip.addEventListener('click', (e) => {
+      pickerCategory = e.currentTarget.dataset.cat;
+      for (const c of root.querySelectorAll('[data-cat]')) {
+        c.setAttribute('aria-pressed', String(c.dataset.cat === pickerCategory));
+      }
+      updateResults();
+    });
   });
 
   root.querySelectorAll('[data-target-person]').forEach((chip) => {
@@ -402,30 +495,7 @@ function wire(root, entity) {
     });
   });
 
-  root.querySelectorAll('[data-cat]').forEach((chip) => {
-    chip.addEventListener('click', (e) => {
-      pickerCategory = e.currentTarget.dataset.cat;
-      renderEditor();
-    });
-  });
-
-  root.querySelectorAll('[data-add]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      const foodId = e.currentTarget.dataset.add;
-      const food = getState().foods.find((f) => f.id === foodId);
-      if (!food) return;
-      const qty = initialQuantity(food);
-      mutate((en, s) => {
-        const item = newItem(foodId, qty, food.referenceState);
-        if (!en.sameComposition && addFor !== 'both') {
-          for (const p of PERSONS) item.qty[p] = p === addFor ? qty : 0;
-        }
-        en.items.push(item);
-        const f = s.foods.find((x) => x.id === foodId);
-        if (f) f.lastUsed = new Date().toISOString();
-      });
-    });
-  });
+  root.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
 
   root.querySelector('[data-free-add]')?.addEventListener('click', () => {
     const nameEl = root.querySelector('[data-free-name]');

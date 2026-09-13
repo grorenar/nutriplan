@@ -72,6 +72,20 @@ export function load() {
   return state;
 }
 
+/** Complète un aliment venant d'une version antérieure (ou d'un import partiel). */
+export function normalizeFood(f) {
+  return {
+    brand: '', fiber: 0, cookedFactor: 1, unitName: '', gramsPerUnit: 0, fractionable: true,
+    price: null, packageWeight: null, batchAllowed: false, favorite: false, lastUsed: null,
+    cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+    ...f,
+    // saisie par unités entières par défaut pour un aliment non fractionnable
+    unitEntry: f.unitEntry ?? (Number(f.gramsPerUnit) > 0 && f.fractionable === false),
+  };
+}
+
+const normalizeOption = (o) => ({ cycleUses: 0, sameComposition: true, items: [], ...o });
+
 function migrate(s) {
   const base = defaultState();
   const merged = { ...base, ...s };
@@ -83,6 +97,10 @@ function migrate(s) {
   merged.batch = { overrides: {}, ...(s.batch || {}) };
   merged.meta = { ...base.meta, ...(s.meta || {}) };
   if (!Array.isArray(merged.foods) || !merged.foods.length) merged.foods = seedFoods();
+  merged.foods = merged.foods.map(normalizeFood);
+  for (const key of ['breakfasts', 'snacksAfternoon', 'snacksEvening']) {
+    merged[key] = (merged[key] || []).map(normalizeOption);
+  }
   return merged;
 }
 
@@ -201,6 +219,10 @@ export const newOption = (name = '') => ({
   id: uid('opt'),
   name,
   sameComposition: true,
+  // nombre de fois où l'option est utilisée dans le cycle en cours (0 = non utilisée).
+  // C'est ce compteur — et uniquement lui — qui fait entrer les aliments d'un
+  // catalogue dans les courses, sans rattacher l'option à un jour ni à une date.
+  cycleUses: 0,
   items: [],
 });
 
@@ -244,6 +266,10 @@ export function resetCycle() {
     s.meals = [];
     s.shopping = { purchased: {} };
     s.batch = { overrides: {} };
+    // les catalogues sont conservés : seul leur compteur d'utilisation du cycle repart à zéro
+    for (const key of ['breakfasts', 'snacksAfternoon', 'snacksEvening']) {
+      for (const o of s[key]) o.cycleUses = 0;
+    }
     ensureCycleMeals(s);
   });
 }

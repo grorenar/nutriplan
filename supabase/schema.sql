@@ -40,6 +40,13 @@ create table if not exists foods (
   batch_allowed     boolean default false,
   favorite          boolean default false,
   last_used         timestamptz,
+  unit_entry        boolean default false,          -- saisie des quantités en unités
+  cooking_method    text,                           -- four, poêle, vapeur… (libre)
+  cooking_temp      numeric,
+  cooking_time      numeric,                        -- minutes
+  prep_time         numeric,                        -- minutes
+  equipment         text,
+  instructions      text,                           -- consignes libres, reprises dans le plan de batch
   primary key (user_id, id)
 );
 
@@ -102,6 +109,8 @@ create table if not exists breakfast_options (
   id                text not null,
   name              text,
   same_composition  boolean not null default true,
+  -- nombre d'utilisations dans le cycle en cours (0 = non utilisée, donc hors courses)
+  cycle_uses        int not null default 0,
   primary key (user_id, id)
 );
 
@@ -128,6 +137,7 @@ create table if not exists snack_options (
   type              text not null,                   -- snack_afternoon | snack_evening
   name              text,
   same_composition  boolean not null default true,
+  cycle_uses        int not null default 0,
   primary key (user_id, id)
 );
 
@@ -166,6 +176,19 @@ create table if not exists batch_items (
   preparation_quantity numeric not null default 0,
   primary key (user_id, id)
 );
+
+-- ---------------------------------------------------------------- montées de version
+-- Colonnes ajoutées après coup : le script reste rejouable sans perte de données.
+alter table foods add column if not exists unit_entry boolean default false;
+alter table foods add column if not exists cooking_method text;
+alter table foods add column if not exists cooking_temp numeric;
+alter table foods add column if not exists cooking_time numeric;
+alter table foods add column if not exists prep_time numeric;
+alter table foods add column if not exists equipment text;
+alter table foods add column if not exists instructions text;
+alter table foods add column if not exists last_used timestamptz;
+alter table breakfast_options add column if not exists cycle_uses int not null default 0;
+alter table snack_options add column if not exists cycle_uses int not null default 0;
 
 -- ---------------------------------------------------------------------
 -- Sécurité : chaque compte ne voit QUE ses propres lignes.

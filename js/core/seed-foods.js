@@ -119,6 +119,44 @@ const T = [
   ['cacao', 'Cacao non sucré', 'autre', 350, 22, 12, 22, 28, 'pret', 1, 'c. à soupe', 6, true, 3.2, 250, false, false],
 ];
 
+/**
+ * Paramètres de préparation par défaut (modifiables dans la fiche aliment).
+ * Ce sont des DONNÉES, pas des règles codées : chaque aliment peut être modifié,
+ * et un aliment créé par l'utilisateur définit librement les siennes.
+ */
+const PREP = {
+  f_poulet_filet: { cookingMethod: 'Four', cookingTemp: 180, cookingTime: 25, prepTime: 10, equipment: 'Four, plat',
+    instructions: 'Cuire les filets entiers, laisser tiédir, puis couper en dés.' },
+  f_dinde_escalope: { cookingMethod: 'Poêle', cookingTemp: null, cookingTime: 12, prepTime: 5, equipment: 'Poêle',
+    instructions: 'Cuire les escalopes entières, laisser tiédir avant de couper.' },
+  f_poulet_cuisse: { cookingMethod: 'Four', cookingTemp: 190, cookingTime: 35, prepTime: 10, equipment: 'Four, plat', instructions: '' },
+  f_porc_filet: { cookingMethod: 'Four', cookingTemp: 180, cookingTime: 30, prepTime: 10, equipment: 'Four', instructions: '' },
+  f_boeuf_hache5: { cookingMethod: 'Poêle', cookingTemp: null, cookingTime: 10, prepTime: 5, equipment: 'Poêle', instructions: '' },
+  f_cabillaud: { cookingMethod: 'Four', cookingTemp: 180, cookingTime: 15, prepTime: 5, equipment: 'Four', instructions: '' },
+  f_saumon: { cookingMethod: 'Four', cookingTemp: 180, cookingTime: 15, prepTime: 5, equipment: 'Four', instructions: '' },
+  f_colin: { cookingMethod: 'Poêle', cookingTemp: null, cookingTime: 10, prepTime: 5, equipment: 'Poêle', instructions: '' },
+  f_oeuf: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 9, prepTime: 2, equipment: 'Casserole', instructions: '' },
+  f_pates_completes: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 11, prepTime: 5, equipment: 'Grande casserole',
+    instructions: 'Cuire al dente, rincer à l’eau froide et huiler légèrement si conservation.' },
+  f_pates: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 9, prepTime: 5, equipment: 'Grande casserole', instructions: '' },
+  f_riz_basmati: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 12, prepTime: 5, equipment: 'Casserole',
+    instructions: 'Cuire à l’eau, égoutter, étaler pour refroidir rapidement.' },
+  f_riz_complet: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 25, prepTime: 5, equipment: 'Casserole', instructions: '' },
+  f_ble_precuit: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 10, prepTime: 5, equipment: 'Casserole', instructions: '' },
+  f_boulgour: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 10, prepTime: 5, equipment: 'Casserole', instructions: '' },
+  f_semoule: { cookingMethod: 'Hors du feu', cookingTemp: null, cookingTime: 5, prepTime: 5, equipment: 'Saladier',
+    instructions: 'Verser un volume d’eau bouillante, couvrir, laisser gonfler.' },
+  f_pdt: { cookingMethod: 'Four', cookingTemp: 200, cookingTime: 40, prepTime: 10, equipment: 'Four, plaque', instructions: '' },
+  f_patate_douce: { cookingMethod: 'Four', cookingTemp: 200, cookingTime: 35, prepTime: 10, equipment: 'Four, plaque', instructions: '' },
+  f_haricots_verts: { cookingMethod: 'Poêle', cookingTemp: null, cookingTime: 8, prepTime: 3, equipment: 'Poêle', instructions: '' },
+  f_brocolis: { cookingMethod: 'Vapeur', cookingTemp: null, cookingTime: 10, prepTime: 5, equipment: 'Cuiseur vapeur', instructions: '' },
+  f_courgettes: { cookingMethod: 'Poêle', cookingTemp: null, cookingTime: 12, prepTime: 8, equipment: 'Poêle', instructions: '' },
+  f_carottes: { cookingMethod: 'Vapeur', cookingTemp: null, cookingTime: 15, prepTime: 8, equipment: 'Cuiseur vapeur', instructions: '' },
+  f_ratatouille: { cookingMethod: 'Poêle', cookingTemp: null, cookingTime: 20, prepTime: 10, equipment: 'Sauteuse', instructions: '' },
+  f_chou_fleur: { cookingMethod: 'Vapeur', cookingTemp: null, cookingTime: 12, prepTime: 6, equipment: 'Cuiseur vapeur', instructions: '' },
+  f_lentilles: { cookingMethod: 'Casserole', cookingTemp: null, cookingTime: 5, prepTime: 2, equipment: 'Casserole', instructions: '' },
+};
+
 export function seedFoods() {
   return T.map((r) => ({
     id: `f_${r[0]}`,
@@ -140,5 +178,14 @@ export function seedFoods() {
     batchAllowed: r[15],
     favorite: r[16],
     lastUsed: null,
+    // saisie par unités entières pour les aliments non fractionnables
+    unitEntry: r[11] > 0 && r[12] === false,
+    // paramètres de préparation (modifiables dans la fiche aliment)
+    cookingMethod: PREP[`f_${r[0]}`]?.cookingMethod || '',
+    cookingTemp: PREP[`f_${r[0]}`]?.cookingTemp ?? null,
+    cookingTime: PREP[`f_${r[0]}`]?.cookingTime ?? null,
+    prepTime: PREP[`f_${r[0]}`]?.prepTime ?? null,
+    equipment: PREP[`f_${r[0]}`]?.equipment || '',
+    instructions: PREP[`f_${r[0]}`]?.instructions || '',
   }));
 }
