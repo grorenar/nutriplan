@@ -25,6 +25,7 @@ js/views/*.js             une vue par écran + l'éditeur de repas partagé
 supabase/schema.sql       schéma PostgreSQL + RLS par compte + fonction transactionnelle
 tests/engine.test.mjs     moteur nutritionnel, batch, courses (aucune dépendance)
 tests/sync.test.mjs       schéma + transaction + RLS, sur un PostgreSQL local
+tests/autosync.test.mjs   synchronisation automatique (client Supabase simulé)
 tests/ui.test.mjs         parcours complet de l'interface (jsdom)
 ```
 
@@ -195,7 +196,14 @@ reste dans son état précédent — jamais à moitié vide. La fonction renvoie
 client. En cas d'échec, les données locales restent la référence, la mention « Échec de
 synchronisation » s'affiche dans la barre latérale et les modifications restent en attente.
 
-**Récupération.** Avant de remplacer l'état local par celui du cloud, l'application en conserve
+**Récupération automatique.** Au démarrage, au retour sur l'onglet et au retour de connexion,
+l'application interroge `settings.updated_at` — une seule ligne, une seule colonne — et ne
+télécharge la base que si cet horodatage a changé depuis la dernière fois que cet appareil l'a vue.
+Une modification locale en attente part toujours **avant** toute récupération, donc elle ne peut
+jamais être écrasée. « Récupérer du cloud » reste disponible comme forçage manuel, mais n'est plus
+nécessaire en usage normal.
+
+Avant de remplacer l'état local par celui du cloud, l'application en conserve
 une copie : Paramètres → Compte → « Restaurer la sauvegarde locale » permet de revenir en arrière.
 
 ### 5.4 Hors ligne
