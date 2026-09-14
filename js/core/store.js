@@ -45,9 +45,9 @@ export function defaultState() {
     },
     meals: [], // repas du cycle en cours (déjeuners / dîners uniquement)
     breakfasts: [],
-    snacksAfternoon: [],
-    snacksEvening: [],
+    snacks: [], // catalogue unique : 16 h et soir ne sont que des affectations
     shopping: { purchased: {} }, // foodId -> bool
+    coverage: { forced: {} },    // écarts de couverture assumés par l'utilisateur
     batch: { overrides: {} }, // `${session}:${foodId}` -> grammes préparés
     meta: { updatedAt: new Date().toISOString(), dirty: false, syncedAt: null, syncError: null },
   };
@@ -84,7 +84,50 @@ export function normalizeFood(f) {
   };
 }
 
-const normalizeOption = (o) => ({ cycleUses: 0, sameComposition: true, items: [], ...o });
+/** Compteurs d'utilisation d'une option dans le cycle, par personne. */
+export const emptyBreakfastUses = () => ({ thomas: 0, julie: 0 });
+export const emptySnackUses = () => ({
+  thomas: { afternoon: 0, evening: 0 },
+  julie: { afternoon: 0, evening: 0 },
+});
+
+const normalizeBreakfast = (o) => ({
+  sameComposition: true,
+  items: [],
+  ...o,
+  // migration depuis l'ancien compteur unique
+  uses: { ...emptyBreakfastUses(), ...(o.uses || (o.cycleUses ? { thomas: o.cycleUses, julie: o.cycleUses } : {})) },
+  cycleUses: undefined,
+});
+
+const normalizeSnack = (o, slot = 'afternoon') => {
+  const legacy = o.cycleUses
+    ? { thomas: { afternoon: slot === 'afternoon' ? o.cycleUses : 0, evening: slot === 'evening' ? o.cycleUses : 0 },
+        julie: { afternoon: slot === 'afternoon' ? o.cycleUses : 0, evening: slot === 'evening' ? o.cycleUses : 0 } }
+    : null;
+  const base = emptySnackUses();
+  const uses = o.uses || legacy || base;
+  return {
+    sameComposition: true,
+    items: [],
+    targetSlot: slot,
+    ...o,
+    uses: {
+      thomas: { ...base.thomas, ...(uses.thomas || {}) },
+      julie: { ...base.julie, ...(uses.julie || {}) },
+    },
+    cycleUses: undefined,
+  };
+};
+
+/**
+ * Normalise un état venant d'une version antérieure (ou d'un import).
+ * Exporté pour être testable : fusion des anciens catalogues de collations,
+ * conversion des anciens compteurs uniques en compteurs par personne.
+ */
+export function migrateState(s) {
+  return migrate(s);
+}
 
 function migrate(s) {
   const base = defaultState();
@@ -98,9 +141,16 @@ function migrate(s) {
   merged.meta = { ...base.meta, ...(s.meta || {}) };
   if (!Array.isArray(merged.foods) || !merged.foods.length) merged.foods = seedFoods();
   merged.foods = merged.foods.map(normalizeFood);
-  for (const key of ['breakfasts', 'snacksAfternoon', 'snacksEvening']) {
-    merged[key] = (merged[key] || []).map(normalizeOption);
-  }
+  merged.breakfasts = (merged.breakfasts || []).map(normalizeBreakfast);
+  // fusion des deux anciens catalogues de collations en un seul
+  merged.snacks = [
+    ...(merged.snacks || []).map((o) => normalizeSnack(o, o.targetSlot || 'afternoon')),
+    ...(s.snacksAfternoon || []).map((o) => normalizeSnack(o, 'afternoon')),
+    ...(s.snacksEvening || []).map((o) => normalizeSnack(o, 'evening')),
+  ];
+  delete merged.snacksAfternoon;
+  delete merged.snacksEvening;
+  merged.coverage = { forced: {}, ...(s.coverage || {}) };
   return merged;
 }
 
@@ -215,15 +265,20 @@ export const newMeal = (dayIndex, mealType) => ({
   items: [],
 });
 
-export const newOption = (name = '') => ({
+/**
+ * Option de catalogue (petit-déjeuner ou collation).
+ * Ce sont les compteurs d'utilisation — et eux seuls — qui font entrer les
+ * aliments d'un catalogue dans le cycle et dans les courses : aucune option
+ * n'est rattachée à un jour ni à une date.
+ */
+export const newOption = (name = '', kind = 'breakfast') => ({
   id: uid('opt'),
   name,
   sameComposition: true,
-  // nombre de fois où l'option est utilisée dans le cycle en cours (0 = non utilisée).
-  // C'est ce compteur — et uniquement lui — qui fait entrer les aliments d'un
-  // catalogue dans les courses, sans rattacher l'option à un jour ni à une date.
-  cycleUses: 0,
   items: [],
+  ...(kind === 'breakfast'
+    ? { uses: emptyBreakfastUses() }
+    : { uses: emptySnackUses(), targetSlot: 'afternoon' }),
 });
 
 /** Crée les créneaux déjeuner/dîner manquants et supprime ceux hors cycle. */
@@ -241,8 +296,9 @@ export function ensureCycleMeals(s = getState()) {
   return s;
 }
 
-export function catalogKey(type) {
-  return { breakfast: 'breakfasts', snack_afternoon: 'snacksAfternoon', snack_evening: 'snacksEvening' }[type];
+/** Clé de l'état pour un type de catalogue. */
+export function catalogKey(kind) {
+  return { breakfast: 'breakfasts', snack: 'snacks' }[kind];
 }
 
 /* ------------------------------------------------------------------ */
@@ -266,10 +322,10 @@ export function resetCycle() {
     s.meals = [];
     s.shopping = { purchased: {} };
     s.batch = { overrides: {} };
-    // les catalogues sont conservés : seul leur compteur d'utilisation du cycle repart à zéro
-    for (const key of ['breakfasts', 'snacksAfternoon', 'snacksEvening']) {
-      for (const o of s[key]) o.cycleUses = 0;
-    }
+    // les catalogues sont conservés : seuls leurs compteurs d'utilisation repartent à zéro
+    for (const o of s.breakfasts) o.uses = emptyBreakfastUses();
+    for (const o of s.snacks) o.uses = emptySnackUses();
+    s.coverage = { forced: {} };
     ensureCycleMeals(s);
   });
 }

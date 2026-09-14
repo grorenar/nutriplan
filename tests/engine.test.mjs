@@ -13,8 +13,10 @@ import {
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
+  coverageReport, optionUses,
 } from '../js/core/derive.js';
 import { seedFoods } from '../js/core/seed-foods.js';
+import { migrateState } from '../js/core/store.js';
 import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
 
 /* ---------------------------------------------------------------- harnais */
@@ -570,53 +572,178 @@ test('Courses — besoin, conditionnements, surplus, budget', () => {
   check('dépassement calculé mais non bloquant', buildShoppingList({ ...s, settings: { ...s.settings, budget: 10 } }, local).overBudget > 0);
 });
 
-test('Courses — petits-déjeuners et collations utilisés dans le cycle', () => {
-  const base = batchState();
-  base.meals = [mkMeal(0, 'lunch', [item(F('Riz basmati'), 0, { thomas: 100, julie: 80 })])];
-  base.breakfasts = [
-    { id: 'b1', name: 'Skyr + avoine', sameComposition: true, cycleUses: 0,
+/** État minimal pour les tests de catalogue (cycle de 6 jours). */
+function catalogState(duration = 6) {
+  const st = batchState();
+  st.settings.cycle = { startWeekday: 1, duration };
+  st.meals = [mkMeal(0, 'lunch', [item(F('Riz basmati'), 0, { thomas: 100, julie: 80 })])];
+  st.breakfasts = [
+    { id: 'b1', name: 'Overnight oats', sameComposition: true, uses: { thomas: 0, julie: 0 },
       items: [item(F('Skyr'), 0, { thomas: 150, julie: 150 }), item(F('Flocons'), 0, { thomas: 80, julie: 60 })] },
-    { id: 'b2', name: 'Option non utilisée', sameComposition: true, cycleUses: 0,
-      items: [item(F('Pain de mie'), 0, { thomas: 66, julie: 33 })] },
+    { id: 'b2', name: 'Wasa + poulet', sameComposition: true, uses: { thomas: 0, julie: 0 },
+      items: [item(F('Pain croustillant'), 0, { thomas: 33, julie: 22 })] },
   ];
-  base.snacksAfternoon = [
-    { id: 's1', name: 'Skyr fruits rouges', sameComposition: true, cycleUses: 0,
-      items: [item(F('Skyr'), 0, { thomas: 150, julie: 150 }), item(F('Fruits rouges'), 0, { thomas: 100, julie: 100 })] },
+  st.snacks = [
+    { id: 's1', name: 'Whey + cajous', sameComposition: true, targetSlot: 'afternoon',
+      uses: { thomas: { afternoon: 0, evening: 0 }, julie: { afternoon: 0, evening: 0 } },
+      items: [item(F('Protéine en poudre'), 0, { thomas: 30, julie: 20 }), item(F('cajou'), 0, { thomas: 20, julie: 15 })] },
+    { id: 's2', name: 'Skyr + fruits rouges', sameComposition: true, targetSlot: 'evening',
+      uses: { thomas: { afternoon: 0, evening: 0 }, julie: { afternoon: 0, evening: 0 } },
+      items: [item(F('Skyr'), 0, { thomas: 150, julie: 150 })] },
   ];
-  base.snacksEvening = [
-    { id: 'e1', name: 'Amandes', sameComposition: true, cycleUses: 0, items: [item(F('Amandes'), 0, { thomas: 20, julie: 15 })] },
-  ];
+  st.coverage = { forced: {} };
+  return st;
+}
 
-  const names = (st) => buildShoppingList(st, byId).lines.map((l) => l.food.name);
-  check('option non utilisée : absente des courses', !names(base).some((n) => n.includes('Skyr')));
-  check('seul le repas du planning est compté', names(base).length === 1, names(base).join(', '));
+test('Petits-déjeuners — couverture du cycle par personne', () => {
+  const st = catalogState(6);
+  const cov = () => coverageReport(st).breakfast;
 
-  // on déclare les utilisations dans le cycle
-  base.breakfasts[0].cycleUses = 4;
-  base.snacksAfternoon[0].cycleUses = 2;
-  base.snacksEvening[0].cycleUses = 1;
-  const list = buildShoppingList(base, byId);
-  const line = (frag) => list.lines.find((l) => l.food.name.toLowerCase().includes(frag));
+  check('besoin théorique = durée du cycle', cov().needed === 6);
+  check('0 déclaré → manque signalé pour les deux',
+    cov().persons.thomas.status === 'missing' && cov().persons.julie.status === 'missing');
+
+  // Thomas 3 + 3 = 6, Julie 2 + 3 = 5
+  st.breakfasts[0].uses = { thomas: 3, julie: 2 };
+  st.breakfasts[1].uses = { thomas: 3, julie: 3 };
+  const r = cov();
+  info(`Thomas ${r.persons.thomas.used}/${r.persons.thomas.needed} · Julie ${r.persons.julie.used}/${r.persons.julie.needed}`);
+  check('Thomas 6 / 6 → ok', r.persons.thomas.used === 6 && r.persons.thomas.status === 'ok');
+  check('Julie 5 / 6 → avertissement', r.persons.julie.used === 5 && r.persons.julie.status === 'missing');
+  check('manque chiffré', r.persons.julie.delta === -1);
+  check('Thomas et Julie comptés indépendamment', r.persons.thomas.used !== r.persons.julie.used);
+
+  // forçage : l'écart est assumé, l'avertissement reste
+  st.coverage.forced.breakfast = true;
+  check('écart assumé mémorisé', cov().persons.julie.forced === true);
+  check('l’avertissement reste visible malgré le forçage', cov().persons.julie.status === 'missing');
+  check('aucun compteur modifié automatiquement',
+    st.breakfasts[0].uses.julie === 2 && st.breakfasts[1].uses.julie === 3);
+
+  // dépassement : information, jamais blocage
+  st.breakfasts[1].uses.julie = 5;
+  const r2 = cov();
+  check('Julie 7 / 6 → information', r2.persons.julie.used === 7 && r2.persons.julie.status === 'extra');
+  check('surplus chiffré', r2.persons.julie.delta === 1);
+  check('le cycle reste exploitable', buildShoppingList(st, byId).lines.length > 0);
+
+  // la durée du cycle pilote le besoin
+  st.settings.cycle.duration = 4;
+  check('cycle de 4 jours → besoin 4', coverageReport(st).breakfast.needed === 4);
+});
+
+test('Collations — catalogue unique, affectations 16 h / soir', () => {
+  const st = catalogState(6);
+  const cov = () => coverageReport(st);
+
+  check('un seul catalogue de collations', Array.isArray(st.snacks) && st.snacksAfternoon === undefined);
+  check('une collation a une composition unique', st.snacks[0].items.length === 2);
+
+  // Thomas : 3 × 16 h + 2 × soir ; Julie : 2 × 16 h + 1 × soir (option 1)
+  st.snacks[0].uses = { thomas: { afternoon: 3, evening: 2 }, julie: { afternoon: 2, evening: 1 } };
+  st.snacks[1].uses = { thomas: { afternoon: 3, evening: 3 }, julie: { afternoon: 4, evening: 5 } };
+
+  const r = cov();
+  info(`16 h — Thomas ${r.snack_afternoon.persons.thomas.used}/6, Julie ${r.snack_afternoon.persons.julie.used}/6`);
+  info(`soir — Thomas ${r.snack_evening.persons.thomas.used}/6, Julie ${r.snack_evening.persons.julie.used}/6`);
+  check('Thomas 16 h : 6 / 6 ✓', r.snack_afternoon.persons.thomas.status === 'ok');
+  check('Thomas soir : 5 / 6 ⚠️', r.snack_evening.persons.thomas.used === 5 && r.snack_evening.persons.thomas.status === 'missing');
+  check('Julie 16 h : 6 / 6 ✓', r.snack_afternoon.persons.julie.status === 'ok');
+  check('Julie soir : 6 / 6 ✓', r.snack_evening.persons.julie.status === 'ok');
+  check('16 h et soir comptés séparément',
+    r.snack_afternoon.persons.thomas.used !== r.snack_evening.persons.thomas.used);
+  check('Thomas et Julie indépendants sur le même créneau',
+    r.snack_evening.persons.thomas.used !== r.snack_evening.persons.julie.used);
+
+  st.coverage.forced.snack_evening = true;
+  check('forçage possible sur un seul créneau',
+    cov().snack_evening.persons.thomas.forced === true && cov().snack_afternoon.persons.thomas.forced === false);
+  check('avertissement toujours affiché', cov().snack_evening.persons.thomas.status === 'missing');
+
+  st.snacks[1].uses.thomas.evening = 6;
+  check('Thomas soir : 8 / 6 → information', cov().snack_evening.persons.thomas.status === 'extra');
+
+  // total des utilisations, toutes affectations confondues
+  const total = optionUses(st.snacks[0], 'snack');
+  check('total Thomas = 3 × 16 h + 2 × soir = 5', total.thomas === 5, `${total.thomas}`);
+  check('total Julie = 2 × 16 h + 1 × soir = 3', total.julie === 3, `${total.julie}`);
+});
+
+test('Courses — petits-déjeuners et collations du cycle', () => {
+  const st = catalogState(6);
+  const names = () => buildShoppingList(st, byId).lines.map((l) => l.food.name);
+  check('options non utilisées : absentes des courses', !names().some((n) => /flocons|whey|protéine/i.test(n)));
+  check('seul le repas du planning est compté', names().length === 1, names().join(', '));
+
+  st.breakfasts[0].uses = { thomas: 4, julie: 2 };
+  st.snacks[0].uses = { thomas: { afternoon: 3, evening: 2 }, julie: { afternoon: 2, evening: 1 } };
+
+  const list = buildShoppingList(st, byId);
+  const line = (frag) => list.lines.find((l) => new RegExp(frag, 'i').test(l.food.name));
   info(list.lines.map((l) => `${l.food.name} ${Math.round(l.required)} g`).join(' | '));
 
-  check('petit-déjeuner utilisé 4 fois : flocons = 4 × 140 g', Math.abs(line('flocons').required - 560) < 0.01,
-    `${line('flocons').required}`);
-  check('skyr agrégé sur le petit-déjeuner ET la collation',
-    Math.abs(line('skyr').required - (4 * 300 + 2 * 300)) < 0.01, `${line('skyr').required}`);
-  check('collation du soir comptée une fois', Math.abs(line('amandes').required - 35) < 0.01);
-  check('option toujours non utilisée : absente', !list.lines.some((l) => l.food.name.includes('Pain de mie')));
+  // flocons : 4 × 80 (Thomas) + 2 × 60 (Julie) = 440 g
+  check('petit-déjeuner : quantités multipliées par personne',
+    Math.abs(line('flocons').required - (4 * 80 + 2 * 60)) < 0.01, `${line('flocons').required}`);
+  // skyr : petit-déjeuner 4 × 150 + 2 × 150 = 900 g
+  check('skyr agrégé sur le petit-déjeuner', Math.abs(line('skyr').required - 900) < 0.01, `${line('skyr').required}`);
+  // whey : Thomas 5 × 30 + Julie 3 × 20 = 210 g (16 h + soir additionnés)
+  check('collation : 16 h et soir additionnés par personne',
+    Math.abs(line('protéine').required - (5 * 30 + 3 * 20)) < 0.01, `${line('protéine').required}`);
+  check('exemple du cahier des charges : 150 + 60 = 210 g de whey', Math.round(line('protéine').required) === 210);
+  check('cajous : 5 × 20 + 3 × 15 = 145 g', Math.abs(line('cajou').required - 145) < 0.01, `${line('cajou').required}`);
   check('repas du planning toujours compté', Math.abs(line('riz').required - 180) < 0.01);
-  check('conditionnements appliqués comme pour les repas',
-    line('skyr').packages === Math.ceil(1800 / line('skyr').packageWeight), `${line('skyr').packages} paquets`);
-  check('surplus et prix calculés', line('skyr').surplus >= 0 && line('skyr').cost > 0);
-  check('cases "acheté" disponibles pour ces aliments', line('flocons').purchased === false);
 
-  // cycleSources : le catalogue n'entre dans le cycle que par son compteur
-  check('cycleSources reflète les utilisations',
-    cycleSources(base).filter((x) => x.option).map((x) => x.factor).join(',') === '4,2,1');
-  base.breakfasts[0].cycleUses = 0;
-  check('compteur remis à zéro : aliments retirés des courses',
-    !buildShoppingList(base, byId).lines.some((l) => l.food.name.includes('Flocons')));
+  // le système existant continue de s'appliquer
+  check('conditionnements appliqués',
+    line('protéine').packages === Math.ceil(210 / line('protéine').packageWeight), `${line('protéine').packages}`);
+  check('surplus calculé', line('protéine').surplus === line('protéine').packages * line('protéine').packageWeight - 210);
+  check('prix calculé', line('protéine').cost > 0);
+  check('case "acheté" disponible', line('protéine').purchased === false);
+  check('aucune notion de stock', Object.keys(line('protéine')).every((k) => !/stock|remaining/i.test(k)));
+
+  // la même collation ajoutée au soir augmente le besoin
+  const before = line('protéine').required;
+  st.snacks[0].uses.thomas.evening += 1;
+  check('une utilisation supplémentaire le soir augmente le besoin de 30 g',
+    Math.abs(buildShoppingList(st, byId).lines.find((l) => /protéine/i.test(l.food.name)).required - (before + 30)) < 0.01);
+
+  // cycleSources : facteurs par personne
+  const sources = cycleSources(st).filter((x) => x.option);
+  check('facteurs par personne dans les sources',
+    sources.some((x) => x.factors.thomas === 4 && x.factors.julie === 2) &&
+    sources.some((x) => x.factors.thomas === 6 && x.factors.julie === 3));
+  st.breakfasts[0].uses = { thomas: 0, julie: 0 };
+  check('compteurs remis à zéro : aliments retirés des courses',
+    !buildShoppingList(st, byId).lines.some((l) => /flocons/i.test(l.food.name)));
+});
+
+test('Migration — ancien modèle de catalogues converti sans perte', () => {
+  const old = {
+    version: 1,
+    foods: seedFoods(),
+    settings: { cycle: { startWeekday: 1, duration: 6 } },
+    meals: [],
+    breakfasts: [{ id: 'b1', name: 'Oats', sameComposition: true, cycleUses: 3, items: [] }],
+    snacksAfternoon: [{ id: 's1', name: 'Whey', sameComposition: true, cycleUses: 2, items: [] }],
+    snacksEvening: [{ id: 's2', name: 'Skyr', sameComposition: true, cycleUses: 1, items: [] }],
+  };
+  const next = migrateState(old);
+  check('les deux catalogues de collations sont fusionnés', next.snacks.length === 2);
+  check('anciens catalogues supprimés', next.snacksAfternoon === undefined && next.snacksEvening === undefined);
+  check('ancien compteur de petit-déjeuner réparti sur les deux personnes',
+    next.breakfasts[0].uses.thomas === 3 && next.breakfasts[0].uses.julie === 3,
+    JSON.stringify(next.breakfasts[0].uses));
+  const whey = next.snacks.find((o) => o.id === 's1');
+  const skyr = next.snacks.find((o) => o.id === 's2');
+  check('collation 16 h convertie en affectation 16 h',
+    whey.uses.thomas.afternoon === 2 && whey.uses.thomas.evening === 0, JSON.stringify(whey.uses.thomas));
+  check('collation du soir convertie en affectation soir',
+    skyr.uses.julie.evening === 1 && skyr.uses.julie.afternoon === 0, JSON.stringify(skyr.uses.julie));
+  check('objectif de référence repris du catalogue d’origine',
+    whey.targetSlot === 'afternoon' && skyr.targetSlot === 'evening');
+  check('ingrédients et noms préservés', whey.name === 'Whey' && Array.isArray(whey.items));
+  check('couverture calculable après migration', coverageReport(next).snack_evening.persons.julie.used === 1);
 });
 
 test('Doublons — avertissement à la création, jamais de fusion', () => {

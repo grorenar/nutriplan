@@ -109,8 +109,9 @@ create table if not exists breakfast_options (
   id                text not null,
   name              text,
   same_composition  boolean not null default true,
-  -- nombre d'utilisations dans le cycle en cours (0 = non utilisée, donc hors courses)
-  cycle_uses        int not null default 0,
+  -- utilisations dans le cycle en cours, par personne (0 = non utilisée, donc hors courses)
+  uses_thomas       int not null default 0,
+  uses_julie        int not null default 0,
   primary key (user_id, id)
 );
 
@@ -131,13 +132,19 @@ create table if not exists breakfast_items (
 );
 create index if not exists breakfast_items_option_idx on breakfast_items (user_id, option_id);
 
+-- Catalogue UNIQUE de collations : 16 h et soir ne sont que des affectations
+-- de consommation dans le cycle, pas deux compositions différentes.
 create table if not exists snack_options (
-  user_id           uuid not null default auth.uid() references auth.users(id) on delete cascade,
-  id                text not null,
-  type              text not null,                   -- snack_afternoon | snack_evening
-  name              text,
-  same_composition  boolean not null default true,
-  cycle_uses        int not null default 0,
+  user_id                uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  id                     text not null,
+  type                   text not null default 'snack',
+  name                   text,
+  same_composition       boolean not null default true,
+  target_slot            text not null default 'afternoon', -- objectif de référence : afternoon | evening
+  uses_thomas_afternoon  int not null default 0,
+  uses_thomas_evening    int not null default 0,
+  uses_julie_afternoon   int not null default 0,
+  uses_julie_evening     int not null default 0,
   primary key (user_id, id)
 );
 
@@ -187,8 +194,14 @@ alter table foods add column if not exists prep_time numeric;
 alter table foods add column if not exists equipment text;
 alter table foods add column if not exists instructions text;
 alter table foods add column if not exists last_used timestamptz;
-alter table breakfast_options add column if not exists cycle_uses int not null default 0;
-alter table snack_options add column if not exists cycle_uses int not null default 0;
+alter table breakfast_options add column if not exists uses_thomas int not null default 0;
+alter table breakfast_options add column if not exists uses_julie int not null default 0;
+alter table snack_options add column if not exists target_slot text not null default 'afternoon';
+alter table snack_options add column if not exists uses_thomas_afternoon int not null default 0;
+alter table snack_options add column if not exists uses_thomas_evening int not null default 0;
+alter table snack_options add column if not exists uses_julie_afternoon int not null default 0;
+alter table snack_options add column if not exists uses_julie_evening int not null default 0;
+alter table snack_options alter column type set default 'snack';
 
 -- ---------------------------------------------------------------------
 -- Sécurité : chaque compte ne voit QUE ses propres lignes.

@@ -201,22 +201,26 @@ export function stateToTables(s) {
   const meal_items = s.meals.flatMap((m) => m.items.flatMap((it) => itemRows(it, 'meal_id', m.id)));
 
   const breakfast_options = s.breakfasts.map((o) => ({
-    id: o.id, name: o.name, same_composition: o.sameComposition, cycle_uses: Number(o.cycleUses) || 0,
+    id: o.id,
+    name: o.name,
+    same_composition: o.sameComposition,
+    uses_thomas: Number(o.uses?.thomas) || 0,
+    uses_julie: Number(o.uses?.julie) || 0,
   }));
   const breakfast_items = s.breakfasts.flatMap((o) => o.items.flatMap((it) => itemRows(it, 'option_id', o.id)));
 
-  const snackSets = [
-    ['snack_afternoon', s.snacksAfternoon],
-    ['snack_evening', s.snacksEvening],
-  ];
-  const snack_options = snackSets.flatMap(([type, list]) =>
-    list.map((o) => ({
-      id: o.id, type, name: o.name, same_composition: o.sameComposition, cycle_uses: Number(o.cycleUses) || 0,
-    }))
-  );
-  const snack_items = snackSets.flatMap(([, list]) =>
-    list.flatMap((o) => o.items.flatMap((it) => itemRows(it, 'option_id', o.id)))
-  );
+  const snack_options = s.snacks.map((o) => ({
+    id: o.id,
+    type: 'snack', // catalogue unique : 16 h / soir ne sont que des affectations
+    name: o.name,
+    same_composition: o.sameComposition,
+    target_slot: o.targetSlot === 'evening' ? 'evening' : 'afternoon',
+    uses_thomas_afternoon: Number(o.uses?.thomas?.afternoon) || 0,
+    uses_thomas_evening: Number(o.uses?.thomas?.evening) || 0,
+    uses_julie_afternoon: Number(o.uses?.julie?.afternoon) || 0,
+    uses_julie_evening: Number(o.uses?.julie?.evening) || 0,
+  }));
+  const snack_items = s.snacks.flatMap((o) => o.items.flatMap((it) => itemRows(it, 'option_id', o.id)));
 
   const shopping_items = Object.entries(s.shopping.purchased).map(([foodId, purchased]) => ({
     id: `shop:${foodId}`,
@@ -279,22 +283,21 @@ export function tablesToState(t) {
     id: o.id,
     name: o.name,
     sameComposition: o.same_composition !== false,
-    cycleUses: Number(o.cycle_uses) || 0,
+    uses: { thomas: Number(o.uses_thomas) || 0, julie: Number(o.uses_julie) || 0 },
     items: itemsFromRows(t.breakfast_items || [], 'option_id', o.id),
   }));
 
-  const snacks = (type) =>
-    (t.snack_options || [])
-      .filter((o) => o.type === type)
-      .map((o) => ({
-        id: o.id,
-        name: o.name,
-        sameComposition: o.same_composition !== false,
-        cycleUses: Number(o.cycle_uses) || 0,
-        items: itemsFromRows(t.snack_items || [], 'option_id', o.id),
-      }));
-  s.snacksAfternoon = snacks('snack_afternoon');
-  s.snacksEvening = snacks('snack_evening');
+  s.snacks = (t.snack_options || []).map((o) => ({
+    id: o.id,
+    name: o.name,
+    sameComposition: o.same_composition !== false,
+    targetSlot: o.target_slot === 'evening' ? 'evening' : 'afternoon',
+    uses: {
+      thomas: { afternoon: Number(o.uses_thomas_afternoon) || 0, evening: Number(o.uses_thomas_evening) || 0 },
+      julie: { afternoon: Number(o.uses_julie_afternoon) || 0, evening: Number(o.uses_julie_evening) || 0 },
+    },
+    items: itemsFromRows(t.snack_items || [], 'option_id', o.id),
+  }));
 
   s.shopping.purchased = Object.fromEntries((t.shopping_items || []).map((r) => [r.food_id, r.purchased]));
   s.batch.overrides = Object.fromEntries(

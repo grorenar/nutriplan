@@ -254,7 +254,7 @@ function wire(root) {
     const s = getState();
     const used =
       s.meals.some((m) => m.items.some((i) => i.foodId === id)) ||
-      [...s.breakfasts, ...s.snacksAfternoon, ...s.snacksEvening].some((o) => o.items.some((i) => i.foodId === id));
+      [...s.breakfasts, ...s.snacks].some((o) => o.items.some((i) => i.foodId === id));
     if (!confirm(used ? 'Cet aliment est utilisé dans des repas. Le supprimer quand même ?' : 'Supprimer cet aliment ?')) return;
     update((st) => { st.foods = st.foods.filter((x) => x.id !== id); });
     editing = null;

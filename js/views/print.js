@@ -2,7 +2,7 @@
 
 import { getState, foodsById } from '../core/store.js';
 import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core/nutrition.js';
-import { buildBatchPlan, buildShoppingList, BATCH_CATEGORY_LABEL } from '../core/derive.js';
+import { buildBatchPlan, buildShoppingList, BATCH_CATEGORY_LABEL, coverageReport } from '../core/derive.js';
 import { dayName, esc, grams, euros, num } from '../core/util.js';
 
 export function openPrintDialog() {
@@ -203,20 +203,38 @@ function nutritionSection(s, byId) {
 }
 
 function catalogsSection(s, byId) {
-  const block = (title, list) => `<h3>${esc(title)}</h3>${
+  const usesLine = (o, kind) =>
+    kind === 'breakfast'
+      ? `Utilisations : Thomas ${Number(o.uses?.thomas) || 0} · Julie ${Number(o.uses?.julie) || 0}`
+      : `Utilisations : Thomas ${Number(o.uses?.thomas?.afternoon) || 0} × 16 h, ${Number(o.uses?.thomas?.evening) || 0} × soir · ` +
+        `Julie ${Number(o.uses?.julie?.afternoon) || 0} × 16 h, ${Number(o.uses?.julie?.evening) || 0} × soir`;
+
+  const block = (title, list, kind) => `<h3>${esc(title)}</h3>${
     list.length
       ? list
           .map(
-            (o) => `<p><strong>${esc(o.name || 'Sans nom')}</strong><ul>${o.items
+            (o) => `<p><strong>${esc(o.name || 'Sans nom')}</strong> — ${esc(usesLine(o, kind))}<ul>${o.items
               .map((it) => `<li>${itemLine(it, byId)}</li>`)
               .join('')}</ul></p>`
           )
           .join('')
       : '<p>Aucune option.</p>'
   }`;
+
+  const cov = coverageReport(s);
+  const covRows = Object.values(cov)
+    .map(
+      (slot) =>
+        `<tr><td>${esc(slot.label)}</td>${PERSONS.map(
+          (p) => `<td class="nums">${slot.persons[p].used} / ${slot.persons[p].needed}</td>`
+        ).join('')}</tr>`
+    )
+    .join('');
+
   return `<div class="print-section"><h2>Catalogues</h2>
-    ${block('Petits-déjeuners', s.breakfasts)}
-    ${block('Collations 16 h', s.snacksAfternoon)}
-    ${block('Collations du soir', s.snacksEvening)}
+    <table><thead><tr><th>Couverture du cycle</th>${PERSONS.map((p) => `<th>${PERSON_LABEL[p]}</th>`).join('')}</tr></thead>
+    <tbody>${covRows}</tbody></table>
+    ${block('Petits-déjeuners', s.breakfasts, 'breakfast')}
+    ${block('Collations', s.snacks, 'snack')}
   </div>`;
 }

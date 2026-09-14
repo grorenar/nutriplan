@@ -5,23 +5,35 @@
 
 import { convertGrams, toReferenceGrams, PERSONS, mealMacros } from './nutrition.js';
 
+/** Utilisations totales d'une option de catalogue, par personne. */
+export function optionUses(option, kind) {
+  if (kind === 'breakfast') {
+    return { thomas: Number(option.uses?.thomas) || 0, julie: Number(option.uses?.julie) || 0 };
+  }
+  const total = (p) => (Number(option.uses?.[p]?.afternoon) || 0) + (Number(option.uses?.[p]?.evening) || 0);
+  return { thomas: total('thomas'), julie: total('julie') };
+}
+
 /**
  * Sources d'un cycle : les repas du planning (déjeuners/dîners) + les options
- * de catalogue effectivement utilisées (compteur cycleUses > 0).
- * Les catalogues restent indépendants des jours : seul ce compteur les fait
- * entrer dans le cycle.
+ * de catalogue effectivement utilisées. Les catalogues restent indépendants des
+ * jours : seuls leurs compteurs d'utilisation les font entrer dans le cycle.
+ * Chaque source porte un facteur PAR PERSONNE, car Thomas et Julie peuvent
+ * utiliser une même option un nombre de fois différent.
  */
 export function cycleSources(state) {
-  const sources = state.meals.map((m) => ({ items: m.items, factor: 1, meal: m, dayIndex: m.dayIndex, mealType: m.mealType }));
-  const catalogs = [
-    ['breakfasts', 'breakfast'],
-    ['snacksAfternoon', 'snack_afternoon'],
-    ['snacksEvening', 'snack_evening'],
-  ];
-  for (const [key, mealType] of catalogs) {
+  const sources = state.meals.map((m) => ({
+    items: m.items,
+    factors: { thomas: 1, julie: 1 },
+    meal: m,
+    dayIndex: m.dayIndex,
+    mealType: m.mealType,
+  }));
+
+  for (const [key, kind] of [['breakfasts', 'breakfast'], ['snacks', 'snack']]) {
     for (const option of state[key] || []) {
-      const factor = Number(option.cycleUses) || 0;
-      if (factor > 0) sources.push({ items: option.items, factor, option, mealType });
+      const factors = optionUses(option, kind);
+      if (factors.thomas > 0 || factors.julie > 0) sources.push({ items: option.items, factors, option, kind });
     }
   }
   return sources;
@@ -29,29 +41,73 @@ export function cycleSources(state) {
 
 /**
  * Besoins agrégés par aliment sur une liste de sources.
- * Chaque source est un objet { items, factor } : un repas du planning compte
- * une fois, une option de catalogue compte autant de fois qu'elle est utilisée.
+ * Le facteur est appliqué PAR PERSONNE avant agrégation : les quantités de
+ * Thomas et de Julie peuvent différer et leurs nombres d'utilisations aussi.
  */
 export function aggregateNeeds(sources, foodsById) {
   const out = {}; // foodId -> { food, refGrams, servedGrams, uses, days:Set }
   for (const source of sources) {
-    const factor = Number(source.factor) > 0 ? Number(source.factor) : 1;
+    const factors = source.factors || { thomas: source.factor ?? 1, julie: source.factor ?? 1 };
+    const maxFactor = Math.max(factors.thomas || 0, factors.julie || 0);
     for (const it of source.items) {
       if (!it.foodId) continue;
       const food = foodsById[it.foodId];
       if (!food) continue;
-      const served = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
+      const served = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0) * (factors[p] || 0), 0);
       if (!served) continue;
       const state = it.state || food.referenceState;
-      const ref = toReferenceGrams(food, served, state) * factor;
+      const ref = toReferenceGrams(food, served, state);
       if (!out[food.id]) out[food.id] = { food, refGrams: 0, servedGrams: 0, uses: 0, days: new Set() };
       out[food.id].refGrams += ref;
-      out[food.id].servedGrams += served * factor;
-      out[food.id].uses += factor;
+      out[food.id].servedGrams += served;
+      out[food.id].uses += maxFactor;
       if (source.dayIndex !== undefined) out[food.id].days.add(source.dayIndex);
     }
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Couverture du cycle (petits-déjeuners et collations)                */
+/* ------------------------------------------------------------------ */
+
+export const COVERAGE_SLOTS = [
+  { key: 'breakfast', kind: 'breakfast', label: 'Petits-déjeuners' },
+  { key: 'snack_afternoon', kind: 'snack', slot: 'afternoon', label: 'Collations 16 h' },
+  { key: 'snack_evening', kind: 'snack', slot: 'evening', label: 'Collations du soir' },
+];
+
+/**
+ * Couverture du cycle : nombre d'options déclarées face au nombre théorique
+ * (un par jour de cycle et par personne). Purement informatif : rien n'est
+ * ajouté, choisi ni corrigé automatiquement.
+ */
+export function coverageReport(state) {
+  const needed = state.settings.cycle.duration;
+  const forced = state.coverage?.forced || {};
+  const report = {};
+
+  for (const slot of COVERAGE_SLOTS) {
+    const rows = {};
+    for (const person of PERSONS) {
+      let used = 0;
+      if (slot.kind === 'breakfast') {
+        for (const o of state.breakfasts || []) used += Number(o.uses?.[person]) || 0;
+      } else {
+        for (const o of state.snacks || []) used += Number(o.uses?.[person]?.[slot.slot]) || 0;
+      }
+      const delta = used - needed;
+      rows[person] = {
+        used,
+        needed,
+        delta,
+        status: delta === 0 ? 'ok' : delta < 0 ? 'missing' : 'extra',
+        forced: !!forced[slot.key],
+      };
+    }
+    report[slot.key] = { ...slot, needed, persons: rows, forced: !!forced[slot.key] };
+  }
+  return report;
 }
 
 /* ------------------------------------------------------------------ */

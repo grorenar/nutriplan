@@ -43,9 +43,10 @@ foods[]            id, name, category, brand, kcal, protein, carbs, fat, fiber,
 settings           targets{thomas|julie}{day|breakfast|lunch|snack_afternoon|dinner|snack_evening}
                    tolerance, cycle{startWeekday,duration}, budget, batch{enabled,maxDays}, autoAdjust
 meals[]            id, dayIndex, mealType(lunch|dinner), name, sameComposition, items[]
-breakfasts[]       id, name, sameComposition, cycleUses, items[]   (catalogue, sans jour ni date)
-snacksAfternoon[]  idem
-snacksEvening[]    idem
+breakfasts[]       id, name, sameComposition, uses{thomas,julie}, items[]
+snacks[]           id, name, sameComposition, targetSlot, items[],
+                   uses{thomas:{afternoon,evening}, julie:{afternoon,evening}}
+coverage.forced    {breakfast|snack_afternoon|snack_evening: bool}  écarts assumés
 items[]            id, foodId|null, free{name,quantity}|null, state,
                    qty{thomas,julie}, locked{thomas,julie}
 shopping.purchased {foodId: bool}        ← simple case "acheté", aucun stock
@@ -122,8 +123,8 @@ Garanties de l'algorithme :
 |---|---|
 | Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication, bouton « Optimiser le cycle » (suggestions uniquement) |
 | Aliments | banque complète, recherche, favoris, création/modification/suppression |
-| Petits-déjeuners | catalogue indépendant, sans jour ni date ; un compteur « utilisée N fois dans ce cycle » les fait entrer dans les courses |
-| Collations | catalogues 16 h et soir, même fonctionnement |
+| Petits-déjeuners | catalogue indépendant, sans jour ni date ; compteur d'utilisations **par personne**, avec contrôle de couverture du cycle |
+| Collations | **catalogue unique** : une collation a une composition unique, 16 h et Soir ne sont que des affectations de consommation (compteurs par personne et par créneau) |
 | Batch cooking | plan opératoire par session : **à préparer en batch** (méthode, température, durée, rendement, quantités crues et cuites, consignes), **à cuire le jour même**, **à assembler le jour même**, puis le détail de chaque gamelle personne par personne |
 | Courses | tout le cycle (déjeuners, dîners et options de catalogue utilisées) : besoin vs quantité à acheter, surplus, prix, cases à cocher, budget |
 | Paramètres | objectifs, cycle, budget, batch, export/import JSON, réinitialisation du cycle, compte |
@@ -194,7 +195,30 @@ automatiquement au retour de la connexion (ou via Paramètres → Envoyer vers l
 Comme Thomas et Julie n'utilisent jamais l'application en même temps, la synchronisation est un
 remplacement complet : aucune gestion de conflit.
 
-## 6. Fiche aliment
+## 6. Catalogues et couverture du cycle
+
+Les petits-déjeuners et les collations ne sont jamais rattachés à une date. On déclare seulement
+combien de fois chaque option est utilisée dans le cycle, séparément pour Thomas et Julie — et,
+pour les collations, séparément à 16 h et le soir. La même collation peut donc être consommée
+3 fois à 16 h et 2 fois le soir sans avoir deux définitions.
+
+L'application compare ces totaux au nombre théorique (un par jour de cycle et par personne) :
+
+```
+Thomas  6 / 6 ✓
+Julie   5 / 6 ⚠️   il manque 1 option
+Julie   7 / 6 ℹ️   1 option supplémentaire est planifiée
+```
+
+Rien n'est jamais choisi, ajouté ni corrigé automatiquement. Un bouton « Forcer quand même »
+permet d'assumer un cycle volontairement incomplet ; l'avertissement reste affiché.
+
+Les besoins sont ensuite calculés par personne avant agrégation — quantité de Thomas × ses
+utilisations + quantité de Julie × les siennes — puis passent dans le système de courses existant
+(conditionnements, surplus, prix, budget, case « acheté »). Une collation a un « objectif de
+référence » (16 h ou Soir) qui sert uniquement de repère pour les macros et l'ajustement ±5 %.
+
+## 7. Fiche aliment
 
 Chaque aliment porte ses propres paramètres de préparation : méthode de cuisson, température,
 durée, temps de préparation, matériel, consignes libres, et le coefficient cru → cuit (affiché en
@@ -207,7 +231,7 @@ qui lui ressemblent (nom proche, même marque, même poids par unité, valeurs v
 devient « Créer quand même ». Le même contrôle tourne après un import JSON et liste les doublons
 possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
 
-## 7. Tests
+## 8. Tests
 
 ```bash
 node tests/engine.test.mjs    # moteur, batch, courses, unités, cru/cuit — sans dépendance
@@ -223,12 +247,12 @@ apt-get install -y postgresql && service postgresql start
 node tests/sync.test.mjs
 ```
 
-## 8. Sauvegarde
+## 9. Sauvegarde
 
 Paramètres → Données → **Exporter en JSON** produit un fichier complet (banque, objectifs,
 planning, catalogues, paramètres). **Importer un JSON** le restaure intégralement.
 
-## 9. Données livrées
+## 10. Données livrées
 
 La banque initiale contient des aliments courants avec des valeurs **génériques** : protéines,
 féculents, légumes, fruits, produits laitiers, matières grasses, oléagineux, pains et wraps.

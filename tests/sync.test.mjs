@@ -138,11 +138,13 @@ state.meals = [
   { id: 'm3', dayIndex: 1, mealType: 'lunch', name: '', sameComposition: true, items: [] },
   { id: 'm4', dayIndex: 1, mealType: 'dinner', name: '', sameComposition: true, items: [] },
 ];
-state.breakfasts = [{ id: 'b1', name: 'Skyr avoine', sameComposition: true, cycleUses: 3,
+state.breakfasts = [{ id: 'b1', name: 'Skyr avoine', sameComposition: true, uses: { thomas: 4, julie: 3 },
   items: [item(f('skyr'), 150, 150, { state: 'pret' })] }];
-state.snacksAfternoon = [{ id: 's1', name: 'Wasa poulet', sameComposition: true, cycleUses: 2,
-  items: [item(f('pain croustillant'), 33, 22, { state: 'pret' })] }];
-state.snacksEvening = [];
+state.snacks = [{
+  id: 's1', name: 'Wasa poulet', sameComposition: true, targetSlot: 'evening',
+  uses: { thomas: { afternoon: 3, evening: 2 }, julie: { afternoon: 2, evening: 1 } },
+  items: [item(f('pain croustillant'), 33, 22, { state: 'pret' })],
+}];
 state.shopping.purchased = { [f('riz basmati')]: true };
 state.batch.overrides = { [`0:${f('blanc de poulet')}`]: 1500 };
 
@@ -215,9 +217,13 @@ check('ingrédient libre conservé',
   m1.items.some((i) => i.free?.name === 'Curry' && i.free.quantity === 'au goût'));
 check('sameComposition conservé', back.meals.find((m) => m.id === 'm2').sameComposition === false);
 check('catalogue petits-déjeuners conservé', back.breakfasts.length === 1 && back.breakfasts[0].items.length === 1);
-check('compteur d’utilisation du cycle conservé',
-  back.breakfasts[0].cycleUses === 3 && back.snacksAfternoon[0].cycleUses === 2,
-  `${back.breakfasts[0].cycleUses} / ${back.snacksAfternoon[0].cycleUses}`);
+check('utilisations des petits-déjeuners par personne conservées',
+  back.breakfasts[0].uses.thomas === 4 && back.breakfasts[0].uses.julie === 3,
+  JSON.stringify(back.breakfasts[0].uses));
+check('affectations 16 h / soir des collations conservées',
+  JSON.stringify(back.snacks[0].uses) ===
+    JSON.stringify({ thomas: { afternoon: 3, evening: 2 }, julie: { afternoon: 2, evening: 1 } }),
+  JSON.stringify(back.snacks[0].uses));
 const dino = back.foods.find((x) => x.id === 'f_dino');
 check('paramètres de cuisson personnalisés conservés',
   dino.cookingMethod === 'Four' && dino.cookingTemp === 200 && dino.cookingTime === 35 && dino.prepTime === 10,
@@ -226,13 +232,13 @@ check('consignes libres conservées', /Cuire entière/.test(dino.instructions));
 check('matériel conservé', dino.equipment === 'Four');
 check('rendement cru → cuit conservé', Number(dino.cookedFactor) === 0.75);
 check('mode de saisie par unités conservé', dino.unitEntry === true && dino.gramsPerUnit === 250);
-check('catalogue collations 16 h conservé', back.snacksAfternoon.length === 1);
-check('collations du soir vides', back.snacksEvening.length === 0);
+check('catalogue de collations unique conservé', back.snacks.length === 1 && back.snacks[0].items.length === 1);
+check('objectif de référence de la collation conservé', back.snacks[0].targetSlot === 'evening');
 check('cases "acheté" conservées', back.shopping.purchased[f('riz basmati')] === true);
 check('quantités de batch manuelles conservées', back.batch.overrides[`0:${f('blanc de poulet')}`] === 1500);
 
 console.log('\n— Isolation entre comptes (RLS)');
-const small = stateToTables({ ...state, foods: state.foods.slice(0, 3), meals: [], breakfasts: [], snacksAfternoon: [], snacksEvening: [], shopping: { purchased: {} }, batch: { overrides: {} } });
+const small = stateToTables({ ...state, foods: state.foods.slice(0, 3), meals: [], breakfasts: [], snacks: [], shopping: { purchased: {} }, batch: { overrides: {} } });
 replaceAll(small, UID2);
 const seenBy1 = Number(sql(`select count(*) from foods;`, UID1));
 const seenBy2 = Number(sql(`select count(*) from foods;`, UID2));

@@ -45,7 +45,13 @@ function entityFrom(state) {
 
 function targetType() {
   if (!ctx) return 'lunch';
-  if (ctx.kind !== 'meal') return ctx.kind;
+  if (ctx.kind === 'breakfast') return 'breakfast';
+  if (ctx.kind === 'snack') {
+    // une collation a UNE composition ; l'objectif de référence (16 h ou soir)
+    // sert uniquement de repère pour les macros et l'ajustement.
+    const opt = entityFrom(getState());
+    return opt?.targetSlot === 'evening' ? 'snack_evening' : 'snack_afternoon';
+  }
   const e = entityFrom(getState());
   return e?.mealType || 'lunch';
 }

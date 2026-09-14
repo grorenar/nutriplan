@@ -159,24 +159,70 @@ check('l’aliment est créé malgré l’avertissement',
   foodsAfter.filter((f) => f.name === 'Blanc de poulet').length === 2);
 check('aucun aliment fusionné ni supprimé', foodsAfter.length === 89, `${foodsAfter.length}`);
 
-console.log('\n— Catalogues et courses du cycle');
+console.log('\n— Catalogues, couverture et courses');
 click($('[data-view="breakfasts"]'));
 await wait();
+check('couverture affichée pour les deux personnes', /Couverture du cycle/.test($('#view').textContent));
+check('besoin théorique = durée du cycle', /0 \/ 4/.test($('#view').textContent), $('#view').textContent.slice(0, 120));
+check('avertissement de manque affiché', /⚠️/.test($('#view').textContent));
+check('bouton de forçage proposé', !!$('[data-force]'));
+
 click($('[data-new]'));
 await wait();
 type($('#drawer [data-search]'), 'flocons');
 click($$('#drawer [data-add]')[0]);
 click($('#drawer [data-close]'));
+await wait();
 click($('[data-view="shopping"]'));
 await wait();
 check('option non utilisée : absente des courses', !/flocons/i.test($('#view').textContent));
+
 click($('[data-view="breakfasts"]'));
 await wait();
-click($$('[data-uses][data-delta="1"]')[0]);
-click($$('[data-uses][data-delta="1"]')[0]);
+const plusFor = (person) =>
+  $$(`[data-uses][data-person="${person}"][data-delta="1"]`)[0];
+click(plusFor('thomas'));
+click(plusFor('thomas'));
+click(plusFor('julie'));
+await wait();
+const bState = () => JSON.parse(localStorage.getItem('nutriplan.state.v1')).breakfasts[0];
+check('compteurs indépendants Thomas / Julie', bState().uses.thomas === 2 && bState().uses.julie === 1,
+  JSON.stringify(bState().uses));
+check('couverture mise à jour', /2 \/ 4/.test($('#view').textContent));
+click($('[data-force]'));
+await wait();
+check('écart assumé mémorisé', JSON.parse(localStorage.getItem('nutriplan.state.v1')).coverage.forced.breakfast === true);
+check('avertissement toujours visible après forçage', /⚠️/.test($('#view').textContent));
+
 click($('[data-view="shopping"]'));
 await wait();
-check('option utilisée 2 fois : présente dans les courses', /flocons/i.test($('#view').textContent));
+check('option utilisée : présente dans les courses', /flocons/i.test($('#view').textContent));
+
+console.log('\n— Collations : catalogue unique 16 h / soir');
+click($('[data-view="snacks"]'));
+await wait();
+check('un seul catalogue de collations', !/Collations 16 h.*Collations du soir/s.test($('#view').textContent.slice(0, 200)) && /Couverture du cycle/.test($('#view').textContent));
+check('libellés 16 h et Soir', /16 h/.test($('#view').textContent) && /Soir/.test($('#view').textContent));
+click($('[data-new]'));
+await wait();
+type($('#drawer [data-search]'), 'cajou');
+click($$('#drawer [data-add]')[0]);
+click($('#drawer [data-close]'));
+await wait();
+const snackPlus = (person, slot) =>
+  $$(`[data-uses][data-person="${person}"][data-slot="${slot}"][data-delta="1"]`)[0];
+click(snackPlus('thomas', 'afternoon'));
+click(snackPlus('thomas', 'afternoon'));
+click(snackPlus('thomas', 'evening'));
+click(snackPlus('julie', 'evening'));
+await wait();
+const sState = () => JSON.parse(localStorage.getItem('nutriplan.state.v1')).snacks[0];
+check('affectations 16 h / soir enregistrées séparément',
+  sState().uses.thomas.afternoon === 2 && sState().uses.thomas.evening === 1 && sState().uses.julie.evening === 1,
+  JSON.stringify(sState().uses));
+click($('[data-view="shopping"]'));
+await wait();
+check('collation utilisée : présente dans les courses', /cajou/i.test($('#view').textContent));
 
 console.log('\n— Navigation complète');
 for (const id of ['foods', 'breakfasts', 'snacks', 'batch', 'shopping', 'settings']) {
@@ -209,7 +255,9 @@ check('détail des gamelles présent', /Détail des gamelles/.test($('#view').te
 
 console.log('\n— Impression');
 click($('#print-btn'));
+click($('#modal [data-print-all]'));
 click($('#modal [data-print-go]'));
+check('catalogues imprimés avec leurs utilisations', /Couverture du cycle/.test($('#print').textContent) && /Utilisations/.test($('#print').textContent));
 check('document d’impression généré', $('#print').innerHTML.length > 1000);
 check('window.print() appelé', printed === 1);
 
