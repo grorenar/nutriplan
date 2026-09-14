@@ -69,7 +69,9 @@ l'aliment. Tous les calculs internes sont en grammes.
 réellement pesé, affiché à côté de la quantité. Quand les deux diffèrent, la conversion utilise le
 rendement après cuisson (200 g cuits ÷ 2,50 = 80 g crus). Aucun coefficient n'est inventé pour les
 états « égoutté » et « prêt à consommer » ni quand le rendement n'est pas renseigné : dans ce cas
-l'application le dit explicitement sous le champ plutôt que de produire un calcul faux.
+les macros de l'ingrédient ne sont pas calculées (« — kcal · — P · — G · — L »), il est exclu du
+total du repas, et l'éditeur affiche « Conversion impossible » avec la marche à suivre. Deux états
+différents ne sont jamais supposés équivalents.
 
 **Macros.** Les grammes saisis sont d'abord ramenés à l'état de référence de l'aliment
 (coefficient `cookedFactor`, ex. pâtes 100 g crus → 240 g cuits), puis multipliés par les valeurs

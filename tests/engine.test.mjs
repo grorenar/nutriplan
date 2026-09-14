@@ -448,13 +448,41 @@ test('États nutritionnels — l’état des valeurs et l’état pesé sont dis
   const conserve = { ...riz, id: 'f_conserve', referenceState: 'egoutte', cookedFactor: 2.5 };
   const infoEg = conversionInfo(conserve, 'cuit');
   check('8. égoutté ↔ cuit : conversion non définie', canConvert(conserve, 'cuit', 'egoutte') === false);
-  check('8. aucun coefficient inventé', toReferenceGrams(conserve, 200, 'cuit') === 200);
+  check('8. aucun coefficient inventé, aucun poids supposé équivalent',
+    toReferenceGrams(conserve, 200, 'cuit') === null);
+  const mEg = macrosFor(conserve, 200, 'cuit');
+  check('8. aucune macro calculée', mEg.unconvertible === true && mEg.kcal === 0 && mEg.protein === 0);
   check('8. l’utilisateur est prévenu', infoEg.needed === true && infoEg.possible === false && !!infoEg.message);
-  check('8. message explicite', /Aucune conversion définie/.test(infoEg.message), infoEg.message);
+  check('8. message explicite', /Conversion impossible/.test(infoEg.message), infoEg.message);
   const sansRendement = { ...riz, id: 'f_sans_rdt', cookedFactor: null };
   check('8. rendement absent : pas de conversion cru/cuit', canConvert(sansRendement, 'cru', 'cuit') === false);
-  check('8. rendement absent : poids conservé tel quel', toReferenceGrams(sansRendement, 200, 'cuit') === 200);
+  check('8. rendement absent : aucune conversion, aucune macro',
+    toReferenceGrams(sansRendement, 200, 'cuit') === null &&
+    macrosFor(sansRendement, 200, 'cuit').unconvertible === true);
   check('8. les valeurs nutritionnelles ne sont jamais modifiées', riz.kcal === 350 && conserve.kcal === 350);
+
+  // le total d'un repas n'intègre jamais un ingrédient non convertible
+  const meal = [
+    item(riz, 100, { state: 'cru' }),
+    item(conserve, 200, { state: 'cuit' }), // conversion impossible
+  ];
+  const map = { [riz.id]: riz, [conserve.id]: conserve };
+  const totals = mealMacros(meal, map, 'thomas');
+  check('total = uniquement les ingrédients convertibles', Math.abs(totals.kcal - 350) < 0.001, `${totals.kcal}`);
+  check('ingrédients exclus comptabilisés', totals.unconvertible === 1);
+  check('même état → calcul normal dans le total',
+    Math.abs(mealMacros([item(riz, 100, { state: 'cru' })], map, 'thomas').kcal - 350) < 0.001);
+  check('cru/cuit avec rendement → calcul normal dans le total',
+    Math.abs(mealMacros([item(riz, 250, { state: 'cuit' })], map, 'thomas').kcal - 350) < 0.001);
+  check('aucun ingrédient exclu quand tout est convertible',
+    mealMacros([item(riz, 250, { state: 'cuit' })], map, 'thomas').unconvertible === 0);
+  check('l’ingrédient non convertible reste dans le repas', meal.length === 2);
+
+  // l'ajustement automatique ne touche pas à un ingrédient non convertible
+  const before = meal[1].qty.thomas;
+  autoAdjust(meal, map, LUNCH);
+  check('quantité d’un ingrédient non convertible inchangée par l’ajustement',
+    meal[1].qty.thomas === before, `${meal[1].qty.thomas}`);
 
   // 9. l'état sélectionné est bien porté par l'ingrédient
   const it = item(riz, 200, { state: 'cuit' });

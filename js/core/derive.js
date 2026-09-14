@@ -57,6 +57,9 @@ export function aggregateNeeds(sources, foodsById) {
       if (!served) continue;
       const state = it.state || food.referenceState;
       const ref = toReferenceGrams(food, served, state);
+      // conversion non définie entre l'état pesé et celui des valeurs de l'aliment :
+      // on n'invente pas de poids, l'ingrédient est signalé dans l'éditeur
+      if (ref === null) continue;
       if (!out[food.id]) out[food.id] = { food, refGrams: 0, servedGrams: 0, uses: 0, days: new Set() };
       out[food.id].refGrams += ref;
       out[food.id].servedGrams += served;
@@ -244,7 +247,7 @@ export function buildBatchPlan(state, foodsById) {
           food,
           dayIndex: meal.dayIndex,
           mealType: meal.mealType,
-          grams: toReferenceGrams(food, total, it.state || food.referenceState),
+          grams: toReferenceGrams(food, total, it.state || food.referenceState) ?? total,
           summary: cookingSummary(food),
           note: preparationNote(food),
         };

@@ -98,9 +98,20 @@ change(pastaCooked.querySelector('[data-state]'), 'egoutte');
 await wait();
 const pastaDrained = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
 check('conversion impossible signalée à l’utilisateur',
-  /Aucune conversion définie/.test(pastaDrained.textContent));
+  /Conversion impossible/.test(pastaDrained.textContent));
+check('aucune macro calculée pour cet ingrédient',
+  /— kcal · — P · — G · — L/.test(pastaDrained.textContent),
+  (pastaDrained.textContent.match(/[—\d]+ kcal/) || [''])[0]);
+check('ingrédient exclu du total du repas',
+  /exclu\(s\) du total/.test($('#drawer .drawer__body').textContent));
+const totalDrained = Number(($('#drawer .macro')?.textContent.match(/(\d+)/) || [])[1]);
 change(pastaDrained.querySelector('[data-state]'), 'cru');
 await wait();
+const totalBack = Number(($('#drawer .macro')?.textContent.match(/(\d+)/) || [])[1]);
+check('le total remonte une fois un état convertible choisi', totalBack > totalDrained,
+  `${totalDrained} → ${totalBack}`);
+check('plus aucun avertissement de conversion',
+  !/Conversion impossible/.test($('#drawer .drawer__body').textContent));
 
 console.log('\n— Verrouillage');
 const qty = () => $$('#drawer [data-qty]').map((i) => i.value);

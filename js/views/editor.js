@@ -171,7 +171,13 @@ function renderSummary(entity, byId, targets, tol, state) {
     </div>`;
   }).join('');
 
-  return `<div class="card">${blocks}</div>`;
+  // ingrédients écartés du total faute de conversion définie
+  const excluded = mealMacros(entity.items, byId, PERSONS[0]).unconvertible || 0;
+  const notice = excluded
+    ? `<div class="sync-error"><small>${excluded} ingrédient(s) exclu(s) du total : aucune conversion définie entre l'état pesé et celui de leurs valeurs nutritionnelles.</small></div>`
+    : '';
+
+  return `<div class="card">${blocks}${notice}</div>`;
 }
 
 /** Libellé d'unité au pluriel simple ("2 tranches", "2 c. à soupe"). */
@@ -222,10 +228,12 @@ function renderItems(entity, byId, state) {
         <select data-state="${it.id}" style="width:auto;min-width:136px">
           ${STATES.map((st) => `<option value="${st.id}" ${itemState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}
         </select>
-        <small>${
+        <small class="${conv.needed && !conv.possible ? 'sync-error' : ''}">${
           conv.needed && conv.possible
             ? `converti via le rendement ${num(food.cookedFactor, 2)}`
-            : `valeurs pour 100 g ${esc(stateLabel(food.referenceState).toLowerCase())}`
+            : conv.needed
+              ? 'conversion impossible'
+              : `valeurs pour 100 g ${esc(stateLabel(food.referenceState).toLowerCase())}`
         }</small>
       </div>`;
 
@@ -251,7 +259,9 @@ function renderItems(entity, byId, state) {
             <button class="lock" data-lock="${it.id}" data-person="${person}" aria-pressed="${locked}"
                     title="${locked ? 'Quantité verrouillée' : 'Quantité ajustable'}">${locked ? '🔒' : '🔓'}</button>
           </div>
-          <small class="nums">${num(m.kcal, 0)} kcal · ${num(m.protein, 0)} P · ${num(m.carbs, 0)} G · ${num(m.fat, 0)} L</small>
+          <small class="nums">${
+            m.unconvertible ? '— kcal · — P · — G · — L' : `${num(m.kcal, 0)} kcal · ${num(m.protein, 0)} P · ${num(m.carbs, 0)} G · ${num(m.fat, 0)} L`
+          }</small>
           <small>${num(qty, 0)} g ${esc(stateLabel(itemState).toLowerCase())}${unitHint(food, qty) ? ` · ${unitHint(food, qty)}` : ''}</small>
         </div>`;
       }).join('');
@@ -269,6 +279,11 @@ function renderItems(entity, byId, state) {
             }
             ${isWholeUnitFood(food) ? `<span class="tag">multiples de ${num(food.gramsPerUnit, 0)} g (pas du curseur)</span>` : ''}
           </div>
+          ${
+            conv.needed && !conv.possible
+              ? `<div class="card sync-error" style="margin-top:8px;padding:8px;border-color:#eebeb9;background:var(--off-bg)">${esc(conv.message)}</div>`
+              : ''
+          }
           <div class="item__qty" style="margin-top:8px">${qtyBoxes}${stateBox}</div>
           ${conv.message ? `<div class="tag sync-error" style="margin-top:6px">⚠️ ${esc(conv.message)}</div>` : ''}
         </div>

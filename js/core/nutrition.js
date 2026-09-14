@@ -102,8 +102,10 @@ export function conversionInfo(food, itemState) {
     factor: needed && possible ? cookedFactorOf(food) : null,
     message:
       needed && !possible
-        ? `Aucune conversion définie entre « ${stateLabel(from)} » et « ${stateLabel(to)} » : ` +
-          `les macros sont calculées sur le poids saisi, sans conversion.`
+        ? `Conversion impossible : aucune conversion définie entre « ${stateLabel(from)} » et ` +
+          `« ${stateLabel(to)} ». Les macros de cet ingrédient ne sont pas calculées et ne sont ` +
+          `pas comptées dans le total. Choisis l'état correspondant aux valeurs nutritionnelles, ` +
+          `ou une combinaison cru / cuit avec un rendement renseigné.`
         : null,
   };
 }
@@ -126,8 +128,16 @@ export function convertGrams(food, qty, fromState, toState) {
 }
 
 /** Quantité ramenée à l'état de référence de l'aliment (base de tous les calculs). */
+/**
+ * Quantité ramenée à l'état de référence de l'aliment (base de tous les calculs).
+ * Renvoie null quand aucune conversion n'est définie entre l'état pesé et
+ * l'état des valeurs nutritionnelles : deux états différents ne sont JAMAIS
+ * considérés comme équivalents par défaut.
+ */
 export function toReferenceGrams(food, qty, itemState) {
-  return convertGrams(food, qty, itemState || food.referenceState, food.referenceState);
+  const from = itemState || food?.referenceState;
+  if (!canConvert(food, from, food?.referenceState)) return null;
+  return convertGrams(food, qty, from, food.referenceState);
 }
 
 /* ------------------------------------------------------------------ */
@@ -136,11 +146,22 @@ export function toReferenceGrams(food, qty, itemState) {
 
 export const emptyMacros = () => ({ kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 });
 
-/** Macros d'un ingrédient pour une quantité donnée. */
+/**
+ * Macros d'un ingrédient pour une quantité donnée.
+ * Si la conversion entre l'état pesé et l'état des valeurs nutritionnelles
+ * n'est pas définie, aucune macro n'est calculée : l'objet renvoyé porte
+ * `unconvertible: true` et des valeurs nulles, plutôt qu'un calcul faux
+ * qui supposerait les deux états équivalents.
+ */
 export function macrosFor(food, qty, itemState) {
   const m = emptyMacros();
   if (!food || !qty) return m;
-  const g = toReferenceGrams(food, qty, itemState) / 100;
+  const ref = toReferenceGrams(food, qty, itemState);
+  if (ref === null) {
+    m.unconvertible = true;
+    return m;
+  }
+  const g = ref / 100;
   m.kcal = (food.kcal || 0) * g;
   m.protein = (food.protein || 0) * g;
   m.carbs = (food.carbs || 0) * g;
@@ -152,11 +173,17 @@ export function macrosFor(food, qty, itemState) {
 /** Macros totales d'une liste d'ingrédients pour une personne. */
 export function mealMacros(items, foodsById, person) {
   const total = emptyMacros();
+  total.unconvertible = 0; // ingrédients exclus faute de conversion définie
   for (const it of items) {
     if (!it.foodId) continue; // ingrédient libre : ne participe pas aux macros
     const food = foodsById[it.foodId];
     if (!food) continue;
     const m = macrosFor(food, it.qty?.[person] || 0, it.state);
+    if (m.unconvertible) {
+      // jamais intégré au total : la valeur serait potentiellement fausse
+      total.unconvertible += 1;
+      continue;
+    }
     total.kcal += m.kcal;
     total.protein += m.protein;
     total.carbs += m.carbs;
@@ -346,6 +373,9 @@ export function adjustQuantities(items, foodsById, target, person, options = {})
     // "épinglé" = quantité saisie à l'instant par l'utilisateur : traitée comme fixe
     const locked = !!it.locked?.[person] || pinned.has(it.id);
     const m = macrosFor(food, qty, it.state);
+    // conversion impossible : on laisse la quantité telle quelle et on ne
+    // l'intègre à aucun calcul (ni contribution fixe, ni variable d'ajustement)
+    if (m.unconvertible) continue;
     const hasEnergy = (food.kcal || 0) > 0 || (food.protein || 0) > 0 || (food.carbs || 0) > 0 || (food.fat || 0) > 0;
 
     if (locked || !hasEnergy) {
