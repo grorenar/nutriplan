@@ -365,13 +365,20 @@ export async function push() {
     );
   }
 
-  // On mémorise l'horodatage que l'on vient d'écrire : c'est lui qui permettra
-  // de savoir, plus tard, si la base distante a changé depuis (autre appareil).
+  // On mémorise l'horodatage tel que la BASE le renvoie, et non celui que le
+  // client vient d'envoyer : c'est la seule source de vérité, et son format
+  // (PostgreSQL) doit être comparable à celui relu plus tard.
+  let stamp = null;
+  try {
+    stamp = await fetchRemoteStamp();
+  } catch {
+    stamp = payload.settings[0]?.updated_at || null; // repli : réseau capricieux
+  }
   setSyncMeta({
     dirty: false,
     syncedAt: new Date().toISOString(),
     syncError: null,
-    remoteStamp: payload.settings[0]?.updated_at || null,
+    remoteStamp: stamp,
   });
   return counts;
 }
@@ -461,6 +468,21 @@ export async function fetchRemoteStamp() {
  *   up-to-date  — rien à faire ;
  *   skip        — synchronisation impossible pour l'instant.
  */
+/**
+ * Deux horodatages désignent-ils le même instant ?
+ * PostgreSQL renvoie « 2026-09-14T16:08:09.698+00:00 » là où JavaScript écrit
+ * « 2026-09-14T16:08:09.698Z » : comparer les chaînes brutes déclencherait des
+ * récupérations inutiles. On compare donc les instants.
+ */
+export function sameStamp(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ta = Date.parse(a);
+  const tb = Date.parse(b);
+  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return String(a) === String(b);
+  return ta === tb;
+}
+
 export function planSync({
   configured = false,
   online = true,
@@ -475,7 +497,7 @@ export function planSync({
   // priorité absolue à l'envoi : on ne récupère jamais par-dessus du local en attente
   if (dirty) return { action: 'push', reason: 'modifications locales en attente' };
   if (!remoteStamp) return { action: 'up-to-date', reason: 'aucune donnée distante' };
-  if (remoteStamp !== knownStamp) return { action: 'pull', reason: 'données distantes plus récentes' };
+  if (!sameStamp(remoteStamp, knownStamp)) return { action: 'pull', reason: 'données distantes plus récentes' };
   return { action: 'up-to-date', reason: 'déjà à jour' };
 }
 
