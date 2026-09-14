@@ -11,7 +11,7 @@
  */
 
 import {
-  __setTestClient, syncNow, pull, push, planSync, shouldCheckRemote, fetchRemoteStamp,
+  __setTestClient, syncNow, pull, push, planSync, shouldCheckRemote, fetchRemoteStamp, sameStamp,
   stateToTables, isConfigured,
 } from '../js/core/sync.js';
 import { getState, replaceState, update, defaultState } from '../js/core/store.js';
@@ -62,6 +62,13 @@ function remoteFrom(state) {
   return JSON.parse(JSON.stringify(stateToTables(state)));
 }
 
+/**
+ * PostgREST renvoie les timestamptz au format PostgreSQL
+ * (« 2026-09-14T16:08:09.698+00:00 »), pas au format JavaScript (« …Z »).
+ * Le client factice reproduit cette différence, qui a déjà causé un bug.
+ */
+const asPostgresStamp = (iso) => (iso ? String(iso).replace(/Z$/, '+00:00') : iso);
+
 function makeClient(remote) {
   remote.calls = { rpc: 0, select: 0, stamp: 0 };
   return {
@@ -74,14 +81,17 @@ function makeClient(remote) {
           const rows = remote.tables[table] || [];
           if (columns === 'updated_at') {
             remote.calls.stamp += 1;
-            const result = { data: rows.map((r) => ({ updated_at: r.updated_at })), error: null };
+            const result = { data: rows.map((r) => ({ updated_at: asPostgresStamp(r.updated_at) })), error: null };
             const p = Promise.resolve(result);
             p.limit = () => Promise.resolve({ data: result.data.slice(0, 1), error: null });
             return p;
           }
           remote.calls.select += 1;
-          const p = Promise.resolve({ data: rows, error: null });
-          p.limit = () => Promise.resolve({ data: rows.slice(0, 1), error: null });
+          // PostgREST normalise aussi les timestamptz dans un select complet
+          const normalized =
+            table === 'settings' ? rows.map((r) => ({ ...r, updated_at: asPostgresStamp(r.updated_at) })) : rows;
+          const p = Promise.resolve({ data: normalized, error: null });
+          p.limit = () => Promise.resolve({ data: normalized.slice(0, 1), error: null });
           return p;
         },
       };
@@ -109,7 +119,7 @@ function setLocal(state, { dirty = false, remoteStamp = null } = {}) {
 }
 
 const foodNamed = (state, name) => state.foods.find((f) => f.name === name);
-const stampOf = (remote) => remote.tables.settings[0].updated_at;
+const stampOf = (remote) => asPostgresStamp(remote.tables.settings[0].updated_at);
 
 /* ---------------------------------------------------------------- scénarios */
 
@@ -258,6 +268,39 @@ await test('« Récupérer du cloud » reste un forçage manuel opérationnel', 
   check('l’envoi manuel fonctionne toujours', counts.foods === getState().foods.length);
   check('le cloud a reçu la donnée', remote.tables.foods.some((f) => f.name === 'Envoyé manuellement'));
   check('aucune erreur de synchronisation', !getState().meta.syncError);
+});
+
+await test('Horodatage : formats PostgreSQL et JavaScript comparés par instant', async () => {
+  const iso = '2026-09-14T16:08:09.698Z';
+  const pg = '2026-09-14T16:08:09.698+00:00';
+  check('même instant, formats différents → identiques', sameStamp(iso, pg) === true);
+  check('même chaîne → identiques', sameStamp(pg, pg) === true);
+  check('décalage horaire équivalent → identiques',
+    sameStamp('2026-09-14T18:08:09.698+02:00', iso) === true);
+  check('instants différents → distincts', sameStamp(iso, '2026-09-14T16:08:10.698Z') === false);
+  check('horodatage absent → distinct', sameStamp(null, pg) === false && sameStamp(iso, null) === false);
+  check('deux absences → identiques', sameStamp(null, null) === true);
+  check('valeur illisible → comparaison textuelle', sameStamp('abc', 'abc') === true && sameStamp('abc', 'abd') === false);
+
+  // bout en bout : après un envoi, la base renvoie le format PostgreSQL.
+  // Sans normalisation, l'appareil récupérait la base entière juste après avoir
+  // envoyé la sienne.
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  const local = defaultState();
+  local.foods.push({ ...local.foods[0], id: 'f_format', name: 'Test de format' });
+  setLocal(local, { dirty: true, remoteStamp: null });
+
+  const pushed = await syncNow();
+  check('envoi effectué', pushed.action === 'push');
+  check('horodatage mémorisé au format renvoyé par la base',
+    getState().meta.remoteStamp === stampOf(remote), String(getState().meta.remoteStamp));
+  check('horodatage relu identique à celui mémorisé',
+    sameStamp(await fetchRemoteStamp(), getState().meta.remoteStamp) === true);
+
+  const selectsBefore = remote.calls.select;
+  const after = await syncNow();
+  check('aucune récupération inutile après un envoi', after.action === 'up-to-date', after.reason);
+  check('aucune table retéléchargée', remote.calls.select === selectsBefore);
 });
 
 await test('Horodatage distant : requête minimale', async () => {
