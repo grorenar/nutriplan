@@ -12,8 +12,8 @@
  * Tant que ces champs restent vides, l'application fonctionne à 100 %
  * en local (localStorage) : aucune connexion n'est requise.
  */
-export const SUPABASE_URL = '';
-export const SUPABASE_ANON_KEY = '';
+export const SUPABASE_URL = 'https://wptpchmxobcpkbhjaahi.supabase.co';
+export const SUPABASE_ANON_KEY = 'sb_publishable_Cms2VWcTSpUwMx3mefoqew_Zr5FSoDl';
 
 /** Clé de stockage local. */
 export const STORAGE_KEY = 'nutriplan.state.v1';
