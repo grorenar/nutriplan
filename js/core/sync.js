@@ -16,10 +16,20 @@ import { PERSONS } from './nutrition.js';
 
 let client = null;
 let libPromise = null;
+let injectedClient = null; // point d'injection réservé aux tests
 
-export const isConfigured = () => Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+/** Remplace le client Supabase (tests uniquement). Passer null pour revenir au client réel. */
+export function __setTestClient(c) {
+  injectedClient = c;
+}
+
+export const isConfigured = () => Boolean(injectedClient) || Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+
+/** navigator.onLine n'existe pas partout : on ne considère hors ligne que si c'est explicite. */
+const isOnline = () => globalThis.navigator?.onLine !== false;
 
 async function getClient() {
+  if (injectedClient) return injectedClient;
   if (!isConfigured()) return null;
   if (client) return client;
   if (!libPromise) libPromise = import('https://esm.sh/@supabase/supabase-js@2');
@@ -355,7 +365,14 @@ export async function push() {
     );
   }
 
-  setSyncMeta({ dirty: false, syncedAt: new Date().toISOString(), syncError: null });
+  // On mémorise l'horodatage que l'on vient d'écrire : c'est lui qui permettra
+  // de savoir, plus tard, si la base distante a changé depuis (autre appareil).
+  setSyncMeta({
+    dirty: false,
+    syncedAt: new Date().toISOString(),
+    syncError: null,
+    remoteStamp: payload.settings[0]?.updated_at || null,
+  });
   return counts;
 }
 
@@ -405,23 +422,119 @@ export async function pull() {
 
   // filet de sécurité : l'état local est sauvegardé avant d'être remplacé
   backupLocal();
-  next.meta = { updatedAt: new Date().toISOString(), dirty: false, syncedAt: new Date().toISOString(), syncError: null };
+  next.meta = {
+    updatedAt: new Date().toISOString(),
+    dirty: false,
+    syncedAt: new Date().toISOString(),
+    syncError: null,
+    remoteStamp: data.settings?.[0]?.updated_at || null,
+  };
   replaceState(next, { dirty: false });
   return { seeded: false };
 }
 
-/** Push automatique si des modifications locales sont en attente. */
-export async function syncIfNeeded() {
-  if (!isConfigured() || !navigator.onLine) return false;
-  const s = getState();
-  if (!s.meta.dirty) return false;
-  if (!(await currentUser())) return false;
+/* ------------------------------------------------------------------ */
+/* Détection des changements distants                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Horodatage de la dernière écriture distante (colonne settings.updated_at).
+ * Requête volontairement minuscule : une seule ligne, une seule colonne.
+ * Renvoie null si la base ne contient encore rien.
+ */
+export async function fetchRemoteStamp() {
+  const c = await getClient();
+  if (!c) return null;
+  const { data, error } = await c.from('settings').select('updated_at').limit(1);
+  if (error) throw error;
+  return data?.[0]?.updated_at || null;
+}
+
+/**
+ * Décide quoi faire, à partir d'un contexte déjà collecté. Fonction pure, donc
+ * testable sans réseau.
+ *
+ *   push        — des modifications locales attendent : elles partent en premier
+ *                 et ne peuvent jamais être écrasées par une récupération ;
+ *   pull        — rien en local, mais la base distante a changé depuis la
+ *                 dernière fois que cet appareil l'a vue (autre appareil) ;
+ *   up-to-date  — rien à faire ;
+ *   skip        — synchronisation impossible pour l'instant.
+ */
+export function planSync({
+  configured = false,
+  online = true,
+  authenticated = false,
+  dirty = false,
+  knownStamp = null,
+  remoteStamp = null,
+} = {}) {
+  if (!configured) return { action: 'skip', reason: 'non configuré' };
+  if (!online) return { action: 'skip', reason: 'hors ligne' };
+  if (!authenticated) return { action: 'skip', reason: 'non connecté' };
+  // priorité absolue à l'envoi : on ne récupère jamais par-dessus du local en attente
+  if (dirty) return { action: 'push', reason: 'modifications locales en attente' };
+  if (!remoteStamp) return { action: 'up-to-date', reason: 'aucune donnée distante' };
+  if (remoteStamp !== knownStamp) return { action: 'pull', reason: 'données distantes plus récentes' };
+  return { action: 'up-to-date', reason: 'déjà à jour' };
+}
+
+/** Faut-il réinterroger la base distante, ou la dernière vérification est-elle trop récente ? */
+export function shouldCheckRemote(lastCheckAt, now = Date.now(), minIntervalMs = 15000) {
+  if (!lastCheckAt) return true;
+  const last = typeof lastCheckAt === 'number' ? lastCheckAt : Date.parse(lastCheckAt);
+  if (!Number.isFinite(last)) return true;
+  return now - last >= minIntervalMs;
+}
+
+/**
+ * Synchronisation automatique dans les deux sens.
+ * Appelée au démarrage, au retour sur l'application, au retour de connexion et
+ * après une modification locale. Le bouton « Récupérer du cloud » reste
+ * disponible comme forçage manuel.
+ */
+export async function syncNow() {
+  const ctx = {
+    configured: isConfigured(),
+    online: isOnline(),
+    authenticated: false,
+    dirty: getState().meta.dirty,
+    knownStamp: getState().meta.remoteStamp || null,
+    remoteStamp: null,
+  };
+  if (!ctx.configured || !ctx.online) return planSync(ctx);
+
   try {
-    await push();
-    return true;
+    ctx.authenticated = Boolean(await currentUser());
+    if (!ctx.authenticated) return planSync(ctx);
+
+    if (ctx.dirty) {
+      await push();
+      return { action: 'push', reason: 'modifications locales envoyées' };
+    }
+
+    ctx.remoteStamp = await fetchRemoteStamp();
+    setSyncMeta({ lastRemoteCheck: Date.now() });
+    const plan = planSync(ctx);
+    if (plan.action !== 'pull') return plan;
+
+    // dernière vérification juste avant de remplacer : si l'utilisateur a
+    // modifié quelque chose pendant la requête, on envoie au lieu de récupérer.
+    if (getState().meta.dirty) {
+      await push();
+      return { action: 'push', reason: 'modification locale survenue pendant la vérification' };
+    }
+    await pull();
+    return plan;
   } catch (e) {
-    // les données locales restent la référence tant que l'envoi n'a pas abouti
+    // les données locales restent la référence tant que la synchronisation n'a pas abouti
     setSyncMeta({ syncError: e.message || String(e) });
-    return false;
+    return { action: 'error', reason: e.message || String(e) };
   }
+}
+
+/** Compatibilité : envoi automatique si des modifications locales sont en attente. */
+export async function syncIfNeeded() {
+  const { action } = await syncNow();
+  return action === 'push';
 }

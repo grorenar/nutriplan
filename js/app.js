@@ -103,27 +103,53 @@ function boot() {
   renderView();
   renderStatus();
 
-  // synchronisation initiale et reprise de connexion
+  // --- synchronisation automatique dans les deux sens
   if (sync.isConfigured()) {
-    sync.syncIfNeeded().catch(() => {});
+    // au lancement : même sans modification locale, on vérifie si la base
+    // distante a changé depuis la dernière fois que cet appareil l'a vue
+    runSync('démarrage');
+
+    // retour de connexion : les modifications locales partent avant tout pull
     window.addEventListener('online', () => {
       renderStatus();
-      sync
-        .syncIfNeeded()
-        .then((done) => { if (done) toast('Synchronisation effectuée'); renderStatus(); })
-        .catch(() => {});
+      runSync('retour en ligne');
     });
     window.addEventListener('offline', renderStatus);
+
+    // retour sur l'onglet / l'application
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') runSync('retour sur l’application', { throttled: true });
+    });
+    window.addEventListener('focus', () => runSync('retour sur l’application', { throttled: true }));
   }
 }
 
 let syncTimer = null;
+let lastRemoteCheck = 0;
+
+/**
+ * Lance une synchronisation automatique (envoi des modifications locales en
+ * attente, sinon récupération si la base distante a changé).
+ * `throttled` évite de réinterroger la base à chaque bascule d'onglet.
+ */
+function runSync(reason, { throttled = false } = {}) {
+  if (!sync.isConfigured()) return;
+  const pending = getState().meta.dirty;
+  if (throttled && !pending && !sync.shouldCheckRemote(lastRemoteCheck)) return;
+  lastRemoteCheck = Date.now();
+  sync
+    .syncNow()
+    .then((result) => {
+      if (result.action === 'pull') toast('Données mises à jour depuis le cloud');
+      renderStatus();
+    })
+    .catch(() => renderStatus());
+}
+
 function scheduleSync() {
   if (!sync.isConfigured()) return;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => {
-    sync.syncIfNeeded().then((done) => { if (done) renderStatus(); }).catch(() => {});
-  }, 4000);
+  syncTimer = setTimeout(() => runSync('modification locale'), 4000);
 }
 
 document.addEventListener('DOMContentLoaded', boot);
