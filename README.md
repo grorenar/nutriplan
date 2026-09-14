@@ -38,7 +38,8 @@ connaissent ni le stockage ni le réseau. Ce sont des fonctions pures, directeme
 ```
 foods[]            id, name, category, brand, kcal, protein, carbs, fat, fiber,
                    referenceState, cookedFactor, unitName, gramsPerUnit, fractionable,
-                   unitEntry, price, packageWeight, batchAllowed, favorite,
+                   unitEntry, price, packageWeight, batchAllowed, shelfLifeDays,
+                   requiresCooking, favorite,
                    cookingMethod, cookingTemp, cookingTime, prepTime, equipment, instructions
 settings           targets{thomas|julie}{day|breakfast|lunch|snack_afternoon|dinner|snack_evening}
                    tolerance, cycle{startWeekday,duration}, budget, batch{enabled,maxDays}, autoAdjust
@@ -95,7 +96,8 @@ est toujours un multiple entier de ce poids — que tu saisisses en unités (3 t
 (25 g deviennent 22 g pour une tranche de 11 g). La règle est générique et s'applique partout :
 planning, petits-déjeuners, collations, ajustement automatique, batch, courses. Le bouton
 « Saisie : … » sur la ligne d'ingrédient bascule entre unités et grammes ; les calculs internes
-restent en grammes dans les deux cas.
+restent en grammes dans les deux cas. Les boutons + et − du champ utilisent le poids d'une unité
+comme pas (13 → 26 → 39 → 52 pour une tranche de 13 g), jamais 1 g.
 
 | Catégorie | Bornes | Ancrage | Comportement |
 |---|---|---|---|
@@ -125,8 +127,8 @@ Garanties de l'algorithme :
 | Aliments | banque complète, recherche, favoris, création/modification/suppression |
 | Petits-déjeuners | catalogue indépendant, sans jour ni date ; compteur d'utilisations **par personne**, avec contrôle de couverture du cycle |
 | Collations | **catalogue unique** : une collation a une composition unique, 16 h et Soir ne sont que des affectations de consommation (compteurs par personne et par créneau) |
-| Batch cooking | plan opératoire par session : **à préparer en batch** (méthode, température, durée, rendement, quantités crues et cuites, consignes), **à cuire le jour même**, **à assembler le jour même**, puis le détail de chaque gamelle personne par personne |
-| Courses | tout le cycle (déjeuners, dîners et options de catalogue utilisées) : besoin vs quantité à acheter, surplus, prix, cases à cocher, budget |
+| Batch cooking | classement fondé sur deux propriétés explicites de l'aliment — `batchAllowed` puis `requiresCooking`, jamais sur l'état de référence — et plan opératoire par session : **à préparer en batch** (méthode, température, durée, rendement, quantités crues et cuites, consignes), **à cuire le jour même**, **à assembler le jour même**, puis le détail de chaque gamelle personne par personne |
+| Courses | tout le cycle (déjeuners, dîners et options de catalogue utilisées) : besoin vs quantité à acheter, surplus, prix, cases à cocher, budget ; les aliments sans prix sont listés par leur nom et cliquables pour ouvrir leur fiche |
 | Paramètres | objectifs, cycle, budget, batch, export/import JSON, réinitialisation du cycle, compte |
 
 Le bouton **Imprimer** (en haut à droite) permet de choisir les sections : planning, batch,
@@ -220,9 +222,27 @@ référence » (16 h ou Soir) qui sert uniquement de repère pour les macros et 
 
 ## 7. Fiche aliment
 
+« Nécessite une cuisson » est une case à cocher de la fiche, indépendante de l'état de référence :
+un aliment cru peut se consommer tel quel, un aliment prêt à consommer peut demander une cuisson.
+C'est elle, et elle seule, qui distingue « à cuire le jour même » de « à assembler le jour même »
+lorsque l'aliment n'est pas batchable. Sur une base créée avant son introduction, la migration
+SQL reprend une seule fois l'ancien classement pour les lignes jamais renseignées (colonne NULL),
+puis n'y touche plus : rejouer `schema.sql` ne recalcule rien.
+
 Chaque aliment porte ses propres paramètres de préparation : méthode de cuisson, température,
-durée, temps de préparation, matériel, consignes libres, et le coefficient cru → cuit (affiché en
-rendement %). Le plan de batch reprend ces informations telles quelles — aucune méthode, aucune
+durée, temps de préparation, matériel, consignes libres, la durée maximale de conservation après
+préparation (en jours, vide si inconnue) et le **rendement après cuisson**.
+
+Le rendement est un coefficient : **poids cuit ÷ poids cru**. 2,00 signifie que 100 g crus donnent
+200 g cuits ; 0,75 que 100 g crus donnent 75 g cuits. Il se saisit directement, ou se calcule via
+« Calculer le rendement » : on entre un poids cru et un poids cuit réellement pesés, l'application
+affiche le coefficient et l'équivalence pour 100 g, puis « Utiliser ce rendement » le reporte dans
+la fiche. Les poids vides, négatifs, non numériques ou nuls sont refusés avec un message ; aucune
+division par zéro n'est possible.
+
+Quand la durée de conservation d'un composant est plus courte que la période couverte par une
+session de batch, le plan affiche une alerte. Rien n'est retiré, le planning n'est pas modifié et
+aucune solution n'est inventée. Le plan de batch reprend ces informations telles quelles — aucune méthode, aucune
 association et aucune habitude alimentaire n'est codée dans l'application. Les valeurs livrées avec
 la banque initiale sont des données par défaut, modifiables ou supprimables.
 

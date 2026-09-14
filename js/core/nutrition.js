@@ -190,6 +190,38 @@ export const toUnits = (food, grams) => (isUnitFood(food) ? grams / Number(food.
 export const fromUnits = (food, units) => (isUnitFood(food) ? units * Number(food.gramsPerUnit) : units);
 
 /**
+ * Rendement après cuisson : coefficient = poids cuit ÷ poids cru.
+ * Fonction pure, utilisée par l'aide au calcul de la fiche aliment.
+ *   500 g crus → 375 g cuits  ⇒  0,75
+ *   500 g crus → 1000 g cuits ⇒  2
+ * @returns {{ ok: true, factor: number } | { ok: false, error: string }}
+ */
+export function computeYield(rawInput, cookedInput) {
+  const parse = (v) => {
+    if (v === null || v === undefined || String(v).trim() === '') return null;
+    const n = Number(String(v).replace(',', '.'));
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const raw = parse(rawInput);
+  const cooked = parse(cookedInput);
+
+  if (raw === null || cooked === null) return { ok: false, error: 'Renseigne le poids cru et le poids cuit.' };
+  if (Number.isNaN(raw) || Number.isNaN(cooked)) return { ok: false, error: 'Les poids doivent être des nombres.' };
+  if (raw < 0 || cooked < 0) return { ok: false, error: 'Les poids ne peuvent pas être négatifs.' };
+  if (raw === 0) return { ok: false, error: 'Le poids cru ne peut pas être nul.' };
+  if (cooked === 0) return { ok: false, error: 'Le poids cuit ne peut pas être nul.' };
+
+  return { ok: true, factor: Math.round((cooked / raw) * 10000) / 10000 };
+}
+
+/** Pas de saisie d'une quantité : le poids d'une unité pour un aliment non fractionnable. */
+export function quantityStep(food, { inUnits = false } = {}) {
+  if (inUnits) return isWholeUnitFood(food) ? 1 : 0.5;
+  if (isWholeUnitFood(food)) return Number(food.gramsPerUnit);
+  return 1;
+}
+
+/**
  * Contrainte ABSOLUE sur les quantités : un aliment non fractionnable ne peut
  * exister qu'en multiples entiers de gramsPerUnit, quelle que soit la manière
  * dont la quantité a été obtenue (saisie en grammes, saisie en unités,

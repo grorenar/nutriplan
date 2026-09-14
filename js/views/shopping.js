@@ -9,6 +9,7 @@ export function render(root) {
   const s = getState();
   const byId = foodsById();
   const { lines, total, unpriced, budget, overBudget } = buildShoppingList(s, byId);
+  const unpricedLines = lines.filter((l) => l.cost === null);
 
   const groups = {};
   for (const l of lines) (groups[l.food.category] ||= []).push(l);
@@ -32,7 +33,18 @@ export function render(root) {
         <div><small>Articles</small><b>${lines.length}</b></div>
       </div>
       ${overBudget > 0 ? `<small>Le budget n'est pas bloquant. L'écran Planning propose des substitutions moins chères, à valider manuellement.</small>` : ''}
-      ${unpriced ? `<small>${unpriced} article(s) sans prix renseigné ne sont pas comptés dans l'estimation.</small>` : ''}
+      ${
+        unpricedLines.length
+          ? `<div style="margin-top:8px">
+               <small>Prix non renseigné pour ${unpricedLines.length} article(s) — ils ne sont pas comptés dans l'estimation :</small>
+               <ul style="margin:4px 0 0;padding-left:18px">
+                 ${unpricedLines
+                   .map((l) => `<li><button class="btn btn--sm btn--ghost" data-open-food="${l.food.id}">${esc(l.food.name)}</button></li>`)
+                   .join('')}
+               </ul>
+             </div>`
+          : ''
+      }
     </div>
     ${lines.length ? sections : `<div class="empty">Aucun repas planifié : la liste de courses est vide.</div>`}
     ${lines.length ? `<div class="row" style="margin-top:12px"><button class="btn btn--sm" data-uncheck>Tout décocher</button></div>` : ''}
@@ -61,6 +73,15 @@ function wire(root) {
       update((s) => { s.shopping.purchased[id] = checked; });
     })
   );
+  // ouverture directe de la fiche aliment pour renseigner le prix manquant
+  root.querySelectorAll('[data-open-food]').forEach((b) =>
+    b.addEventListener('click', (e) => {
+      document.dispatchEvent(
+        new CustomEvent('nutriplan:open-food', { detail: { id: e.currentTarget.dataset.openFood } })
+      );
+    })
+  );
+
   root.querySelector('[data-uncheck]')?.addEventListener('click', () => {
     update((s) => { s.shopping.purchased = {}; });
   });

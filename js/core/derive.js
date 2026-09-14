@@ -126,15 +126,21 @@ export function batchSessions(settings) {
   return sessions;
 }
 
-/** L'aliment demande-t-il une cuisson ? Critère générique, fondé sur ses propriétés. */
-export const needsCooking = (food) =>
-  Boolean(food) && (food.referenceState === 'cru' || Boolean(food.cookingMethod));
+/**
+ * L'aliment demande-t-il une cuisson ?
+ * C'est une propriété EXPLICITE de la fiche aliment (requiresCooking) : elle
+ * n'est jamais déduite de l'état de référence. Un aliment cru peut très bien
+ * être consommé tel quel, et un aliment prêt à consommer peut demander une
+ * cuisson (gnocchis à poêler, par exemple).
+ */
+export const needsCooking = (food) => Boolean(food?.requiresCooking);
 
 /**
  * Trois catégories, déduites uniquement des propriétés de l'aliment :
- *   batch    — préparé pendant la session et conservé (batchAllowed)
- *   cook     — cuisson nécessaire mais non batchable : à cuire le jour même
- *   assemble — prêt à consommer : à assembler le jour même
+ *   batchAllowed = true                          → batch    (à préparer en batch)
+ *   batchAllowed = false et requiresCooking = true → cook     (à cuire le jour même)
+ *   requiresCooking = false                      → assemble (à assembler le jour même)
+ * L'état de référence n'intervient pas dans ce classement.
  */
 export function batchCategory(food) {
   if (!food) return 'assemble';
@@ -178,6 +184,8 @@ function servedGrams(food, qty, itemState) {
 export function buildBatchPlan(state, foodsById) {
   const sessions = batchSessions(state.settings);
   return sessions.map((s) => {
+    // nombre de jours que la préparation de cette session doit couvrir
+    const coveredDays = s.endDay - s.startDay + 1;
     const meals = state.meals.filter((m) => m.dayIndex >= s.startDay && m.dayIndex <= s.endDay);
     const needs = aggregateNeeds(meals, foodsById);
 
@@ -210,6 +218,13 @@ export function buildBatchPlan(state, foodsById) {
         note: preparationNote(food),
         summary: cookingSummary(food),
         needsCooking: needsCooking(food),
+        // durée de conservation renseignée dans la fiche aliment (null = inconnue)
+        shelfLifeDays: food.shelfLifeDays ?? null,
+        coveredDays,
+        shelfLifeShort:
+          Number.isFinite(Number(food.shelfLifeDays)) && food.shelfLifeDays !== null
+            ? Number(food.shelfLifeDays) < coveredDays
+            : false,
       });
     }
     components.sort((a, b) => b.requiredRaw - a.requiredRaw);
@@ -268,7 +283,20 @@ export function buildBatchPlan(state, foodsById) {
       ),
     }));
 
-    return { ...s, components, cookSameDay, assembleSameDay, gamelles, mealCount: meals.length };
+    // alertes : préparation dont la conservation ne couvre pas la session.
+    // Purement informatif : rien n'est supprimé, le planning n'est pas modifié.
+    const conservationAlerts = components
+      .filter((c) => c.shelfLifeShort)
+      .map((c) => ({
+        food: c.food,
+        shelfLifeDays: Number(c.shelfLifeDays),
+        coveredDays,
+        message:
+          `${c.food.name} se conserve ${c.shelfLifeDays} jour(s) après préparation, ` +
+          `mais cette session couvre ${coveredDays} jour(s).`,
+      }));
+
+    return { ...s, coveredDays, components, cookSameDay, assembleSameDay, gamelles, conservationAlerts, mealCount: meals.length };
   });
 }
 

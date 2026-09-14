@@ -177,6 +177,12 @@ export function seedFoods() {
     packageWeight: r[14] ?? null,
     batchAllowed: r[15],
     favorite: r[16],
+    // durée de conservation après préparation : non renseignée par défaut
+    // (aucune valeur inventée ; à compléter dans la fiche aliment)
+    shelfLifeDays: null,
+    // "Nécessite une cuisson" : donnée par défaut de la banque livrée, modifiable
+    // aliment par aliment. Ce n'est pas une règle : le moteur lit uniquement ce champ.
+    requiresCooking: Boolean(PREP[`f_${r[0]}`]?.cookingMethod) || r[8] === 'cru',
     lastUsed: null,
     // saisie par unités entières pour les aliments non fractionnables
     unitEntry: r[11] > 0 && r[12] === false,

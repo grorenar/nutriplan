@@ -86,6 +86,12 @@ function boot() {
 
   document.getElementById('print-btn').addEventListener('click', openPrintDialog);
 
+  // depuis l'écran Courses : ouvrir la fiche d'un aliment sans prix
+  document.addEventListener('nutriplan:open-food', (e) => {
+    foods.openFoodForm(e.detail.id);
+    navigate('foods');
+  });
+
   const hash = location.hash.replace('#', '');
   if (VIEWS.some((v) => v.id === hash)) current = hash;
   window.addEventListener('hashchange', () => {

@@ -30,6 +30,7 @@ Object.defineProperty(globalThis, 'navigator', { value: window.navigator, config
 globalThis.location = window.location;
 globalThis.confirm = () => true;
 globalThis.Blob = window.Blob;
+globalThis.CustomEvent = window.CustomEvent;
 globalThis.URL = window.URL;
 window.print = () => { printed++; };
 let printed = 0;
@@ -115,6 +116,10 @@ click($$('#drawer [data-add]')[0]);
 const wasaRow = $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent));
 check('aliment à l’unité ajouté', !!wasaRow);
 check('mention des multiples affichée', /multiples de 11 g/.test(wasaRow.textContent));
+click(wasaRow.querySelector('[data-unit-toggle]')); // passage en grammes
+const wasaGram = $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent)).querySelector('[data-qty]');
+check('pas du curseur = poids d’une unité', wasaGram.getAttribute('step') === '11', wasaGram.getAttribute('step'));
+click($$('#drawer .item').find((el) => /croustillant/i.test(el.textContent)).querySelector('[data-unit-toggle]'));
 const wasaInput = wasaRow.querySelector('[data-qty]');
 check('saisie en unités par défaut', wasaInput.dataset.unitmode === '1');
 change(wasaInput, '3');
@@ -158,6 +163,54 @@ const foodsAfter = JSON.parse(localStorage.getItem('nutriplan.state.v1')).foods;
 check('l’aliment est créé malgré l’avertissement',
   foodsAfter.filter((f) => f.name === 'Blanc de poulet').length === 2);
 check('aucun aliment fusionné ni supprimé', foodsAfter.length === 89, `${foodsAfter.length}`);
+
+console.log('\n— Fiche aliment : rendement et conservation');
+click($('[data-view="foods"]'));
+await wait();
+click($$('[data-edit]')[0]);
+await wait();
+check('champ nommé « Rendement après cuisson »', /Rendement après cuisson/.test($('#view').textContent));
+check('aide à la formule affichée', /poids cuit ÷ poids cru/.test($('#view').textContent));
+check('champ de conservation présent', !!$('[data-f="shelfLifeDays"]'));
+check('case « Nécessite une cuisson » présente', !!$('[data-f="requiresCooking"]'));
+check('indépendance vis-à-vis de l’état de référence expliquée',
+  /Indépendant de l.état de référence/.test($('#view').textContent));
+$('[data-f="shelfLifeDays"]').value = '3';
+click($('[data-yield-open]'));
+await wait();
+check('modale de calcul ouverte', !!$('[data-yield-run]'));
+$('[data-yield-raw]').value = '500';
+$('[data-yield-cooked]').value = '375';
+click($('[data-yield-run]'));
+await wait();
+check('rendement calculé affiché', /Rendement calculé : 0,75/.test($('#view').textContent));
+check('équivalence affichée', /100 g cru → 75 g cuit/.test($('#view').textContent));
+click($('[data-yield-apply]'));
+await wait();
+check('rendement reporté dans la fiche', $('[data-f="cookedFactor"]').value === '0.75', $('[data-f="cookedFactor"]').value);
+check('la saisie en cours est conservée', $('[data-f="shelfLifeDays"]').value === '3');
+const editedName = $('[data-f="name"]').value;
+click($('[data-save]'));
+await wait();
+const savedFood = JSON.parse(localStorage.getItem('nutriplan.state.v1')).foods.find((f) => f.name === editedName);
+check('rendement enregistré', savedFood.cookedFactor === 0.75, `${savedFood.cookedFactor}`);
+check('« nécessite une cuisson » enregistré', typeof savedFood.requiresCooking === 'boolean');
+check('conservation enregistrée', savedFood.shelfLifeDays === 3, `${savedFood.shelfLifeDays}`);
+
+// erreurs de saisie dans la modale
+click($$('[data-edit]')[0]);
+await wait();
+click($('[data-yield-open]'));
+await wait();
+$('[data-yield-raw]').value = '0';
+$('[data-yield-cooked]').value = '375';
+click($('[data-yield-run]'));
+await wait();
+check('poids cru nul : erreur affichée, aucun résultat',
+  /nul/i.test($('#view').textContent) && !/Rendement calculé/.test($('#view').textContent));
+click($('[data-yield-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
 
 console.log('\n— Catalogues, couverture et courses');
 click($('[data-view="breakfasts"]'));
@@ -239,6 +292,30 @@ check('ligne de courses avec besoin et conditionnement', /Besoin/.test(line || '
 const cb = $$('[data-buy]')[0];
 cb.checked = true; cb.dispatchEvent(new window.Event('change', { bubbles: true }));
 check('case "acheté" enregistrée', $$('[data-buy]')[0].checked === true);
+
+// aliments sans prix : nommés et cliquables (on vide le prix via la fiche)
+click($('[data-view="foods"]'));
+await wait();
+type($('[data-q]'), 'haricots verts');
+click($$('[data-edit]')[0]);
+await wait();
+const sansPrixNom = $('[data-f="name"]').value;
+$('[data-f="price"]').value = '';
+$('[data-f="packageWeight"]').value = '';
+click($('[data-save]'));
+await wait();
+click($('[data-view="shopping"]'));
+await wait();
+check('aliment sans prix nommé dans l’avertissement',
+  /Prix non renseigné/.test($('#view').textContent) && $('#view').textContent.includes(sansPrixNom), sansPrixNom);
+const openBtn = $$('[data-open-food]').find((b) => b.textContent.includes(sansPrixNom));
+check('lien vers la fiche disponible', !!openBtn);
+click(openBtn);
+await wait();
+check('la fiche de l’aliment s’ouvre dans Aliments',
+  $('#title').textContent === 'Banque alimentaire' && $('[data-f="name"]')?.value === sansPrixNom);
+click($('[data-form-cancel]'));
+await wait();
 
 click($('[data-view="batch"]'));
 const prep = $$('[data-prep]')[0];

@@ -77,10 +77,18 @@ export function normalizeFood(f) {
   return {
     brand: '', fiber: 0, cookedFactor: 1, unitName: '', gramsPerUnit: 0, fractionable: true,
     price: null, packageWeight: null, batchAllowed: false, favorite: false, lastUsed: null,
+    // durée maximale de conservation après préparation, en jours (null = non renseignée)
+    shelfLifeDays: null,
+    requiresCooking: false,
     cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
     ...f,
     // saisie par unités entières par défaut pour un aliment non fractionnable
     unitEntry: f.unitEntry ?? (Number(f.gramsPerUnit) > 0 && f.fractionable === false),
+    // "Nécessite une cuisson" est désormais une propriété explicite.
+    // Pour un aliment enregistré avant son introduction, on reprend UNE SEULE FOIS
+    // le classement qu'il avait, afin de ne rien changer aux plans existants ;
+    // la valeur est ensuite modifiable dans la fiche aliment.
+    requiresCooking: f.requiresCooking ?? (Boolean(f.cookingMethod) || f.referenceState === 'cru'),
   };
 }
 

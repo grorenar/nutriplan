@@ -112,6 +112,13 @@ function batchSection(s, byId) {
       .map(
         (sess) => `<h3>Session ${sess.index + 1} — jours ${sess.startDay + 1} à ${sess.endDay + 1}</h3>
       <p>Gamelles à préparer : ${sess.gamelles.map((g) => esc(slot(g.dayIndex, g.mealType))).join(', ') || 'aucune'}.</p>
+      ${
+        sess.conservationAlerts?.length
+          ? `<p><strong>Conservation insuffisante :</strong></p><ul>${sess.conservationAlerts
+              .map((a) => `<li>${esc(a.message)}</li>`)
+              .join('')}</ul>`
+          : ''
+      }
 
       <p><strong>${BATCH_CATEGORY_LABEL.batch}</strong></p>
       <table><thead><tr>

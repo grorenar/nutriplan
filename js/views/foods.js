@@ -1,7 +1,7 @@
 /** Écran ALIMENTS — banque alimentaire entièrement modifiable. */
 
 import { getState, update } from '../core/store.js';
-import { CATEGORIES, STATES } from '../core/nutrition.js';
+import { CATEGORIES, STATES, computeYield } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid, euros } from '../core/util.js';
 import { findSimilarFoods } from '../core/similarity.js';
 
@@ -9,6 +9,16 @@ let query = '';
 let cat = 'all';
 let editing = null; // id d'aliment ou 'new'
 let similarWarning = null; // { list, pending } — avertissement doublon, jamais bloquant
+let formDraft = null;      // saisie en cours, préservée entre deux rendus du formulaire
+let yieldCalc = null;      // { raw, cooked, result, error } — aide au calcul du rendement
+
+/** Ouvre directement la fiche d'un aliment (appelé depuis l'écran Courses). */
+export function openFoodForm(id) {
+  editing = id;
+  similarWarning = null;
+  formDraft = null;
+  yieldCalc = null;
+}
 
 export function render(root) {
   const s = getState();
@@ -41,6 +51,7 @@ export function render(root) {
     </div>
     <small>${list.length} aliment(s) affiché(s) sur ${s.foods.length}. Valeurs pour 100 g dans l'état de référence.</small>
     ${editing ? formPanel(s) : ''}
+    ${editing && yieldCalc ? yieldPanel() : ''}
   `;
   wire(root);
 }
@@ -70,13 +81,16 @@ const blank = () => ({
   kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0,
   referenceState: 'pret', cookedFactor: 1, unitName: '', gramsPerUnit: 0,
   fractionable: true, unitEntry: false, price: null, packageWeight: null,
-  batchAllowed: false, favorite: false, lastUsed: null,
+  batchAllowed: false, shelfLifeDays: null, requiresCooking: false, favorite: false, lastUsed: null,
   cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
 });
 
 function formPanel(s) {
-  // en cas d'avertissement de doublon, on ré-affiche la saisie en cours telle quelle
-  const f = editing === 'new' ? (similarWarning?.pending || blank()) : s.foods.find((x) => x.id === editing);
+  // la saisie en cours est conservée entre deux rendus (avertissement doublon,
+  // ouverture de l'aide au calcul du rendement…)
+  const f =
+    formDraft ||
+    (editing === 'new' ? similarWarning?.pending || blank() : s.foods.find((x) => x.id === editing));
   if (!f) return '';
   const n = (v) => (v === null || v === undefined ? '' : v);
   return `<div class="drawer" data-form-backdrop>
@@ -106,12 +120,16 @@ function formPanel(s) {
         <div class="grid grid--3">
           <label class="field">État de référence
             <select data-f="referenceState">${STATES.map((st) => `<option value="${st.id}" ${f.referenceState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}</select></label>
-          <label class="field">Coefficient cru → cuit
-            <input type="number" step="0.05" data-f="cookedFactor" value="${n(f.cookedFactor)}"></label>
+          <label class="field">Rendement après cuisson
+            <input type="number" step="0.05" min="0" data-f="cookedFactor" value="${n(f.cookedFactor)}"></label>
           <label class="field">Nom de l'unité
             <input type="text" data-f="unitName" value="${esc(f.unitName)}" placeholder="tranche, pot, œuf…"></label>
           <label class="field">Poids d'une unité (g)
             <input type="number" step="1" data-f="gramsPerUnit" value="${n(f.gramsPerUnit)}"></label>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button class="btn btn--sm" data-yield-open>Calculer le rendement</button>
+          <small>Coefficient = poids cuit ÷ poids cru. 2,00 → 100 g cru donnent 200 g cuit ; 0,75 → 100 g cru donnent 75 g cuit.</small>
         </div>
         <label class="check" style="margin-top:8px"><input type="checkbox" data-f="fractionable" ${f.fractionable ? 'checked' : ''}> Unité fractionnable (sinon quantités par unité entière)</label>
         <label class="check" style="margin-top:6px"><input type="checkbox" data-f="unitEntry" ${f.unitEntry ? 'checked' : ''}> Saisir les quantités en unités plutôt qu'en grammes</label>
@@ -124,7 +142,13 @@ function formPanel(s) {
             <input type="number" step="1" data-f="packageWeight" value="${n(f.packageWeight)}"></label>
         </div>
         <label class="check" style="margin-top:8px"><input type="checkbox" data-f="batchAllowed" ${f.batchAllowed ? 'checked' : ''}> Autorisé en batch cooking</label>
+        <div class="grid grid--3" style="margin-top:8px">
+          <label class="field">Durée maximale de conservation après préparation (jours)
+            <input type="number" step="1" min="0" data-f="shelfLifeDays" value="${n(f.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
+        </div>
         <h3 style="margin:16px 0 6px">Préparation</h3>
+        <label class="check"><input type="checkbox" data-f="requiresCooking" ${f.requiresCooking ? 'checked' : ''}> Nécessite une cuisson</label>
+        <small style="display:block;margin:4px 0 8px">Indépendant de l'état de référence : un aliment cru peut se consommer tel quel, un aliment prêt à consommer peut demander une cuisson. Sert au classement du batch : batchable → à préparer en batch ; sinon, cuisson nécessaire → à cuire le jour même ; sinon → à assembler le jour même.</small>
         <div class="grid grid--3">
           <label class="field">Méthode de cuisson
             <input type="text" data-f="cookingMethod" value="${esc(f.cookingMethod || '')}" placeholder="Four, poêle, vapeur…"></label>
@@ -139,7 +163,7 @@ function formPanel(s) {
         </div>
         <label class="field" style="margin-top:8px">Consignes libres
           <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
-        <small style="display:block;margin-top:4px">Rendement cru → cuit actuel : ${num((f.cookedFactor || 1) * 100, 0)} %. Ces informations sont reprises telles quelles dans le plan de batch.</small>
+        <small style="display:block;margin-top:4px">Rendement actuel : ${num(f.cookedFactor || 1, 2)} — 100 g crus donnent ${num((f.cookedFactor || 1) * 100, 0)} g cuits. Ces informations sont reprises telles quelles dans le plan de batch.</small>
         <label class="check" style="margin-top:6px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>
         ${similarWarning ? similarBox() : ''}
         <div class="row" style="margin-top:18px">
@@ -147,6 +171,40 @@ function formPanel(s) {
           ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${f.id}">Supprimer</button>`}
         </div>
         <small style="display:block;margin-top:10px">Les valeurs livrées par défaut sont génériques. Pour un produit de marque, recopie les valeurs de l'emballage.</small>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** Aide au calcul du rendement après cuisson (coefficient = cuit ÷ cru). */
+function yieldPanel() {
+  return `<div class="drawer" data-yield-backdrop>
+    <div class="drawer__panel" style="width:min(400px,100%)">
+      <div class="drawer__head"><div class="row">
+        <h3 style="flex:1">Calcul du rendement après cuisson</h3>
+        <button class="btn btn--ghost" data-yield-cancel>Fermer</button>
+      </div></div>
+      <div class="drawer__body">
+        <div class="grid grid--2">
+          <label class="field">Poids cru (g)
+            <input type="number" step="1" min="0" data-yield-raw value="${esc(yieldCalc.raw ?? '')}"></label>
+          <label class="field">Poids cuit (g)
+            <input type="number" step="1" min="0" data-yield-cooked value="${esc(yieldCalc.cooked ?? '')}"></label>
+        </div>
+        <div class="row" style="margin-top:12px"><button class="btn btn--primary" data-yield-run>Calculer</button></div>
+        ${yieldCalc.error ? `<p class="sync-error" style="margin-top:12px">${esc(yieldCalc.error)}</p>` : ''}
+        ${
+          yieldCalc.result !== null && yieldCalc.result !== undefined
+            ? `<div class="card" style="margin-top:12px">
+                 <strong>Rendement calculé : ${num(yieldCalc.result, 2)}</strong>
+                 <div>100 g cru → ${num(yieldCalc.result * 100, 0)} g cuit</div>
+                 <div class="row" style="margin-top:10px">
+                   <button class="btn btn--primary btn--sm" data-yield-apply>Utiliser ce rendement</button>
+                 </div>
+               </div>`
+            : ''
+        }
+        <small style="display:block;margin-top:12px">Coefficient = poids cuit ÷ poids cru.</small>
       </div>
     </div>
   </div>`;
@@ -167,6 +225,24 @@ function similarBox() {
     </ul>
     <small>Vérifie qu'il ne s'agit pas du même produit. Rien n'est fusionné ni supprimé automatiquement.</small>
   </div>`;
+}
+
+/** Remet le formulaire à zéro (fermeture, enregistrement, changement d'aliment). */
+function resetForm() {
+  editing = null;
+  similarWarning = null;
+  formDraft = null;
+  yieldCalc = null;
+}
+
+/** Mémorise la saisie en cours avant un rendu qui recrée le formulaire. */
+function captureDraft(root) {
+  const s = getState();
+  const base =
+    formDraft ||
+    (editing === 'new' ? similarWarning?.pending || blank() : s.foods.find((x) => x.id === editing)) ||
+    blank();
+  formDraft = readForm(root, base);
 }
 
 function readForm(root, base) {
@@ -199,11 +275,38 @@ function wire(root) {
     c.addEventListener('click', (e) => { cat = e.currentTarget.dataset.cat; render(root); })
   );
 
-  root.querySelector('[data-new]')?.addEventListener('click', () => { editing = 'new'; similarWarning = null; render(root); });
+  root.querySelector('[data-new]')?.addEventListener('click', () => { resetForm(); editing = 'new'; render(root); });
 
   root.querySelectorAll('[data-edit]').forEach((b) =>
-    b.addEventListener('click', (e) => { editing = e.currentTarget.dataset.edit; similarWarning = null; render(root); })
+    b.addEventListener('click', (e) => { const id = e.currentTarget.dataset.edit; resetForm(); editing = id; render(root); })
   );
+
+  // --- aide au calcul du rendement après cuisson
+  root.querySelector('[data-yield-open]')?.addEventListener('click', () => {
+    captureDraft(root);
+    yieldCalc = { raw: '', cooked: '', result: null, error: null };
+    render(root);
+  });
+  const closeYield = () => { yieldCalc = null; render(root); };
+  root.querySelector('[data-yield-cancel]')?.addEventListener('click', closeYield);
+  root.querySelector('[data-yield-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.yieldBackdrop !== undefined) closeYield();
+  });
+  root.querySelector('[data-yield-run]')?.addEventListener('click', () => {
+    const raw = root.querySelector('[data-yield-raw]').value;
+    const cooked = root.querySelector('[data-yield-cooked]').value;
+    const res = computeYield(raw, cooked);
+    yieldCalc = { raw, cooked, result: res.ok ? res.factor : null, error: res.ok ? null : res.error };
+    render(root);
+  });
+  root.querySelector('[data-yield-apply]')?.addEventListener('click', () => {
+    const factor = yieldCalc.result;
+    captureDraft(root);
+    formDraft = { ...formDraft, cookedFactor: factor };
+    yieldCalc = null;
+    render(root);
+    toast(`Rendement appliqué : ${num(factor, 2)}`);
+  });
 
   root.querySelectorAll('[data-fav]').forEach((b) =>
     b.addEventListener('click', (e) => {
@@ -215,15 +318,19 @@ function wire(root) {
     })
   );
 
-  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { editing = null; similarWarning = null; render(root); });
+  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { resetForm(); render(root); });
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.formBackdrop !== undefined) { editing = null; similarWarning = null; render(root); }
+    if (e.target.dataset.formBackdrop !== undefined && !yieldCalc) { resetForm(); render(root); }
   });
 
   root.querySelector('[data-save]')?.addEventListener('click', (e) => {
     const id = e.currentTarget.dataset.save;
     const s = getState();
-    const base = editing === 'new' ? { ...(similarWarning?.pending || blank()), id } : s.foods.find((x) => x.id === id);
+    const base = formDraft
+      ? { ...formDraft, id }
+      : editing === 'new'
+        ? { ...(similarWarning?.pending || blank()), id }
+        : s.foods.find((x) => x.id === id);
     const data = readForm(root, base);
     if (!data.name) { toast('Le nom est obligatoire', 'error'); return; }
 
@@ -244,7 +351,7 @@ function wire(root) {
       if (idx >= 0) st.foods[idx] = data;
       else st.foods.push(data);
     });
-    editing = null;
+    resetForm();
     toast('Aliment enregistré');
     render(root);
   });

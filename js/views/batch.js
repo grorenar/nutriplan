@@ -48,10 +48,23 @@ function sessionCard(sess, startWeekday) {
       <span class="tag">${esc(range)} · ${esc(days)}</span>
     </div>
     ${covered}
+    ${conservationBlock(sess)}
     ${componentsBlock(sess)}
     ${sameDayBlock('cook', sess.cookSameDay, startWeekday)}
     ${sameDayBlock('assemble', sess.assembleSameDay, startWeekday)}
     ${gamellesBlock(sess, startWeekday)}
+  </div>`;
+}
+
+/** Alerte : la conservation d'un composant ne couvre pas la durée de la session. */
+function conservationBlock(sess) {
+  if (!sess.conservationAlerts?.length) return '';
+  return `<div class="card" style="border-color:#eebeb9;background:var(--off-bg);margin-bottom:12px">
+    <strong>⚠️ Conservation insuffisante</strong>
+    <ul style="margin:6px 0 0;padding-left:18px">
+      ${sess.conservationAlerts.map((a) => `<li>${esc(a.message)}</li>`).join('')}
+    </ul>
+    <small>Rien n'est retiré et le planning n'est pas modifié : à toi de scinder la session, de réduire la durée de conservation dans les paramètres, ou de cuisiner ces composants plus tard.</small>
   </div>`;
 }
 
@@ -77,6 +90,11 @@ function componentsBlock(sess) {
           <strong>${esc(c.food.name)}</strong>
           ${method ? `<div class="tag">${method}</div>` : '<div class="tag muted">aucune consigne de cuisson définie dans la fiche aliment</div>'}
           ${c.note ? `<div class="tag">${esc(c.note)}</div>` : ''}
+          ${
+            c.shelfLifeDays !== null
+              ? `<div class="tag${c.shelfLifeShort ? ' sync-error' : ''}">conservation ${num(c.shelfLifeDays, 0)} j / ${num(c.coveredDays, 0)} j couverts</div>`
+              : ''
+          }
         </td>
         <td class="nums">
           ${c.needsCooking ? `${grams(c.requiredRaw)} crus` : grams(c.requiredRaw)}

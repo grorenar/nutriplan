@@ -91,6 +91,8 @@ const foodRow = (f) => ({
   price: f.price,
   package_weight: f.packageWeight,
   batch_allowed: f.batchAllowed,
+  shelf_life_days: f.shelfLifeDays ?? null,
+  requires_cooking: f.requiresCooking === true,
   favorite: f.favorite,
   last_used: f.lastUsed || null,
   unit_entry: f.unitEntry === true,
@@ -120,6 +122,14 @@ const foodFromRow = (r) => ({
   price: r.price,
   packageWeight: r.package_weight,
   batchAllowed: r.batch_allowed,
+  shelfLifeDays: r.shelf_life_days === null || r.shelf_life_days === undefined ? null : Number(r.shelf_life_days),
+  // NULL = ligne antérieure à l'introduction du champ (base pas encore migrée) :
+  // on reprend une seule fois l'ancien classement, comme le fait la migration SQL.
+  // Une valeur booléenne persistée n'est jamais recalculée.
+  requiresCooking:
+    r.requires_cooking === null || r.requires_cooking === undefined
+      ? Boolean(r.cooking_method) || r.reference_state === 'cru'
+      : r.requires_cooking === true,
   favorite: r.favorite,
   unitEntry: r.unit_entry === true,
   cookingMethod: r.cooking_method || '',

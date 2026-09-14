@@ -38,6 +38,8 @@ create table if not exists foods (
   price             numeric,
   package_weight    numeric,
   batch_allowed     boolean default false,
+  shelf_life_days   numeric,                          -- conservation après préparation (null = non renseignée)
+  requires_cooking  boolean default false,            -- propriété explicite, indépendante de reference_state
   favorite          boolean default false,
   last_used         timestamptz,
   unit_entry        boolean default false,          -- saisie des quantités en unités
@@ -194,6 +196,22 @@ alter table foods add column if not exists prep_time numeric;
 alter table foods add column if not exists equipment text;
 alter table foods add column if not exists instructions text;
 alter table foods add column if not exists last_used timestamptz;
+alter table foods add column if not exists shelf_life_days numeric;
+-- « Nécessite une cuisson » : propriété explicite ajoutée en V1.3.
+-- La colonne est ajoutée SANS valeur par défaut, pour qu'une ligne antérieure
+-- se distingue (NULL = jamais renseignée) d'une ligne où l'utilisateur a
+-- délibérément coché « non » (false).
+alter table foods add column if not exists requires_cooking boolean;
+
+-- Reprise UNE SEULE FOIS de l'ancien classement V1.2, pour les seules lignes
+-- jamais renseignées. Rejouable : au second passage il n'y a plus de NULL,
+-- donc plus rien à reprendre, et aucune valeur existante n'est recalculée.
+update foods
+   set requires_cooking = (coalesce(cooking_method, '') <> '' or reference_state = 'cru')
+ where requires_cooking is null;
+
+-- À partir d'ici, la valeur est persistée et pilotée par la fiche aliment.
+alter table foods alter column requires_cooking set default false;
 alter table breakfast_options add column if not exists uses_thomas int not null default 0;
 alter table breakfast_options add column if not exists uses_julie int not null default 0;
 alter table snack_options add column if not exists target_slot text not null default 'afternoon';

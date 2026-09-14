@@ -60,6 +60,12 @@ function replaceAll(payload, uid) {
 /* Base de test jetable : émulation de ce que Supabase fournit          */
 /* ------------------------------------------------------------------ */
 
+/** Rejoue supabase/schema.sql tel qu'il sera collé dans l'éditeur SQL de Supabase. */
+function applySchema() {
+  const schemaPath = new URL('../supabase/schema.sql', import.meta.url).pathname;
+  execFileSync('su', [PSQL_USER, '-c', `psql -q -d ${DB} -f ${schemaPath}`], { encoding: 'utf8' });
+}
+
 function bootstrap() {
   const admin = (text) => {
     const file = join(tmp, `admin${Math.random().toString(36).slice(2)}.sql`);
@@ -92,8 +98,7 @@ alter default privileges in schema public grant all on tables to authenticated;
   execFileSync('su', [PSQL_USER, '-c', `psql -q -d ${DB} -f ${f2}`], { encoding: 'utf8' });
 
   // le schéma réel du projet, tel qu'il sera collé dans Supabase
-  const schemaPath = new URL('../supabase/schema.sql', import.meta.url).pathname;
-  execFileSync('su', [PSQL_USER, '-c', `psql -q -d ${DB} -f ${schemaPath}`], { encoding: 'utf8' });
+  applySchema();
 
   // droits sur les tables créées par le schéma (Supabase les accorde par défaut)
   const f3 = join(tmp, 'grants.sql');
@@ -118,7 +123,8 @@ state.foods.push({
   kcal: 150, protein: 25, carbs: 0, fat: 6, fiber: 0,
   referenceState: 'cru', cookedFactor: 0.75, unitName: 'cuisse', gramsPerUnit: 250, fractionable: false,
   unitEntry: true, price: 19.9, packageWeight: 500, batchAllowed: true, favorite: false, lastUsed: null,
-  cookingMethod: 'Four', cookingTemp: 200, cookingTime: 35, prepTime: 10, equipment: 'Four',
+  cookingMethod: 'Four', cookingTemp: 200, cookingTime: 35, prepTime: 10, equipment: 'Four', shelfLifeDays: 3,
+  requiresCooking: true,
   instructions: 'Cuire entière, laisser reposer, trancher.',
 });
 const f = (n) => seedFoods().find((x) => x.name.toLowerCase().includes(n)).id;
@@ -232,10 +238,71 @@ check('consignes libres conservées', /Cuire entière/.test(dino.instructions));
 check('matériel conservé', dino.equipment === 'Four');
 check('rendement cru → cuit conservé', Number(dino.cookedFactor) === 0.75);
 check('mode de saisie par unités conservé', dino.unitEntry === true && dino.gramsPerUnit === 250);
+check('durée de conservation après préparation conservée', dino.shelfLifeDays === 3, `${dino.shelfLifeDays}`);
+check('durée non renseignée reste nulle', back.foods.find((x) => x.id === f('riz basmati')).shelfLifeDays === null);
 check('catalogue de collations unique conservé', back.snacks.length === 1 && back.snacks[0].items.length === 1);
 check('objectif de référence de la collation conservé', back.snacks[0].targetSlot === 'evening');
 check('cases "acheté" conservées', back.shopping.purchased[f('riz basmati')] === true);
 check('quantités de batch manuelles conservées', back.batch.overrides[`0:${f('blanc de poulet')}`] === 1500);
+
+console.log('\n— Migration d’une base V1.2 : colonne requires_cooking');
+// On simule des lignes antérieures à l'introduction du champ : la colonne existe
+// mais n'a jamais été renseignée (NULL), comme après un simple "add column".
+sql(`
+  alter table foods alter column requires_cooking drop default;
+  insert into foods (user_id, id, name, category, reference_state, cooking_method, requires_cooking)
+  values
+    ('${UID1}', 'legacy_cru_sans_methode', 'Légume cru', 'legume', 'cru', null, null),
+    ('${UID1}', 'legacy_cuit_avec_methode', 'Plat cuit', 'proteine', 'cuit', 'Four', null),
+    ('${UID1}', 'legacy_cuit_sans_methode', 'Conserve', 'autre', 'cuit', null, null),
+    ('${UID1}', 'legacy_choix_utilisateur', 'Cru mangé tel quel', 'legume', 'cru', null, false)
+  on conflict (user_id, id) do nothing;
+`);
+const legacyNulls = Number(sql(`select count(*) from foods where requires_cooking is null and user_id = '${UID1}';`));
+check('lignes V1.2 non renseignées avant migration', legacyNulls === 3, `${legacyNulls}`);
+
+applySchema(); // première migration
+
+const rc = (id) => sql(`select requires_cooking from foods where user_id = '${UID1}' and id = '${id}';`);
+check('cru sans méthode de cuisson → true', rc('legacy_cru_sans_methode') === 't', rc('legacy_cru_sans_methode'));
+check('cuit avec méthode de cuisson → true', rc('legacy_cuit_avec_methode') === 't', rc('legacy_cuit_avec_methode'));
+check('cuit sans méthode de cuisson → false', rc('legacy_cuit_sans_methode') === 'f', rc('legacy_cuit_sans_methode'));
+check('valeur déjà renseignée par l’utilisateur : intacte', rc('legacy_choix_utilisateur') === 'f');
+check('plus aucune ligne non renseignée',
+  Number(sql(`select count(*) from foods where requires_cooking is null;`)) === 0);
+
+// l'utilisateur modifie ensuite explicitement la valeur : elle ne doit plus bouger
+sql(`update foods set requires_cooking = false where user_id = '${UID1}' and id = 'legacy_cru_sans_methode';`);
+applySchema(); // migration rejouée
+check('migration rejouable sans effet de bord', rc('legacy_cru_sans_methode') === 'f', rc('legacy_cru_sans_methode'));
+check('les autres valeurs restent stables',
+  rc('legacy_cuit_avec_methode') === 't' && rc('legacy_cuit_sans_methode') === 'f');
+
+// côté client : une base pas encore migrée (NULL) reprend le même classement
+const clientSide = tablesToState({
+  foods: [
+    { id: 'x1', name: 'Cru', category: 'legume', reference_state: 'cru', cooking_method: null, requires_cooking: null,
+      kcal_per_100g: 20, protein_per_100g: 1, carbs_per_100g: 2, fat_per_100g: 0 },
+    { id: 'x2', name: 'Cuit méthode', category: 'proteine', reference_state: 'cuit', cooking_method: 'Four', requires_cooking: null,
+      kcal_per_100g: 150, protein_per_100g: 20, carbs_per_100g: 0, fat_per_100g: 7 },
+    { id: 'x3', name: 'Cuit sans méthode', category: 'autre', reference_state: 'cuit', cooking_method: null, requires_cooking: null,
+      kcal_per_100g: 100, protein_per_100g: 5, carbs_per_100g: 10, fat_per_100g: 2 },
+    { id: 'x4', name: 'Choix utilisateur', category: 'legume', reference_state: 'cru', cooking_method: null, requires_cooking: false,
+      kcal_per_100g: 20, protein_per_100g: 1, carbs_per_100g: 2, fat_per_100g: 0 },
+  ],
+});
+const cs = (id) => clientSide.foods.find((f) => f.id === id).requiresCooking;
+check('client : cru sans méthode → true', cs('x1') === true);
+check('client : cuit avec méthode → true', cs('x2') === true);
+check('client : cuit sans méthode → false', cs('x3') === false);
+check('client : false explicite jamais recalculé', cs('x4') === false);
+check('client : une valeur true persistée est relue telle quelle',
+  tablesToState({ foods: [{ id: 'y', name: 'Y', category: 'autre', reference_state: 'pret', cooking_method: null,
+    requires_cooking: true, kcal_per_100g: 1, protein_per_100g: 0, carbs_per_100g: 0, fat_per_100g: 0 }] })
+    .foods[0].requiresCooking === true);
+
+// nettoyage : on repart de l'état envoyé par le client pour la suite des tests
+replaceAll(payload, UID1);
 
 console.log('\n— Isolation entre comptes (RLS)');
 const small = stateToTables({ ...state, foods: state.foods.slice(0, 3), meals: [], breakfasts: [], snacks: [], shopping: { purchased: {} }, batch: { overrides: {} } });

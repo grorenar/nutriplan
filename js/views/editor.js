@@ -7,7 +7,7 @@ import { getState, update, foodsById, newItem, newFreeItem, catalogKey } from '.
 import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
   mealMacros, macrosFor, evaluate, autoAdjust, initialQuantity, diagnose,
-  snapQuantity, isUnitFood, isWholeUnitFood, toUnits, fromUnits,
+  snapQuantity, isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep,
 } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid } from '../core/util.js';
 
@@ -221,7 +221,9 @@ function renderItems(entity, byId, state) {
       // Saisie en unités ou en grammes ; dans les deux cas, la quantité stockée
       // reste un multiple entier de gramsPerUnit pour un aliment non fractionnable.
       const unitMode = isUnitFood(food) && food.unitEntry;
-      const step = unitMode ? (isWholeUnitFood(food) ? 1 : 0.5) : 1;
+      // en grammes, le pas suit gramsPerUnit pour un aliment non fractionnable :
+      // 13 → 26 → 39 → 52, jamais 25 → 26 → 27.
+      const step = quantityStep(food, { inUnits: unitMode });
 
       const qtyBoxes = PERSONS.map((person) => {
         const qty = it.qty[person] || 0;
@@ -254,7 +256,7 @@ function renderItems(entity, byId, state) {
                 ? `<button class="btn btn--sm" data-unit-toggle="${food.id}">Saisie : ${food.unitEntry ? esc(unitLabel(food, 1)) : 'grammes'}</button>`
                 : ''
             }
-            ${isWholeUnitFood(food) ? `<span class="tag">multiples de ${num(food.gramsPerUnit, 0)} g</span>` : ''}
+            ${isWholeUnitFood(food) ? `<span class="tag">multiples de ${num(food.gramsPerUnit, 0)} g (pas du curseur)</span>` : ''}
           </div>
           <div class="item__qty" style="margin-top:8px">${qtyBoxes}</div>
         </div>

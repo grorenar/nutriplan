@@ -9,11 +9,11 @@
 import {
   autoAdjust, adjustQuantities, mealMacros, macrosFor, evaluate, diagnose,
   initialQuantity, roundQuantity, convertGrams, toReferenceGrams, profileOf,
-  snapQuantity, toUnits, fromUnits, isWholeUnitFood, MACRO_KEYS,
+  snapQuantity, toUnits, fromUnits, isWholeUnitFood, MACRO_KEYS, computeYield, quantityStep,
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
-  coverageReport, optionUses,
+  coverageReport, optionUses, needsCooking,
 } from '../js/core/derive.js';
 import { seedFoods } from '../js/core/seed-foods.js';
 import { migrateState } from '../js/core/store.js';
@@ -349,6 +349,17 @@ test('Unités — multiple entier de gramsPerUnit, quelle que soit la saisie', (
     check(`ajustement (${label}) : toutes les quantités restent des multiples`, ok,
       items.map((it) => `${map[it.foodId].name} ${it.qty.thomas}/${it.qty.julie}`).join(' | '));
   }
+  // pas du stepper : gramsPerUnit en grammes, 1 en unités
+  check('pas du curseur en grammes = 13 g', quantityStep(wasa) === 13, `${quantityStep(wasa)}`);
+  check('pas du curseur en unités = 1', quantityStep(wasa, { inUnits: true }) === 1);
+  check('aliment à 15 g/unité : pas de 15 g', quantityStep({ gramsPerUnit: 15, fractionable: false }) === 15);
+  check('aliment à 20 g/unité : pas de 20 g', quantityStep({ gramsPerUnit: 20, fractionable: false }) === 20);
+  check('aliment fractionnable : pas de 1 g', quantityStep(F('Blanc de poulet')) === 1);
+  const suite = [13, 26, 39, 52, 65];
+  let v = 0;
+  const walked = suite.map(() => (v += quantityStep(wasa)));
+  check('progression 13 → 26 → 39 → 52 → 65', walked.join(' ') === suite.join(' '), walked.join(' '));
+  check('chaque palier reste un multiple valide', walked.every((x) => snapQuantity(wasa, x) === x));
   check('quantité initiale proposée déjà en multiples', initialQuantity(wasa) % 13 === 0, `${initialQuantity(wasa)}`);
   check('borne haute respectée en multiples', roundQuantity(wasa, 5000, 0, 400) % 13 === 0);
 });
@@ -357,6 +368,29 @@ function PERSONS_EVERY(it, food) {
   if (!isWholeUnitFood(food)) return true;
   return ['thomas', 'julie'].every((p) => (it.qty[p] || 0) % food.gramsPerUnit === 0);
 }
+
+test('Rendement après cuisson — coefficient = poids cuit ÷ poids cru', () => {
+  const f = (raw, cooked) => computeYield(raw, cooked);
+  check('500 g crus → 375 g cuits = 0,75', f(500, 375).factor === 0.75, `${f(500, 375).factor}`);
+  check('500 g crus → 1000 g cuits = 2', f(500, 1000).factor === 2);
+  check('500 g crus → 400 g cuits = 0,8', f(500, 400).factor === 0.8);
+  check('100 g crus → 240 g cuits = 2,4', f(100, 240).factor === 2.4);
+  check('la formule n’est jamais inversée', f(100, 75).factor === 0.75 && f(75, 100).factor !== 0.75);
+  check('virgule décimale acceptée', f('500', '375,5').ok === true);
+
+  check('poids cru nul refusé', f(0, 375).ok === false && /nul/i.test(f(0, 375).error));
+  check('aucune division par zéro', Number.isFinite(f(0, 375).factor ?? 0));
+  check('poids cuit nul refusé', f(500, 0).ok === false);
+  check('champ vide refusé', f('', 375).ok === false && f(500, '').ok === false);
+  check('valeur négative refusée', f(-500, 375).ok === false && f(500, -375).ok === false);
+  check('valeur non numérique refusée', f('abc', 375).ok === false && /nombre/i.test(f('abc', 375).error));
+  check('message d’erreur fourni dans tous les cas',
+    [f(0, 1), f('', ''), f(-1, 1), f('x', 'y')].every((r) => typeof r.error === 'string' && r.error.length > 0));
+
+  // cohérence avec le moteur : le coefficient calculé se comporte comme attendu
+  const food = { ...F('Blanc de poulet'), cookedFactor: f(500, 375).factor };
+  check('coefficient appliqué par le moteur', convertGrams(food, 100, 'cru', 'cuit') === 75);
+});
 
 test('Macros — les glucides s’affichent "G"', () => {
   const labels = MACRO_KEYS.map((m) => m.label);
@@ -445,6 +479,8 @@ test('Batch — agrégation par session et trois catégories', () => {
   // --- trois catégories, déduites des propriétés des aliments
   check('catégorie "batch" pour un aliment batchable', batchCategory(F('Blanc de poulet')) === 'batch');
   check('catégorie "cuisson du jour" pour le poisson', batchCategory(F('Cabillaud')) === 'cook');
+  check('le poisson est marqué comme nécessitant une cuisson', F('Cabillaud').requiresCooking === true);
+  check('le skyr n’est pas marqué comme nécessitant une cuisson', F('Skyr').requiresCooking === false);
   check('catégorie "cuisson du jour" pour les œufs', batchCategory(F('Œuf entier')) === 'cook');
   check('catégorie "assemblage" pour le wrap', batchCategory(F('Wrap')) === 'assemble');
   check('catégorie "assemblage" pour le skyr', batchCategory(F('Skyr')) === 'assemble');
@@ -519,6 +555,7 @@ test('Fiche aliment — paramètres de cuisson personnalisés repris dans le pla
     kcal: 150, protein: 25, carbs: 0, fat: 6, fiber: 0,
     referenceState: 'cru', cookedFactor: 0.75, unitName: '', gramsPerUnit: 0, fractionable: true,
     price: null, packageWeight: null, batchAllowed: true, favorite: false, lastUsed: null, unitEntry: false,
+    requiresCooking: true,
     cookingMethod: 'Four', cookingTemp: 200, cookingTime: 35, prepTime: 10, equipment: 'Four',
     instructions: 'Sortir 20 min avant, cuire entier, trancher après repos.',
   };
@@ -744,6 +781,127 @@ test('Migration — ancien modèle de catalogues converti sans perte', () => {
     whey.targetSlot === 'afternoon' && skyr.targetSlot === 'evening');
   check('ingrédients et noms préservés', whey.name === 'Whey' && Array.isArray(whey.items));
   check('couverture calculable après migration', coverageReport(next).snack_evening.persons.julie.used === 1);
+
+  // "nécessite cuisson" : les aliments enregistrés avant son introduction gardent leur classement
+  const legacy = migrateState({
+    ...old,
+    foods: [
+      { id: 'a', name: 'Viande', category: 'proteine', referenceState: 'cru', cookingMethod: 'Four', batchAllowed: false, kcal: 1, protein: 0, carbs: 0, fat: 0 },
+      { id: 'b', name: 'Skyr', category: 'laitier', referenceState: 'pret', batchAllowed: false, kcal: 1, protein: 0, carbs: 0, fat: 0 },
+      { id: 'c', name: 'Déjà renseigné', category: 'autre', referenceState: 'cru', requiresCooking: false, batchAllowed: false, kcal: 1, protein: 0, carbs: 0, fat: 0 },
+    ],
+  }).foods;
+  check('aliment V1.2 cuisiné : classement conservé', legacy[0].requiresCooking === true);
+  check('aliment V1.2 prêt à consommer : pas de cuisson inventée', legacy[1].requiresCooking === false);
+  check('valeur déjà renseignée : jamais écrasée', legacy[2].requiresCooking === false);
+});
+
+test('Classement batch — "nécessite cuisson" est une propriété explicite', () => {
+  const base = {
+    id: 'f_x', name: 'Aliment test', category: 'proteine', brand: '',
+    kcal: 150, protein: 20, carbs: 0, fat: 7, fiber: 0,
+    cookedFactor: 0.8, unitName: '', gramsPerUnit: 0, fractionable: true,
+    price: null, packageWeight: null, favorite: false, lastUsed: null, shelfLifeDays: null,
+    cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+  };
+  const food = (over) => ({ ...base, ...over });
+
+  // 1. cru + nécessite cuisson + non batchable → cuisson du jour
+  const cas1 = food({ referenceState: 'cru', requiresCooking: true, batchAllowed: false });
+  check('1. cru + cuisson + non batchable → à cuire le jour même', batchCategory(cas1) === 'cook');
+
+  // 2. cru + ne nécessite PAS de cuisson + non batchable → assemblage
+  const cas2 = food({ referenceState: 'cru', requiresCooking: false, batchAllowed: false });
+  check('2. cru + sans cuisson + non batchable → à assembler le jour même', batchCategory(cas2) === 'assemble',
+    batchCategory(cas2));
+  check('l’état cru n’implique plus la cuisson', needsCooking(cas2) === false);
+
+  // 3. cru + batchable → batch (quelle que soit la cuisson)
+  check('3. cru + batchable → à préparer en batch',
+    batchCategory(food({ referenceState: 'cru', requiresCooking: true, batchAllowed: true })) === 'batch' &&
+    batchCategory(food({ referenceState: 'cru', requiresCooking: false, batchAllowed: true })) === 'batch');
+
+  // 4. cuit / prêt à consommer + sans cuisson → assemblage
+  check('4. cuit sans cuisson → à assembler',
+    batchCategory(food({ referenceState: 'cuit', requiresCooking: false, batchAllowed: false })) === 'assemble');
+  check('4 bis. prêt à consommer sans cuisson → à assembler',
+    batchCategory(food({ referenceState: 'pret', requiresCooking: false, batchAllowed: false })) === 'assemble');
+
+  // cas inverse : prêt à consommer MAIS nécessitant une cuisson (gnocchis à poêler)
+  check('prêt à consommer + cuisson → à cuire le jour même',
+    batchCategory(food({ referenceState: 'pret', requiresCooking: true, batchAllowed: false })) === 'cook');
+  check('la méthode de cuisson seule ne classe plus l’aliment',
+    batchCategory(food({ referenceState: 'pret', requiresCooking: false, batchAllowed: false, cookingMethod: 'Poêle' })) === 'assemble');
+  check('batchAllowed reste prioritaire et inchangé',
+    ['cru', 'cuit', 'egoutte', 'pret'].every((st) =>
+      batchCategory(food({ referenceState: st, requiresCooking: false, batchAllowed: true })) === 'batch'));
+
+  // effet dans un plan réel
+  const st = batchState();
+  const cru = { ...cas2, id: 'f_cru_assemble', name: 'Cru à assembler' };
+  st.foods = [...st.foods, cru];
+  st.meals[0].items = [item(cru, 0, { thomas: 100, julie: 80 })];
+  const sess = buildBatchPlan(st, { ...byId, f_cru_assemble: cru })[0];
+  check('un aliment cru sans cuisson va bien dans "à assembler"',
+    sess.assembleSameDay.some((x) => x.food.id === 'f_cru_assemble') &&
+    !sess.cookSameDay.some((x) => x.food.id === 'f_cru_assemble'));
+  check('il n’est pas converti en poids cuit dans les gamelles',
+    sess.gamelles[0].persons.thomas.find((e) => e.food?.id === 'f_cru_assemble').cooked === false);
+});
+
+test('Conservation après préparation — alerte sans rien modifier', () => {
+  const poulet = { ...F('Blanc de poulet'), id: 'f_court', name: 'Poulet test', shelfLifeDays: 2 };
+  const st = batchState();
+  st.settings.batch.maxDays = 3; // session de 3 jours
+  st.foods = [...st.foods, poulet];
+  st.meals[0].items = [item(poulet, 0, { thomas: 180, julie: 130 })];
+  const local = { ...byId, f_court: poulet };
+
+  const mealsBefore = JSON.stringify(st.meals);
+  const sess = buildBatchPlan(st, local)[0];
+  const comp = sess.components.find((c) => c.food.id === 'f_court');
+  info(`session de ${sess.coveredDays} j, conservation ${comp.shelfLifeDays} j`);
+  check('durée de conservation remontée dans le plan', comp.shelfLifeDays === 2);
+  check('durée couverte par la session calculée', comp.coveredDays === 3);
+  check('conservation insuffisante détectée', comp.shelfLifeShort === true);
+  check('alerte explicite', sess.conservationAlerts.length === 1 && /se conserve 2 jour/.test(sess.conservationAlerts[0].message));
+  check('la préparation n’est pas supprimée', !!comp && comp.requiredRaw > 0);
+  check('le planning n’est pas modifié', JSON.stringify(st.meals) === mealsBefore);
+
+  // durée suffisante
+  const ok = { ...poulet, shelfLifeDays: 4 };
+  const sess2 = buildBatchPlan({ ...st, foods: [...st.foods, ok] }, { ...local, f_court: ok })[0];
+  check('durée suffisante : aucune alerte', sess2.conservationAlerts.length === 0);
+  check('composant toujours présent', sess2.components.some((c) => c.food.id === 'f_court'));
+
+  // durée non renseignée : aucune invention
+  const unknown = { ...poulet, shelfLifeDays: null };
+  const sess3 = buildBatchPlan({ ...st, foods: [...st.foods, unknown] }, { ...local, f_court: unknown })[0];
+  const comp3 = sess3.components.find((c) => c.food.id === 'f_court');
+  check('durée inconnue : valeur null conservée', comp3.shelfLifeDays === null);
+  check('durée inconnue : aucune alerte inventée', sess3.conservationAlerts.length === 0);
+
+  // sessions plus courtes : le problème disparaît sans toucher au planning
+  const shortSession = { ...st, settings: { ...st.settings, batch: { ...st.settings.batch, maxDays: 2 } } };
+  check('session de 2 jours : conservation de 2 j suffisante',
+    buildBatchPlan(shortSession, local)[0].conservationAlerts.length === 0);
+  check('classification batch inchangée par la conservation', batchCategory(poulet) === 'batch');
+});
+
+test('Courses — les aliments sans prix sont nommés', () => {
+  const sansPrix = { ...F('Riz basmati'), id: 'f_sans_prix', name: 'Riz complet test', price: null, packageWeight: null };
+  const st = batchState();
+  st.foods = [...st.foods, sansPrix];
+  st.meals[0].items = [item(sansPrix, 0, { thomas: 100, julie: 80 }), item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 })];
+  const list = buildShoppingList(st, { ...byId, f_sans_prix: sansPrix });
+  const unpriced = list.lines.filter((l) => l.cost === null);
+  check('la ligne sans prix est identifiable', unpriced.length === 1);
+  check('le nom de l’aliment est disponible', unpriced[0].food.name === 'Riz complet test');
+  check('son identifiant permet d’ouvrir sa fiche', unpriced[0].food.id === 'f_sans_prix');
+  check('compteur cohérent', list.unpriced === unpriced.length);
+  check('aucun prix inventé', unpriced[0].cost === null);
+  check('le besoin reste calculé', unpriced[0].required === 180);
+  check('le budget ne compte que les articles valorisés', list.total > 0);
 });
 
 test('Doublons — avertissement à la création, jamais de fusion', () => {
