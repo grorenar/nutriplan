@@ -23,7 +23,7 @@ export const CATEGORIES = [
 ];
 
 export const STATES = [
-  { id: 'cru', label: 'Cru' },
+  { id: 'cru', label: 'Cru / brut' },
   { id: 'cuit', label: 'Cuit' },
   { id: 'egoutte', label: 'Égoutté' },
   { id: 'pret', label: 'Prêt à consommer' },
@@ -65,13 +65,61 @@ export const profileOf = (food) => CATEGORY_PROFILE[food?.category] || CATEGORY_
 /* Conversion d'état                                                   */
 /* ------------------------------------------------------------------ */
 
+/** Le rendement après cuisson de l'aliment est-il exploitable ? */
+const cookedFactorOf = (food) => {
+  const f = Number(food?.cookedFactor);
+  return Number.isFinite(f) && f > 0 ? f : null;
+};
+
+/**
+ * Une conversion entre deux états est-elle définie pour cet aliment ?
+ * Seul le couple cru <-> cuit dispose d'un coefficient (le rendement après
+ * cuisson). Aucun coefficient n'est inventé pour « égoutté » ou « prêt à
+ * consommer » : ces états ne se convertissent pas.
+ */
+export function canConvert(food, fromState, toState) {
+  if (!fromState || !toState || fromState === toState) return true;
+  const pair = [fromState, toState].sort().join('-'); // "cru-cuit"
+  if (pair !== 'cru-cuit') return false;
+  return cookedFactorOf(food) !== null;
+}
+
+/**
+ * État de la conversion nécessaire entre l'état saisi dans le repas et l'état
+ * des valeurs nutritionnelles de l'aliment. Sert à prévenir l'utilisateur
+ * plutôt qu'à produire un calcul inventé.
+ */
+export function conversionInfo(food, itemState) {
+  const from = itemState || food?.referenceState;
+  const to = food?.referenceState;
+  const needed = Boolean(from && to && from !== to);
+  const possible = canConvert(food, from, to);
+  return {
+    from,
+    to,
+    needed,
+    possible,
+    factor: needed && possible ? cookedFactorOf(food) : null,
+    message:
+      needed && !possible
+        ? `Aucune conversion définie entre « ${stateLabel(from)} » et « ${stateLabel(to)} » : ` +
+          `les macros sont calculées sur le poids saisi, sans conversion.`
+        : null,
+  };
+}
+
+export const stateLabel = (id) => STATES.find((s) => s.id === id)?.label || id || '';
+
 /**
  * Convertit une quantité exprimée dans `fromState` vers `toState`.
- * Seul le couple cru <-> cuit modifie le poids (coefficient de l'aliment).
+ * Seul le couple cru <-> cuit modifie le poids (rendement après cuisson :
+ * coefficient = poids cuit ÷ poids cru). Toute autre combinaison est renvoyée
+ * telle quelle : aucun coefficient n'est inventé.
  */
 export function convertGrams(food, qty, fromState, toState) {
   if (!food || !qty || fromState === toState) return qty;
-  const f = Number(food.cookedFactor) > 0 ? Number(food.cookedFactor) : 1;
+  if (!canConvert(food, fromState, toState)) return qty;
+  const f = cookedFactorOf(food) ?? 1;
   if (fromState === 'cru' && toState === 'cuit') return qty * f;
   if (fromState === 'cuit' && toState === 'cru') return qty / f;
   return qty; // égoutté / prêt : pas de conversion automatique

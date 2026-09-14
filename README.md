@@ -64,6 +64,13 @@ l'aliment. Tous les calculs internes sont en grammes.
 
 ## 3. Logique de calcul et d'ajustement
 
+**États.** Chaque aliment déclare l'**état des valeurs nutritionnelles** saisies pour 100 g
+(cru / brut, cuit, égoutté, prêt à consommer). Dans un repas, chaque ingrédient déclare l'état
+réellement pesé, affiché à côté de la quantité. Quand les deux diffèrent, la conversion utilise le
+rendement après cuisson (200 g cuits ÷ 2,50 = 80 g crus). Aucun coefficient n'est inventé pour les
+états « égoutté » et « prêt à consommer » ni quand le rendement n'est pas renseigné : dans ce cas
+l'application le dit explicitement sous le champ plutôt que de produire un calcul faux.
+
 **Macros.** Les grammes saisis sont d'abord ramenés à l'état de référence de l'aliment
 (coefficient `cookedFactor`, ex. pâtes 100 g crus → 240 g cuits), puis multipliés par les valeurs
 pour 100 g. La cuisson change le poids, jamais les macros.
@@ -246,9 +253,11 @@ aucune solution n'est inventée. Le plan de batch reprend ces informations telle
 association et aucune habitude alimentaire n'est codée dans l'application. Les valeurs livrées avec
 la banque initiale sont des données par défaut, modifiables ou supprimables.
 
-À la création d'un aliment, un avertissement **non bloquant** signale les produits déjà présents
-qui lui ressemblent (nom proche, même marque, même poids par unité, valeurs voisines) ; le bouton
-devient « Créer quand même ». Le même contrôle tourne après un import JSON et liste les doublons
+À la création d'un aliment, une **popup de confirmation bloquante** signale les produits déjà
+présents qui lui ressemblent (nom proche, même marque, même poids par unité, valeurs voisines),
+avec leurs macros pour 100 g face à celles de l'élément en cours de création : « Annuler » ne crée
+rien, « Créer quand même » poursuit. C'est le seul mécanisme utilisé pour ce cas — aucun toast ni
+message en bas de fenêtre en parallèle. Le même contrôle tourne après un import JSON et liste les doublons
 possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
 
 ## 8. Tests

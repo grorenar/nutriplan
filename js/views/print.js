@@ -1,7 +1,7 @@
 /** Impression A4 — construit un document propre dans #print puis lance l'impression. */
 
 import { getState, foodsById } from '../core/store.js';
-import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core/nutrition.js';
+import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, stateLabel } from '../core/nutrition.js';
 import { buildBatchPlan, buildShoppingList, BATCH_CATEGORY_LABEL, coverageReport } from '../core/derive.js';
 import { dayName, esc, grams, euros, num } from '../core/util.js';
 
@@ -64,9 +64,10 @@ function itemLine(it, byId) {
   if (!it.foodId) return `${esc(it.free.name)} — ${esc(it.free.quantity || 'au goût')}`;
   const f = byId[it.foodId];
   if (!f) return 'Aliment supprimé';
-  const state = it.state || f.referenceState;
-  const q = (p) => `${PERSON_LABEL[p]} ${num(it.qty[p], 0)} g`;
-  return `${esc(f.name)} (${esc(state)}) — ${q('thomas')} / ${q('julie')}${it.locked.thomas || it.locked.julie ? ' [verrouillé]' : ''}`;
+  // l'état pesé est indiqué juste après la quantité : « 180 g cuit »
+  const state = stateLabel(it.state || f.referenceState).toLowerCase();
+  const q = (p) => `${PERSON_LABEL[p]} ${num(it.qty[p], 0)} g ${state}`;
+  return `${esc(f.name)} — ${esc(q('thomas'))} / ${esc(q('julie'))}${it.locked.thomas || it.locked.julie ? ' [verrouillé]' : ''}`;
 }
 
 function planningSection(s, byId) {

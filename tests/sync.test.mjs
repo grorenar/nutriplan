@@ -138,7 +138,7 @@ const item = (foodId, t, j, opts = {}) => ({
 });
 state.meals = [
   { id: 'm1', dayIndex: 0, mealType: 'lunch', name: 'Poulet riz', sameComposition: true,
-    items: [item(f('blanc de poulet'), 180, 130, { lockT: true }), item(f('riz basmati'), 90, 70),
+    items: [item(f('blanc de poulet'), 180, 130, { lockT: true }), item(f('riz basmati'), 240, 180, { state: 'cuit' }),
             { ...item(null, 0, 0), foodId: null, free: { name: 'Curry', quantity: 'au goût' } }] },
   { id: 'm2', dayIndex: 0, mealType: 'dinner', name: '', sameComposition: false, items: [] },
   { id: 'm3', dayIndex: 1, mealType: 'lunch', name: '', sameComposition: true, items: [] },
@@ -219,6 +219,8 @@ check('quantités par personne conservées',
   JSON.stringify(m1.items[0].qty));
 check('verrou conservé', m1.items[0].locked.thomas === true && m1.items[0].locked.julie === false);
 check('état cru/cuit conservé', m1.items[0].state === 'cru');
+check('état « cuit » choisi dans le repas sauvegardé et relu',
+  m1.items[1].state === 'cuit' && m1.items[1].qty.thomas === 240, JSON.stringify(m1.items[1].state));
 check('ingrédient libre conservé',
   m1.items.some((i) => i.free?.name === 'Curry' && i.free.quantity === 'au goût'));
 check('sameComposition conservé', back.meals.find((m) => m.id === 'm2').sameComposition === false);

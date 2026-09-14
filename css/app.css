@@ -291,6 +291,29 @@ tr:last-child td { border-bottom: 0; }
 }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+/* ---------------------------------------------------------- modale centrée */
+
+.modal {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(16, 24, 30, .48);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+.modal__panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  width: min(520px, 100%);
+  max-height: 88vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .28);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .modal__panel { animation: modal-in .14s ease-out; }
+  @keyframes modal-in { from { transform: translateY(8px); opacity: .7; } to { transform: none; opacity: 1; } }
+}
+
 /* ---------------------------------------------------------- listes */
 
 .list-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }

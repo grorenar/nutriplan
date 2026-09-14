@@ -8,6 +8,7 @@ import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
   mealMacros, macrosFor, evaluate, autoAdjust, initialQuantity, diagnose,
   snapQuantity, isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep,
+  conversionInfo, stateLabel,
 } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid } from '../core/util.js';
 
@@ -214,9 +215,19 @@ function renderItems(entity, byId, state) {
         </div>`;
       }
 
-      const stateSel = `<select data-state="${it.id}" style="width:auto;min-width:116px">
-        ${STATES.map((s) => `<option value="${s.id}" ${(it.state || food.referenceState) === s.id ? 'selected' : ''}>${s.label}</option>`).join('')}
-      </select>`;
+      const itemState = it.state || food.referenceState;
+      const conv = conversionInfo(food, itemState);
+      const stateBox = `<div class="qty-box">
+        <span class="tag">État pesé</span>
+        <select data-state="${it.id}" style="width:auto;min-width:136px">
+          ${STATES.map((st) => `<option value="${st.id}" ${itemState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}
+        </select>
+        <small>${
+          conv.needed && conv.possible
+            ? `converti via le rendement ${num(food.cookedFactor, 2)}`
+            : `valeurs pour 100 g ${esc(stateLabel(food.referenceState).toLowerCase())}`
+        }</small>
+      </div>`;
 
       // Saisie en unités ou en grammes ; dans les deux cas, la quantité stockée
       // reste un multiple entier de gramsPerUnit pour un aliment non fractionnable.
@@ -241,7 +252,7 @@ function renderItems(entity, byId, state) {
                     title="${locked ? 'Quantité verrouillée' : 'Quantité ajustable'}">${locked ? '🔒' : '🔓'}</button>
           </div>
           <small class="nums">${num(m.kcal, 0)} kcal · ${num(m.protein, 0)} P · ${num(m.carbs, 0)} G · ${num(m.fat, 0)} L</small>
-          <small>${unitHint(food, qty)}</small>
+          <small>${num(qty, 0)} g ${esc(stateLabel(itemState).toLowerCase())}${unitHint(food, qty) ? ` · ${unitHint(food, qty)}` : ''}</small>
         </div>`;
       }).join('');
 
@@ -250,7 +261,7 @@ function renderItems(entity, byId, state) {
         <div class="item__main">
           <div class="item__name">${esc(food.name)}${food.brand ? ` <span class="tag">${esc(food.brand)}</span>` : ''}</div>
           <div class="item__meta">${esc(cat)}${food.batchAllowed ? '' : ' · cuisson du jour'}</div>
-          <div class="row row--tight" style="margin-top:6px">${stateSel}
+          <div class="row row--tight" style="margin-top:6px">
             ${
               isUnitFood(food)
                 ? `<button class="btn btn--sm" data-unit-toggle="${food.id}">Saisie : ${food.unitEntry ? esc(unitLabel(food, 1)) : 'grammes'}</button>`
@@ -258,7 +269,8 @@ function renderItems(entity, byId, state) {
             }
             ${isWholeUnitFood(food) ? `<span class="tag">multiples de ${num(food.gramsPerUnit, 0)} g (pas du curseur)</span>` : ''}
           </div>
-          <div class="item__qty" style="margin-top:8px">${qtyBoxes}</div>
+          <div class="item__qty" style="margin-top:8px">${qtyBoxes}${stateBox}</div>
+          ${conv.message ? `<div class="tag sync-error" style="margin-top:6px">⚠️ ${esc(conv.message)}</div>` : ''}
         </div>
         <div class="item__tools">
           <button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button>

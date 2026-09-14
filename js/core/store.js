@@ -77,6 +77,10 @@ export function normalizeFood(f) {
   return {
     brand: '', fiber: 0, cookedFactor: 1, unitName: '', gramsPerUnit: 0, fractionable: true,
     price: null, packageWeight: null, batchAllowed: false, favorite: false, lastUsed: null,
+    // état des valeurs nutritionnelles : « prêt à consommer » est la valeur
+    // compatible par défaut (les valeurs saisies sont utilisées telles quelles,
+    // sans conversion). Un aliment qui en possède déjà un le conserve.
+    referenceState: 'pret',
     // durée maximale de conservation après préparation, en jours (null = non renseignée)
     shelfLifeDays: null,
     requiresCooking: false,

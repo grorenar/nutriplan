@@ -10,6 +10,7 @@ import {
   autoAdjust, adjustQuantities, mealMacros, macrosFor, evaluate, diagnose,
   initialQuantity, roundQuantity, convertGrams, toReferenceGrams, profileOf,
   snapQuantity, toUnits, fromUnits, isWholeUnitFood, MACRO_KEYS, computeYield, quantityStep,
+  canConvert, conversionInfo, stateLabel, STATES,
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
@@ -401,6 +402,75 @@ test('Macros — les glucides s’affichent "G"', () => {
 
 /* ================================================================ CRU / CUIT */
 
+test('États nutritionnels — l’état des valeurs et l’état pesé sont distincts', () => {
+  // valeurs pour 100 g à l'état CRU, rendement 2,50 (100 g crus → 250 g cuits)
+  const riz = {
+    id: 'f_riz_test', name: 'Riz complet test', category: 'feculent',
+    kcal: 350, protein: 7.5, carbs: 72, fat: 2.5, fiber: 3,
+    referenceState: 'cru', cookedFactor: 2.5, gramsPerUnit: 0, fractionable: true,
+  };
+
+  // 1. référence CRU + utilisation CRUE → calcul direct
+  const m1 = macrosFor(riz, 80, 'cru');
+  check('1. cru / cru : calcul direct', Math.abs(m1.kcal - 280) < 0.001, `${m1.kcal}`);
+  check('1. aucune conversion nécessaire', conversionInfo(riz, 'cru').needed === false);
+
+  // 2. référence CRU + utilisation CUITE → conversion via le rendement
+  // 5. rendement 2,50 : 200 g cuits → 80 g crus
+  check('5. 200 g cuits → 80 g crus', Math.abs(toReferenceGrams(riz, 200, 'cuit') - 80) < 0.001,
+    `${toReferenceGrams(riz, 200, 'cuit')}`);
+  const m2 = macrosFor(riz, 200, 'cuit');
+  info(`200 g cuits → ${m2.kcal.toFixed(0)} kcal, ${m2.protein.toFixed(1)} P, ${m2.carbs.toFixed(1)} G, ${m2.fat.toFixed(1)} L`);
+  check('2. cru / cuit : macros calculées sur 80 g crus', Math.abs(m2.kcal - 280) < 0.001, `${m2.kcal}`);
+  check('7. macros converties correctement',
+    Math.abs(m2.protein - 6) < 0.001 && Math.abs(m2.carbs - 57.6) < 0.001 && Math.abs(m2.fat - 2) < 0.001);
+  check('2. conversion signalée comme possible',
+    conversionInfo(riz, 'cuit').needed === true && conversionInfo(riz, 'cuit').possible === true);
+
+  // 6. rendement 0,75 : 150 g cuits → 200 g crus
+  const viande = { ...riz, id: 'f_viande_test', name: 'Viande test', kcal: 120, protein: 20, carbs: 0, fat: 4, cookedFactor: 0.75 };
+  check('6. 150 g cuits → 200 g crus', Math.abs(toReferenceGrams(viande, 150, 'cuit') - 200) < 0.001,
+    `${toReferenceGrams(viande, 150, 'cuit')}`);
+  check('6. macros correspondantes : 240 kcal', Math.abs(macrosFor(viande, 150, 'cuit').kcal - 240) < 0.001);
+
+  // 3. référence CUITE + utilisation CUITE → calcul direct
+  const rizCuit = { ...riz, id: 'f_riz_cuit', referenceState: 'cuit', kcal: 140, protein: 3, carbs: 29, fat: 1 };
+  check('3. cuit / cuit : calcul direct', Math.abs(macrosFor(rizCuit, 200, 'cuit').kcal - 280) < 0.001);
+  check('3. aucune conversion nécessaire', conversionInfo(rizCuit, 'cuit').needed === false);
+
+  // 4. référence CUITE + utilisation CRUE → conversion inverse
+  check('4. cuit / cru : 80 g crus → 200 g cuits', Math.abs(toReferenceGrams(rizCuit, 80, 'cru') - 200) < 0.001,
+    `${toReferenceGrams(rizCuit, 80, 'cru')}`);
+  check('4. macros converties', Math.abs(macrosFor(rizCuit, 80, 'cru').kcal - 280) < 0.001);
+  check('4. conversion inverse possible', canConvert(rizCuit, 'cru', 'cuit') === true);
+
+  // 8. aucune conversion inventée
+  const conserve = { ...riz, id: 'f_conserve', referenceState: 'egoutte', cookedFactor: 2.5 };
+  const infoEg = conversionInfo(conserve, 'cuit');
+  check('8. égoutté ↔ cuit : conversion non définie', canConvert(conserve, 'cuit', 'egoutte') === false);
+  check('8. aucun coefficient inventé', toReferenceGrams(conserve, 200, 'cuit') === 200);
+  check('8. l’utilisateur est prévenu', infoEg.needed === true && infoEg.possible === false && !!infoEg.message);
+  check('8. message explicite', /Aucune conversion définie/.test(infoEg.message), infoEg.message);
+  const sansRendement = { ...riz, id: 'f_sans_rdt', cookedFactor: null };
+  check('8. rendement absent : pas de conversion cru/cuit', canConvert(sansRendement, 'cru', 'cuit') === false);
+  check('8. rendement absent : poids conservé tel quel', toReferenceGrams(sansRendement, 200, 'cuit') === 200);
+  check('8. les valeurs nutritionnelles ne sont jamais modifiées', riz.kcal === 350 && conserve.kcal === 350);
+
+  // 9. l'état sélectionné est bien porté par l'ingrédient
+  const it = item(riz, 200, { state: 'cuit' });
+  check('9. état enregistré sur l’ingrédient', it.state === 'cuit');
+  const relu = JSON.parse(JSON.stringify(it));
+  check('9. état relu après sérialisation', relu.state === 'cuit');
+  check('9. macros identiques après relecture',
+    mealMacros([relu], { [riz.id]: riz }, 'thomas').kcal === mealMacros([it], { [riz.id]: riz }, 'thomas').kcal);
+  check('9. sans état explicite, celui des valeurs nutritionnelles s’applique',
+    macrosFor(riz, 80, null).kcal === macrosFor(riz, 80, 'cru').kcal);
+
+  // libellés des quatre états
+  check('quatre états proposés', STATES.length === 4 && STATES.map((x) => x.id).join(',') === 'cru,cuit,egoutte,pret');
+  check('libellé « Cru / brut »', stateLabel('cru') === 'Cru / brut');
+});
+
 test('Cru / cuit — conversions et macros', () => {
   const pates = F('Pâtes complètes');
   const cuit = convertGrams(pates, 100, 'cru', 'cuit');
@@ -791,6 +861,12 @@ test('Migration — ancien modèle de catalogues converti sans perte', () => {
       { id: 'c', name: 'Déjà renseigné', category: 'autre', referenceState: 'cru', requiresCooking: false, batchAllowed: false, kcal: 1, protein: 0, carbs: 0, fat: 0 },
     ],
   }).foods;
+  check('état des valeurs nutritionnelles conservé quand il existe', legacy[0].referenceState === 'cru');
+  check('aliment sans état : valeur compatible « prêt à consommer », macros inchangées',
+    migrateState({ ...old, foods: [{ id: 'z', name: 'Ancien', category: 'autre', kcal: 123, protein: 1, carbs: 2, fat: 3 }] })
+      .foods[0].referenceState === 'pret' &&
+    migrateState({ ...old, foods: [{ id: 'z', name: 'Ancien', category: 'autre', kcal: 123, protein: 1, carbs: 2, fat: 3 }] })
+      .foods[0].kcal === 123);
   check('aliment V1.2 cuisiné : classement conservé', legacy[0].requiresCooking === true);
   check('aliment V1.2 prêt à consommer : pas de cuisson inventée', legacy[1].requiresCooking === false);
   check('valeur déjà renseignée : jamais écrasée', legacy[2].requiresCooking === false);

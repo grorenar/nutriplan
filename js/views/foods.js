@@ -4,11 +4,12 @@ import { getState, update } from '../core/store.js';
 import { CATEGORIES, STATES, computeYield } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid, euros } from '../core/util.js';
 import { findSimilarFoods } from '../core/similarity.js';
+import { similarConfirmModal } from './confirm-similar.js';
 
 let query = '';
 let cat = 'all';
 let editing = null; // id d'aliment ou 'new'
-let similarWarning = null; // { list, pending } — avertissement doublon, jamais bloquant
+let similarWarning = null; // { list, pending } — popup de confirmation de doublon
 let formDraft = null;      // saisie en cours, préservée entre deux rendus du formulaire
 let yieldCalc = null;      // { raw, cooked, result, error } — aide au calcul du rendement
 
@@ -52,6 +53,7 @@ export function render(root) {
     <small>${list.length} aliment(s) affiché(s) sur ${s.foods.length}. Valeurs pour 100 g dans l'état de référence.</small>
     ${editing ? formPanel(s) : ''}
     ${editing && yieldCalc ? yieldPanel() : ''}
+    ${similarWarning ? similarModal() : ''}
   `;
   wire(root);
 }
@@ -109,6 +111,7 @@ function formPanel(s) {
             <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}</select></label>
         </div>
         <h3 style="margin:16px 0 6px">Pour 100 g</h3>
+        <small style="display:block;margin-bottom:6px">Les valeurs ci-dessous correspondent à l'état sélectionné plus bas dans « État des valeurs nutritionnelles ».</small>
         <div class="grid grid--3">
           <label class="field">kcal <input type="number" step="1" data-f="kcal" value="${n(f.kcal)}"></label>
           <label class="field">Protéines (g) <input type="number" step="0.1" data-f="protein" value="${n(f.protein)}"></label>
@@ -118,7 +121,7 @@ function formPanel(s) {
         </div>
         <h3 style="margin:16px 0 6px">État et unités</h3>
         <div class="grid grid--3">
-          <label class="field">État de référence
+          <label class="field">État des valeurs nutritionnelles
             <select data-f="referenceState">${STATES.map((st) => `<option value="${st.id}" ${f.referenceState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}</select></label>
           <label class="field">Rendement après cuisson
             <input type="number" step="0.05" min="0" data-f="cookedFactor" value="${n(f.cookedFactor)}"></label>
@@ -165,9 +168,8 @@ function formPanel(s) {
           <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
         <small style="display:block;margin-top:4px">Rendement actuel : ${num(f.cookedFactor || 1, 2)} — 100 g crus donnent ${num((f.cookedFactor || 1) * 100, 0)} g cuits. Ces informations sont reprises telles quelles dans le plan de batch.</small>
         <label class="check" style="margin-top:6px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>
-        ${similarWarning ? similarBox() : ''}
         <div class="row" style="margin-top:18px">
-          <button class="btn btn--primary" data-save="${f.id}">${similarWarning ? 'Créer quand même' : 'Enregistrer'}</button>
+          <button class="btn btn--primary" data-save="${f.id}">Enregistrer</button>
           ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${f.id}">Supprimer</button>`}
         </div>
         <small style="display:block;margin-top:10px">Les valeurs livrées par défaut sont génériques. Pour un produit de marque, recopie les valeurs de l'emballage.</small>
@@ -210,24 +212,31 @@ function yieldPanel() {
   </div>`;
 }
 
-/** Avertissement non bloquant : un aliment très proche existe déjà. */
-function similarBox() {
-  return `<div class="card" style="margin-top:14px;border-color:#ecd7ae;background:var(--warn-bg)">
-    <strong>Aliment${similarWarning.list.length > 1 ? 's' : ''} similaire${similarWarning.list.length > 1 ? 's' : ''} détecté${similarWarning.list.length > 1 ? 's' : ''}</strong>
-    <ul style="margin:6px 0 0;padding-left:18px">
-      ${similarWarning.list
-        .map(
-          (x) => `<li>${esc(x.food.name)}${x.food.brand ? ` — ${esc(x.food.brand)}` : ''}${
-            x.food.gramsPerUnit ? ` — ${num(x.food.gramsPerUnit, 0)} g/${esc(x.food.unitName || 'unité')}` : ''
-          } <span class="tag">${esc(x.reasons.join(', '))}</span></li>`
-        )
-        .join('')}
-    </ul>
-    <small>Vérifie qu'il ne s'agit pas du même produit. Rien n'est fusionné ni supprimé automatiquement.</small>
-  </div>`;
+/** Ligne de comparaison d'un aliment dans la popup de doublon. */
+const foodLine = (f) =>
+  `${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} g P · ${num(f.carbs, 1)} g G · ${num(f.fat, 1)} g L / 100 g`;
+
+/**
+ * Popup BLOQUANTE de confirmation : la création est suspendue tant que
+ * l'utilisateur n'a pas tranché. Aucun toast ni message en bas de fenêtre
+ * n'est utilisé pour ce cas, afin de n'avoir qu'un seul mécanisme.
+ */
+function similarModal() {
+  return similarConfirmModal({
+    existing: similarWarning.list.map((x) => ({
+      title: `${x.food.name}${x.food.brand ? ` — ${x.food.brand}` : ''}`,
+      detail: foodLine(x.food),
+      reasons: x.reasons,
+    })),
+    candidate: {
+      title: `${similarWarning.pending.name}${similarWarning.pending.brand ? ` — ${similarWarning.pending.brand}` : ''}`,
+      detail: foodLine(similarWarning.pending),
+    },
+  });
 }
 
 /** Remet le formulaire à zéro (fermeture, enregistrement, changement d'aliment). */
+
 function resetForm() {
   editing = null;
   similarWarning = null;
@@ -318,9 +327,23 @@ function wire(root) {
     })
   );
 
+  // --- popup bloquante de doublon
+  root.querySelector('[data-similar-cancel]')?.addEventListener('click', () => {
+    // Annuler : la popup se ferme, l'aliment n'est PAS créé, la saisie est conservée.
+    formDraft = { ...similarWarning.pending };
+    similarWarning = null;
+    render(root);
+  });
+  root.querySelector('[data-similar-confirm]')?.addEventListener('click', () => {
+    similarWarning = { ...similarWarning, confirmed: true };
+    formDraft = { ...similarWarning.pending };
+    render(root);
+    root.querySelector('[data-save]')?.click();
+  });
+
   root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { resetForm(); render(root); });
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.formBackdrop !== undefined && !yieldCalc) { resetForm(); render(root); }
+    if (e.target.dataset.formBackdrop !== undefined && !yieldCalc && !similarWarning) { resetForm(); render(root); }
   });
 
   root.querySelector('[data-save]')?.addEventListener('click', (e) => {
@@ -334,13 +357,13 @@ function wire(root) {
     const data = readForm(root, base);
     if (!data.name) { toast('Le nom est obligatoire', 'error'); return; }
 
-    // Détection de doublon à la création : avertissement, jamais blocage.
-    if (editing === 'new' && !similarWarning) {
+    // Détection de doublon à la création : la popup de confirmation suspend la
+    // création (un seul mécanisme, aucun toast ni message en bas de fenêtre).
+    if (editing === 'new' && !similarWarning?.confirmed) {
       const list = findSimilarFoods(data, s.foods);
       if (list.length) {
-        similarWarning = { list, pending: data };
+        similarWarning = { list, pending: data, confirmed: false };
         render(root);
-        toast('Un aliment similaire existe déjà — vérifie avant de créer');
         return;
       }
     }

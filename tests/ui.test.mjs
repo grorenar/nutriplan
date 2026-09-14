@@ -81,6 +81,27 @@ check('glucides affichés "G" et non "C"', macros.some((m) => / G$/.test(m)) && 
 check('les 4 macros de Thomas sont dans la cible',
   $$('#drawer .macro').slice(0, 4).every((m) => m.classList.contains('is-ok')));
 
+console.log('\n— État pesé dans le repas');
+const pastaRow = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
+const stateSel = pastaRow.querySelector('[data-state]');
+check('les quatre états sont proposés', stateSel.options.length === 4);
+check('état par défaut = état des valeurs nutritionnelles', stateSel.value === 'cru');
+const kcalBefore = Number((pastaRow.textContent.match(/(\d+) kcal/) || [])[1]);
+change(stateSel, 'cuit');
+await wait();
+const pastaCooked = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
+check('état enregistré et relu', pastaCooked.querySelector('[data-state]').value === 'cuit');
+check('conversion signalée via le rendement', /rendement/.test(pastaCooked.textContent));
+check('macros recalculées sur le poids cuit',
+  Number((pastaCooked.textContent.match(/(\d+) kcal/) || [])[1]) < kcalBefore);
+change(pastaCooked.querySelector('[data-state]'), 'egoutte');
+await wait();
+const pastaDrained = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
+check('conversion impossible signalée à l’utilisateur',
+  /Aucune conversion définie/.test(pastaDrained.textContent));
+change(pastaDrained.querySelector('[data-state]'), 'cru');
+await wait();
+
 console.log('\n— Verrouillage');
 const qty = () => $$('#drawer [data-qty]').map((i) => i.value);
 change($$('#drawer [data-qty]')[0], '180');
@@ -116,6 +137,8 @@ click($$('#drawer [data-add]')[0]);
 const wasaRow = $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent));
 check('aliment à l’unité ajouté', !!wasaRow);
 check('mention des multiples affichée', /multiples de 11 g/.test(wasaRow.textContent));
+check('état pesé affiché à côté de la quantité',
+  /État pesé/.test(wasaRow.textContent) && !!wasaRow.querySelector('[data-state]'));
 click(wasaRow.querySelector('[data-unit-toggle]')); // passage en grammes
 const wasaGram = $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent)).querySelector('[data-qty]');
 check('pas du curseur = poids d’une unité', wasaGram.getAttribute('step') === '11', wasaGram.getAttribute('step'));
@@ -146,23 +169,68 @@ click($('#drawer [data-close]'));
 check('éditeur fermé', !$('#drawer .drawer__panel'));
 check('macros visibles sur la carte du planning', $$('.meal-card .macro').length >= 8);
 
-console.log('\n— Détection de doublons');
+console.log('\n— Détection de doublons : popup bloquante');
 click($('[data-view="foods"]'));
 await wait();
+const foodCount = () => JSON.parse(localStorage.getItem('nutriplan.state.v1')).foods.length;
+const before = foodCount();
+
+// 1. aucun similaire → création directe, aucune popup
 click($('[data-new]'));
 const setField = (name, v) => { const el = $(`[data-f="${name}"]`); el.value = v; };
+setField('name', 'Cuisse de dinosaure');
+setField('kcal', '150');
+click($('[data-save]'));
+await wait();
+check('aucun similaire : aucune popup', !$('.modal'));
+check('aucun similaire : création directe', foodCount() === before + 1);
+check('aucun toast de doublon', !/similaire/i.test(document.getElementById('toasts')?.textContent || ''));
+
+// 2. similaire détecté → popup affichée
+click($('[data-new]'));
 setField('name', 'Blanc de poulet');
 setField('kcal', '110');
 click($('[data-save]'));
 await wait();
-check('avertissement de doublon affiché', /similaire/i.test($('#view').textContent));
-check('création toujours possible', /Créer quand même/.test($('#view').textContent));
+check('similaire détecté : popup affichée', !!$('.modal'));
+check('popup centrée et bloquante', !!$('.modal__panel') && !!$('[data-similar-confirm]'));
+check('l’élément existant est présenté avec ses macros',
+  /Blanc de poulet/.test($('.modal').textContent) && /kcal/.test($('.modal').textContent));
+check('l’élément en cours de création est rappelé', /en train de créer/.test($('.modal').textContent));
+check('aucun message de doublon en bas de fenêtre',
+  !/similaire/i.test(document.getElementById('toasts')?.textContent || ''));
+check('rien n’est créé tant que l’utilisateur n’a pas répondu', foodCount() === before + 1);
+
+// 3. Annuler → élément non créé
+click($('[data-similar-cancel]'));
+await wait();
+check('Annuler : popup fermée', !$('.modal'));
+check('Annuler : aucun aliment créé', foodCount() === before + 1);
+check('Annuler : la saisie reste disponible', $('[data-f="name"]')?.value === 'Blanc de poulet');
+
+// 4. Créer quand même → élément créé
 click($('[data-save]'));
 await wait();
-const foodsAfter = JSON.parse(localStorage.getItem('nutriplan.state.v1')).foods;
-check('l’aliment est créé malgré l’avertissement',
-  foodsAfter.filter((f) => f.name === 'Blanc de poulet').length === 2);
-check('aucun aliment fusionné ni supprimé', foodsAfter.length === 89, `${foodsAfter.length}`);
+check('la popup réapparaît à la nouvelle tentative', !!$('.modal'));
+click($('[data-similar-confirm]'));
+await wait();
+check('Créer quand même : aliment créé', foodCount() === before + 2, `${foodCount()}`);
+check('Créer quand même : popup fermée et formulaire refermé', !$('.modal') && !$('[data-f="name"]'));
+const foodsNow = JSON.parse(localStorage.getItem('nutriplan.state.v1')).foods;
+check('aucun aliment fusionné ni supprimé',
+  foodsNow.filter((f) => f.name === 'Blanc de poulet').length === 2, `${foodsNow.length} aliments`);
+
+// 5. plusieurs similaires → tous listés
+click($('[data-new]'));
+setField('name', 'Blanc de poulet');
+setField('kcal', '110');
+click($('[data-save]'));
+await wait();
+const listed = ($('.modal').textContent.match(/Blanc de poulet/g) || []).length;
+check('plusieurs similaires listés dans la popup', listed >= 3, `${listed} mentions`);
+click($('[data-similar-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
 
 console.log('\n— Fiche aliment : rendement et conservation');
 click($('[data-view="foods"]'));
@@ -172,6 +240,9 @@ await wait();
 check('champ nommé « Rendement après cuisson »', /Rendement après cuisson/.test($('#view').textContent));
 check('aide à la formule affichée', /poids cuit ÷ poids cru/.test($('#view').textContent));
 check('champ de conservation présent', !!$('[data-f="shelfLifeDays"]'));
+check('champ « État des valeurs nutritionnelles »', /État des valeurs nutritionnelles/.test($('#view').textContent));
+check('option « Cru / brut » proposée',
+  [...$('[data-f="referenceState"]').options].some((o) => o.textContent === 'Cru / brut'));
 check('case « Nécessite une cuisson » présente', !!$('[data-f="requiresCooking"]'));
 check('indépendance vis-à-vis de l’état de référence expliquée',
   /Indépendant de l.état de référence/.test($('#view').textContent));
@@ -336,6 +407,9 @@ click($('#modal [data-print-all]'));
 click($('#modal [data-print-go]'));
 check('catalogues imprimés avec leurs utilisations', /Couverture du cycle/.test($('#print').textContent) && /Utilisations/.test($('#print').textContent));
 check('document d’impression généré', $('#print').innerHTML.length > 1000);
+check('état pesé indiqué à côté des quantités imprimées',
+  /\d+ g (cru \/ brut|cuit|égoutté|prêt à consommer)/i.test($('#print').textContent),
+  ($('#print').textContent.match(/\d+ g [a-zé\s\/]+/i) || [''])[0].trim());
 check('window.print() appelé', printed === 1);
 
 console.log('\n— Paramètres');
