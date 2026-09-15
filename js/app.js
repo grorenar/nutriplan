@@ -125,7 +125,23 @@ function boot() {
 }
 
 let syncTimer = null;
+let retryTimer = null;
 let lastRemoteCheck = 0;
+
+/**
+ * L'utilisateur est-il en train de remplir un formulaire ?
+ * Une récupération distante remplace l'état et reconstruit la vue : elle
+ * détruirait la modale ouverte, ferait perdre le focus au champ actif (et donc
+ * disparaître le clavier virtuel) et effacerait la saisie en cours.
+ */
+export function isEditing() {
+  const el = document.activeElement;
+  const typing =
+    Boolean(el) &&
+    (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable === true);
+  const formOpen = Boolean(document.querySelector('#drawer .drawer__panel, #modal .modal, #modal .drawer__panel, #view .drawer__panel'));
+  return typing || formOpen;
+}
 
 /**
  * Lance une synchronisation automatique (envoi des modifications locales en
@@ -138,12 +154,23 @@ function runSync(reason, { throttled = false } = {}) {
   if (throttled && !pending && !sync.shouldCheckRemote(lastRemoteCheck)) return;
   lastRemoteCheck = Date.now();
   sync
-    .syncNow()
+    .syncNow({ editing: isEditing() })
     .then((result) => {
       if (result.action === 'pull') toast('Données mises à jour depuis le cloud');
+      // récupération reportée : on réessaiera dès que la saisie sera terminée
+      if (result.action === 'deferred') retryAfterEditing(reason);
       renderStatus();
     })
     .catch(() => renderStatus());
+}
+
+/** Réessaie la synchronisation dès que le formulaire est refermé / le champ quitté. */
+function retryAfterEditing(reason) {
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    if (isEditing()) { retryAfterEditing(reason); return; } // toujours en saisie : on repatiente
+    runSync(reason);
+  }, 2000);
 }
 
 function scheduleSync() {
