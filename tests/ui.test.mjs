@@ -44,7 +44,7 @@ const check = (label, cond, detail = '') => {
 const jsErrors = [];
 window.addEventListener('error', (e) => jsErrors.push(e.message));
 
-await import(join(root, 'js/app.js'));
+const app = await import(join(root, 'js/app.js'));
 document.dispatchEvent(new window.Event('DOMContentLoaded'));
 await new Promise((r) => setTimeout(r, 50));
 
@@ -129,6 +129,14 @@ $('#drawer [data-free-qty]').value = 'au goût';
 click($('#drawer [data-free-add]'));
 check('curry ajouté au repas', $$('#drawer .item').length === 5 && /Curry/.test($('#drawer').textContent));
 check('curry marqué hors macros', /non compté dans les macros/.test($('#drawer').textContent));
+
+console.log('\n— Saisie protégée de la synchronisation');
+check('modale ouverte → saisie considérée en cours', app.isEditing() === true);
+const searchField = $('#drawer [data-search]');
+searchField.focus();
+check('champ actif dans la modale → saisie en cours', app.isEditing() === true);
+searchField.blur();
+check('modale toujours ouverte → saisie toujours protégée', app.isEditing() === true);
 
 console.log('\n— Stabilité de la recherche');
 const panelBefore = $('#drawer .drawer__panel');
@@ -358,6 +366,17 @@ check('affectations 16 h / soir enregistrées séparément',
 click($('[data-view="shopping"]'));
 await wait();
 check('collation utilisée : présente dans les courses', /cajou/i.test($('#view').textContent));
+
+console.log('\n— Fin de saisie');
+check('aucune modale ouverte et aucun champ actif → synchronisation autorisée',
+  app.isEditing() === false, String(app.isEditing()));
+const anyInput = $('#view input');
+if (anyInput) {
+  anyInput.focus();
+  check('champ de la vue actif → saisie en cours', app.isEditing() === true);
+  anyInput.blur();
+  check('champ quitté → synchronisation de nouveau autorisée', app.isEditing() === false);
+}
 
 console.log('\n— Navigation complète');
 for (const id of ['foods', 'breakfasts', 'snacks', 'batch', 'shopping', 'settings']) {

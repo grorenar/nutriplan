@@ -14,7 +14,7 @@ import {
   __setTestClient, syncNow, pull, push, planSync, shouldCheckRemote, fetchRemoteStamp, sameStamp,
   stateToTables, isConfigured,
 } from '../js/core/sync.js';
-import { getState, replaceState, update, defaultState } from '../js/core/store.js';
+import { getState, replaceState, update, defaultState, subscribe } from '../js/core/store.js';
 
 // stockage local minimal : node n'en fournit pas, et l'application en dépend
 if (typeof globalThis.localStorage === 'undefined') {
@@ -268,6 +268,65 @@ await test('« Récupérer du cloud » reste un forçage manuel opérationnel', 
   check('l’envoi manuel fonctionne toujours', counts.foods === getState().foods.length);
   check('le cloud a reçu la donnée', remote.tables.foods.some((f) => f.name === 'Envoyé manuellement'));
   check('aucune erreur de synchronisation', !getState().meta.syncError);
+});
+
+await test('Saisie en cours : aucune récupération ne détruit le formulaire', async () => {
+  const base = { configured: true, online: true, authenticated: true };
+  check('saisie en cours + base distante modifiée → récupération reportée',
+    planSync({ ...base, dirty: false, editing: true, knownStamp: 'A', remoteStamp: 'B' }).action === 'deferred');
+  check('saisie en cours + modification locale → envoi quand même',
+    planSync({ ...base, dirty: true, editing: true, knownStamp: 'A', remoteStamp: 'B' }).action === 'push');
+  check('hors saisie → récupération normale',
+    planSync({ ...base, dirty: false, editing: false, knownStamp: 'A', remoteStamp: 'B' }).action === 'pull');
+
+  // la base distante a changé, mais l'utilisateur remplit un formulaire
+  const distant = defaultState();
+  distant.foods.push({ ...distant.foods[0], id: 'f_pendant_saisie', name: 'Arrivé pendant la saisie' });
+  const remote = useRemote({ tables: remoteFrom(distant) });
+  setLocal(defaultState(), { dirty: false, remoteStamp: null });
+
+  let renders = 0;
+  const stop = subscribe(() => { renders += 1; });
+
+  const deferred = await syncNow({ editing: true });
+  info(`action : ${deferred.action} — ${deferred.reason}`);
+  check('récupération reportée', deferred.action === 'deferred');
+  check('aucune requête distante pendant la saisie',
+    remote.calls.stamp === 0 && remote.calls.select === 0 && remote.calls.rpc === 0,
+    `stamp ${remote.calls.stamp}, select ${remote.calls.select}, rpc ${remote.calls.rpc}`);
+  check('état local inchangé : la saisie n’est pas remplacée',
+    !foodNamed(getState(), 'Arrivé pendant la saisie'));
+  check('aucun rendu global déclenché pendant la saisie', renders === 0, `${renders} rendu(s)`);
+
+  // fin de la saisie : la récupération a bien lieu
+  const done = await syncNow({ editing: false });
+  check('récupération exécutée après la saisie', done.action === 'pull');
+  check('donnée distante enfin reçue', !!foodNamed(getState(), 'Arrivé pendant la saisie'));
+  check('un rendu a lieu à ce moment-là, pas avant', renders >= 1, `${renders} rendu(s)`);
+  stop();
+});
+
+await test('Les écritures d’état de synchronisation ne redessinent pas l’interface', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  setLocal(defaultState(), { dirty: false, remoteStamp: null });
+  await syncNow();                     // premier appel : aligne l'horodatage
+  let renders = 0;
+  const stop = subscribe(() => { renders += 1; });
+
+  const result = await syncNow();
+  check('vérification sans changement', result.action === 'up-to-date', result.reason);
+  check('aucun rendu déclenché par la vérification', renders === 0, `${renders} rendu(s)`);
+  check('horodatage de vérification tout de même mémorisé', Number.isFinite(getState().meta.lastRemoteCheck));
+
+  // un envoi non plus ne doit pas redessiner l'interface
+  update((s) => { s.foods.push({ ...s.foods[0], id: 'f_silence', name: 'Envoi silencieux' }); });
+  const rendersAfterEdit = renders; // la modification elle-même notifie, c'est normal
+  const pushed = await syncNow({ editing: true });
+  check('envoi possible même pendant une saisie', pushed.action === 'push');
+  check('aucun rendu supplémentaire provoqué par l’envoi', renders === rendersAfterEdit,
+    `${renders} vs ${rendersAfterEdit}`);
+  check('modification bien envoyée', remote.tables.foods.some((f) => f.name === 'Envoi silencieux'));
+  stop();
 });
 
 await test('Horodatage : formats PostgreSQL et JavaScript comparés par instant', async () => {
