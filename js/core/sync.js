@@ -400,8 +400,15 @@ function describeRpcError(error) {
   return msg;
 }
 
+/**
+ * Écrit l'état de synchronisation (horodatages, erreur) SANS notifier l'interface.
+ * Ces informations ne changent aucune donnée affichée : les notifier provoquait
+ * un rendu global de la vue courante — donc la destruction des champs de saisie
+ * d'une modale ouverte — et relançait le minuteur de synchronisation, créant une
+ * boucle de rendu permanente. La barre latérale est rafraîchie par l'appelant.
+ */
 function setSyncMeta(patch) {
-  update((s) => { Object.assign(s.meta, patch); }, { sync: false });
+  update((s) => { Object.assign(s.meta, patch); }, { sync: false, silent: true });
 }
 
 export async function pull() {
@@ -488,6 +495,7 @@ export function planSync({
   online = true,
   authenticated = false,
   dirty = false,
+  editing = false,
   knownStamp = null,
   remoteStamp = null,
 } = {}) {
@@ -496,6 +504,9 @@ export function planSync({
   if (!authenticated) return { action: 'skip', reason: 'non connecté' };
   // priorité absolue à l'envoi : on ne récupère jamais par-dessus du local en attente
   if (dirty) return { action: 'push', reason: 'modifications locales en attente' };
+  // saisie en cours : une récupération remplacerait l'état et reconstruirait
+  // l'interface. On attend la fin de la saisie, la vérification sera refaite.
+  if (editing) return { action: 'deferred', reason: 'saisie en cours' };
   if (!remoteStamp) return { action: 'up-to-date', reason: 'aucune donnée distante' };
   if (!sameStamp(remoteStamp, knownStamp)) return { action: 'pull', reason: 'données distantes plus récentes' };
   return { action: 'up-to-date', reason: 'déjà à jour' };
@@ -515,12 +526,13 @@ export function shouldCheckRemote(lastCheckAt, now = Date.now(), minIntervalMs =
  * après une modification locale. Le bouton « Récupérer du cloud » reste
  * disponible comme forçage manuel.
  */
-export async function syncNow() {
+export async function syncNow({ editing = false } = {}) {
   const ctx = {
     configured: isConfigured(),
     online: isOnline(),
     authenticated: false,
     dirty: getState().meta.dirty,
+    editing,
     knownStamp: getState().meta.remoteStamp || null,
     remoteStamp: null,
   };
@@ -534,6 +546,10 @@ export async function syncNow() {
       await push();
       return { action: 'push', reason: 'modifications locales envoyées' };
     }
+
+    // pendant une saisie, on n'interroge même pas la base : rien ne doit
+    // pouvoir remplacer l'état pendant que l'utilisateur remplit un formulaire
+    if (ctx.editing) return planSync(ctx);
 
     ctx.remoteStamp = await fetchRemoteStamp();
     setSyncMeta({ lastRemoteCheck: Date.now() });
