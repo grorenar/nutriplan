@@ -18,6 +18,7 @@ import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
   coverageReport, optionUses, needsCooking, preparationUsed, preparationAvailable,
   recipeNeeded, buildRecipeNeeds, zeroWasteSlotsFor, deployItems, aggregateNeeds,
+  recipeAvailableFromPreparations, recipeNeededNet,
 } from '../js/core/derive.js';
 import { seedFoods } from '../js/core/seed-foods.js';
 import {
@@ -1756,7 +1757,7 @@ test('Déploiement — buildBatchPlan() : les gamelles/plan opératoire ne plant
 
 /* ================================================================ PRÉPARATIONS (ÉTAPE 5) */
 
-const fakeState = (meals) => ({ meals, breakfasts: [], snacks: [], settings: {} });
+const fakeState = (meals, preparations = []) => ({ meals, breakfasts: [], snacks: [], settings: {}, preparations });
 
 test('Préparations — newPreparation() : snapshot figé, jamais recalculé depuis les ingrédients', () => {
   const riz = F('Riz basmati');
@@ -1918,6 +1919,78 @@ test('Calcul inverse — buildRecipeNeeds() : vue d’ensemble de toutes les rec
   ] };
   check('recette introuvable dans recipesById : ignorée, pas d’exception',
     buildRecipeNeeds(fakeState([orphan]), recipesById).length === 0);
+});
+
+/* ============================================== CALCUL INVERSE — NET DU DISPONIBLE (SUITE) */
+
+test('Calcul inverse — recipeAvailableFromPreparations() : cumule le disponible des préparations existantes', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.baseGrams = 1000;
+
+  check('aucune préparation : disponible cumulé = 0', recipeAvailableFromPreparations(fakeState([]), recipe.id) === 0);
+
+  const prep1 = newPreparation(recipe, 1000); // rien d'utilisé -> 1000 g disponibles
+  const prep2 = newPreparation(recipe, 500);  // rien d'utilisé -> 500 g disponibles
+  check('deux préparations de la même recette : disponibles additionnés (1000+500=1500)',
+    recipeAvailableFromPreparations(fakeState([], [prep1, prep2]), recipe.id) === 1500);
+
+  // une préparation d'une AUTRE recette n'est jamais comptée
+  const other = newRecipe('Autre recette', 'weight');
+  const otherPrep = newPreparation(other, 2000);
+  check('isolation entre recettes : la préparation d’une autre recette est ignorée',
+    recipeAvailableFromPreparations(fakeState([], [prep1, otherPrep]), recipe.id) === 1000);
+
+  // une préparation SUR-ENGAGÉE (disponible négatif) n'est jamais compensée par une autre
+  const meal = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newPreparationItem(prep1.id), qty: { thomas: 700, julie: 700 } }, // 1400 g utilisés > 1000 g préparés
+  ] };
+  const overCommitted = recipeAvailableFromPreparations(fakeState([meal], [prep1, prep2]), recipe.id);
+  check('la préparation sur-engagée contribue 0 (jamais négative), l’autre reste comptée intégralement (0+500=500)',
+    overCommitted === 500, `${overCommitted} g`);
+});
+
+test('Calcul inverse — recipeNeededNet() : quantité RECOMMANDÉE, nette du disponible existant', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.baseGrams = 1000;
+
+  const meal1 = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newRecipeMealItem(recipe.id), qty: { thomas: 300, julie: 200 } },
+  ] };
+  const meal2 = { id: 'm2', dayIndex: 1, mealType: 'dinner', items: [
+    { ...newRecipeMealItem(recipe.id), qty: { thomas: 250, julie: 170 } },
+  ] };
+  // exemple de la spécification : besoin brut = 920 g, sans aucune préparation existante
+  check('sans préparation existante : recommandé = besoin brut (920 g), comportement inchangé',
+    recipeNeededNet(fakeState([meal1, meal2]), recipe.id) === 920);
+
+  // une préparation existante de 500 g, entièrement disponible, couvre une partie du besoin
+  const prep = newPreparation(recipe, 500);
+  const net = recipeNeededNet(fakeState([meal1, meal2], [prep]), recipe.id);
+  check('avec 500 g déjà disponibles : recommandé = 920 − 500 = 420 g', net === 420, `${net} g`);
+  check('le besoin BRUT reste inchangé (recipeNeeded() ne varie jamais avec le disponible)',
+    recipeNeeded(fakeState([meal1, meal2], [prep]), recipe.id) === 920);
+
+  // le stock existant couvre déjà tout le besoin : jamais négatif
+  const bigPrep = newPreparation(recipe, 2000);
+  check('stock existant largement suffisant : recommandé = 0 (jamais négatif)',
+    recipeNeededNet(fakeState([meal1, meal2], [bigPrep]), recipe.id) === 0);
+});
+
+test('Calcul inverse — buildRecipeNeeds() expose needed/available/recommended de façon additive', () => {
+  const chili = newRecipe('Chili con carne', 'weight');
+  chili.baseGrams = 1000;
+  const recipesById = { [chili.id]: chili };
+
+  const meal1 = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newRecipeMealItem(chili.id), qty: { thomas: 300, julie: 200 } },
+  ] };
+  const prep = newPreparation(chili, 200);
+  const results = buildRecipeNeeds(fakeState([meal1], [prep]), recipesById);
+  const chiliResult = results.find((r) => r.recipeId === chili.id);
+
+  check('needed = besoin brut, inchangé (500 g)', chiliResult.needed === 500);
+  check('available = disponible des préparations existantes (200 g)', chiliResult.available === 200);
+  check('recommended = net (500 − 200 = 300 g)', chiliResult.recommended === 300);
 });
 
 /* ================================================================ MODE NORMAL (ÉTAPE 7) */

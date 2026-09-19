@@ -178,14 +178,15 @@ export function zeroWasteSlotsFor(state, preparationId) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Besoin total d'une recette, agrégé sur tout le cycle et les deux personnes :
- * somme des items qui la référencent SANS préparation encore matérialisée
- * (mode "molle" — la recette n'est pas encore cuisinée). Un item déjà lié à
- * une préparation (`preparationId` renseigné) n'est pas un besoin non couvert :
- * son suivi passe par `preparationUsed()`, pas par cette fonction.
+ * Besoin total BRUT d'une recette, agrégé sur tout le cycle et les deux
+ * personnes : somme des items qui la référencent SANS préparation encore
+ * matérialisée (mode "molle" — la recette n'est pas encore cuisinée). Un item
+ * déjà lié à une préparation (`preparationId` renseigné) n'est pas un besoin
+ * non couvert : son suivi passe par `preparationUsed()`, pas par cette fonction.
  * Ne tient PAS compte du disponible d'une préparation existante de cette
- * recette (raffinement volontairement différé, cf. spécification §20) :
- * purement additif, comme `aggregateNeeds()` pour les aliments.
+ * recette — c'est `recipeNeededNet()` qui fait cette soustraction ; cette
+ * fonction reste le besoin brut, purement additif, comme `aggregateNeeds()`
+ * pour les aliments.
  */
 export function recipeNeeded(state, recipeId) {
   let needed = 0;
@@ -200,10 +201,39 @@ export function recipeNeeded(state, recipeId) {
 }
 
 /**
+ * Disponible cumulé de toutes les préparations EXISTANTES de cette recette.
+ * Seules les contributions POSITIVES sont sommées : une préparation
+ * sur-engagée (disponible négatif) n'est jamais compensée par une autre —
+ * chaque préparation reste un stock indépendant, jamais un pot commun.
+ * Réutilise `preparationAvailable()` telle quelle, aucune nouvelle mécanique.
+ */
+export function recipeAvailableFromPreparations(state, recipeId) {
+  let total = 0;
+  for (const prep of state.preparations || []) {
+    if (prep.recipeId !== recipeId) continue;
+    total += Math.max(0, preparationAvailable(state, prep));
+  }
+  return total;
+}
+
+/**
+ * Quantité RECOMMANDÉE à préparer : le besoin brut (`recipeNeeded`), net du
+ * disponible déjà existant sur des préparations de cette même recette —
+ * raffinement du calcul inverse, auparavant différé (spécification §20).
+ * Jamais négatif : rien à préparer si le stock existant couvre déjà tout.
+ * `recipeNeeded()` reste inchangée et continue de donner le besoin BRUT.
+ */
+export function recipeNeededNet(state, recipeId) {
+  return Math.max(0, recipeNeeded(state, recipeId) - recipeAvailableFromPreparations(state, recipeId));
+}
+
+/**
  * Vue d'ensemble : pour chaque recette référencée sans préparation quelque
  * part dans le cycle, le besoin total agrégé — base du calcul inverse
  * (ÉTAPE 3 de la spécification : « Besoin total estimé / Quantité recommandée
- * à préparer »). L'utilisateur choisit ensuite la quantité réelle à préparer
+ * à préparer »). `needed` = besoin brut (inchangé) ; `available` = disponible
+ * déjà existant sur des préparations de cette recette ; `recommended` = net
+ * des deux (§20). L'utilisateur choisit ensuite la quantité réelle à préparer
  * via `newPreparation()` ; rien n'est décidé ni matérialisé automatiquement.
  */
 export function buildRecipeNeeds(state, recipesById) {
@@ -212,7 +242,11 @@ export function buildRecipeNeeds(state, recipesById) {
     for (const it of source.items) if (it.recipeId && !it.preparationId) ids.add(it.recipeId);
   }
   return [...ids]
-    .map((recipeId) => ({ recipe: recipesById[recipeId], recipeId, needed: recipeNeeded(state, recipeId) }))
+    .map((recipeId) => {
+      const needed = recipeNeeded(state, recipeId);
+      const available = recipeAvailableFromPreparations(state, recipeId);
+      return { recipe: recipesById[recipeId], recipeId, needed, available, recommended: Math.max(0, needed - available) };
+    })
     .filter((x) => x.recipe); // recette supprimée entre-temps : ignorée, pas d'exception
 }
 
