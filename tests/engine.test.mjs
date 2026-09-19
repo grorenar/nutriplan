@@ -11,13 +11,19 @@ import {
   initialQuantity, roundQuantity, convertGrams, toReferenceGrams, profileOf,
   snapQuantity, toUnits, fromUnits, isWholeUnitFood, MACRO_KEYS, computeYield, quantityStep,
   canConvert, conversionInfo, stateLabel, STATES, referenceFor, CATEGORY_PROFILE, CATEGORIES,
+  recipeMacrosPer100g, canAddIngredientToRecipe, recipeAsVirtualFood, preparationAsVirtualFood,
+  resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf,
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
-  coverageReport, optionUses, needsCooking,
+  coverageReport, optionUses, needsCooking, preparationUsed, preparationAvailable,
+  recipeNeeded, buildRecipeNeeds, zeroWasteSlotsFor, deployItems, aggregateNeeds,
 } from '../js/core/derive.js';
 import { seedFoods } from '../js/core/seed-foods.js';
-import { migrateState } from '../js/core/store.js';
+import {
+  migrateState, newRecipe, newRecipeItem, defaultState, newItem, newFreeItem, sectionsUsed, SECTIONS, DEFAULT_SECTION,
+  newPreparation, preparationsById, newPreparationItem, newRecipeMealItem,
+} from '../js/core/store.js';
 import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
 
 /* ---------------------------------------------------------------- harnais */
@@ -76,6 +82,12 @@ function item(food, qty = null, opts = {}) {
 const freeItem = (name, quantity) => ({
   id: `it${++seq}`, foodId: null, free: { name, quantity }, state: null,
   qty: { thomas: 0, julie: 0 }, locked: { thomas: false, julie: false },
+});
+/** Item de repas référençant une recette (mode "molle", sans préparation — étape 4). */
+const recipeItemInMeal = (recipeId, qty, opts = {}) => ({
+  id: `it${++seq}`, foodId: null, recipeId, free: null, state: null,
+  qty: { thomas: opts.thomas ?? qty, julie: opts.julie ?? qty },
+  locked: { thomas: !!opts.lock, julie: !!opts.lock },
 });
 
 const dev = (v, t) => (t ? (v - t) / t : 0);
@@ -418,14 +430,16 @@ test('V1.4.1 — idempotence et absence d’oscillation avec un aliment non frac
 
 test('V1.4.1 — non-régression : sans aliment non fractionnable, comportement strictement inchangé', () => {
   // scénario historique du Test D, sans aucun aliment à l'unité : doit retomber
-  // exactement sur les quantités connues d'avant cette correction.
+  // exactement sur les quantités connues (référence recalculée après le passage
+  // à la résolution 1 g — roundQuantity() n'impose plus les anciens paliers de
+  // catégorie de 5 g ; l'optimum CONTINU sous-jacent, lui, n'a pas changé).
   const items = [item(F('Blanc de poulet')), item(F('Pâtes complètes')), item(F('Haricots verts'), 200)];
   autoAdjust(items, byId, LUNCH);
   items.push(item(F('Huile d’olive')));
   autoAdjust(items, byId, LUNCH);
   const q = items.map((it) => it.qty.thomas);
-  check('quantités identiques à la référence pré-correction (125, 185, 130, 27)',
-    q[0] === 125 && q[1] === 185 && q[2] === 130 && q[3] === 27, q.join(','));
+  check('quantités identiques à la référence (résolution 1 g) (124, 184, 128, 27)',
+    q[0] === 124 && q[1] === 184 && q[2] === 128 && q[3] === 27, q.join(','));
 });
 
 /* ================================================================ UNITÉS */
@@ -454,11 +468,37 @@ test('Unités — aliments non fractionnables et unités pratiques', () => {
   check('compote = multiple entier de 100 g (pot)', c[0].qty.thomas % compote.gramsPerUnit === 0, `${c[0].qty.thomas} g`);
 
   const skyr = F('Skyr');
-  check('skyr fractionnable : arrondi au pas de 5 g, unité indicative', roundQuantity(skyr, 192) % 5 === 0, `${roundQuantity(skyr, 192)} g`);
+  check('skyr fractionnable : résolution 1 g, unité indicative (pas de palier de 5 g)',
+    roundQuantity(skyr, 192.4) === 192, `${roundQuantity(skyr, 192.4)} g`);
 
   // bornes + unités entières : la quantité reste un multiple même au plafond
   const big = roundQuantity(F('Œuf entier'), 1000);
   check('arrondi borné reste un multiple', big % gEgg === 0, `${big} g`);
+});
+
+/* ============================================== RÉSOLUTION 1 g (POINT N°1) */
+
+test('Résolution 1 g — aliment fractionnable : plus de paliers artificiels de catégorie', () => {
+  const poulet = F('Blanc de poulet'); // catégorie proteine, ancien step: 5
+  check('137 g reste 137 g (pas arrondi à 135 ou 140)', roundQuantity(poulet, 137) === 137);
+  check('138 g reste 138 g', roundQuantity(poulet, 138) === 138);
+  check('139 g reste 139 g', roundQuantity(poulet, 139) === 139);
+  check('181,4 g arrondit au gramme le plus proche (181 g)', roundQuantity(poulet, 181.4) === 181);
+  check('181,6 g arrondit au gramme le plus proche (182 g)', roundQuantity(poulet, 181.6) === 182);
+
+  const huile = F('Huile d’olive'); // catégorie matiere_grasse, ancien step: 1 (déjà fin)
+  check('huile : résolution déjà fine, inchangée', roundQuantity(huile, 23) === 23);
+
+  // bornes min/max toujours respectées malgré la résolution 1 g
+  check('borne max respectée (250 max, demande 400)', roundQuantity(poulet, 400, 50, 250) === 250);
+  check('borne min respectée (50 min, demande 10)', roundQuantity(poulet, 10, 50, 250) === 50);
+  check('valeur dans les bornes : inchangée au gramme près', roundQuantity(poulet, 183, 50, 250) === 183);
+});
+
+test('Résolution 1 g — les indivisibles et les bornes de recherche restent inchangés', () => {
+  const wrap = F('Wrap'); // non fractionnable, gramsPerUnit: 62
+  check('un aliment indivisible reste en unités entières malgré la résolution 1 g',
+    roundQuantity(wrap, 100) % wrap.gramsPerUnit === 0, `${roundQuantity(wrap, 100)} g`);
 });
 
 test('Unités — multiple entier de gramsPerUnit, quelle que soit la saisie', () => {
@@ -1232,6 +1272,919 @@ test('Tout verrouillé — l’algorithme ne touche à rien', () => {
   check('aucune modification', JSON.stringify(items) === before);
   const m = mealMacros(items, byId, 'thomas');
   check('écart bien signalé', diagnose(m, LUNCH.thomas, foods) !== null);
+});
+
+/* ============================================== RECETTES — CATALOGUE (ÉTAPE 1) */
+
+test('Recettes — macros dérivées (kind:weight), jamais stockées', () => {
+  const boeuf = F('Steak haché');
+  const haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [
+    newRecipeItem(boeuf.id, 600, 'cru'),
+    newRecipeItem(haricots.id, 400, 'egoutte'),
+  ];
+  recipe.baseGrams = 1000; // poids réel après cuisson (décision §11) — ≠ Σ crus, c'est normal
+
+  const per100 = recipeMacrosPer100g(recipe, byId);
+  // recalcul manuel indépendant, avec macrosFor() — aucune nouvelle formule nutritionnelle
+  const mBoeuf = macrosFor(boeuf, 600, 'cru');
+  const mHaricots = macrosFor(haricots, 400, 'egoutte');
+  const expectedKcal = ((mBoeuf.kcal + mHaricots.kcal) / 1000) * 100;
+  check('kcal/100g dérivées via macrosFor(), sans nouvelle formule',
+    Math.abs(per100.kcal - expectedKcal) < 0.01, `${per100.kcal.toFixed(2)} vs ${expectedKcal.toFixed(2)}`);
+  check('protein/100g cohérente', per100.protein > 0);
+
+  // rien n'est stocké sur la recette elle-même : recalcul à chaque appel
+  recipe.items.push(newRecipeItem(F('Riz basmati').id, 200, 'cru'));
+  const per100b = recipeMacrosPer100g(recipe, byId);
+  check('macros changent dès que items change (jamais mises en cache)', per100b.kcal !== per100.kcal);
+});
+
+test('Recettes — macros dérivées (kind:portion) : base = somme d’une portion', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const poulet = F('Blanc de poulet en tranches');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais poulet', 'portion');
+  recipe.items = [
+    newRecipeItem(wasa.id, 13, 'pret'),
+    newRecipeItem(stmoret.id, 20, 'pret'),
+    newRecipeItem(poulet.id, 35, 'pret'),
+  ];
+  const per100 = recipeMacrosPer100g(recipe, byId2);
+  const totalPortionG = 13 + 20 + 35;
+  const mSum = ['kcal'].map((k) =>
+    macrosFor(wasa, 13, 'pret')[k] + macrosFor(stmoret, 20, 'pret')[k] + macrosFor(poulet, 35, 'pret')[k]
+  )[0];
+  check('base = somme des grammes d’UNE portion (68 g), pas baseGrams',
+    Math.abs(per100.kcal - (mSum / totalPortionG) * 100) < 0.01);
+});
+
+test('Recettes — recette weight sans baseGrams renvoie des macros nulles (pas de division par zéro)', () => {
+  const recipe = newRecipe('Sans base', 'weight');
+  recipe.items = [newRecipeItem(F('Riz basmati').id, 100, 'cru')];
+  const per100 = recipeMacrosPer100g(recipe, byId); // baseGrams reste 0 (défaut newRecipe)
+  check('aucune exception, macros à 0', per100.kcal === 0 && per100.protein === 0);
+});
+
+test('Recettes — ingrédient non fractionnable refusé dans une recette weight (décision §10)', () => {
+  const wrap = F('Wrap'); // non fractionnable
+  const weightRecipe = newRecipe('Test weight', 'weight');
+  const r1 = canAddIngredientToRecipe(weightRecipe, wrap);
+  check('refusé pour une recette weight', r1.ok === false);
+  check('raison explicite fournie', typeof r1.reason === 'string' && r1.reason.length > 0);
+
+  const portionRecipe = newRecipe('Test portion', 'portion');
+  const r2 = canAddIngredientToRecipe(portionRecipe, wrap);
+  check('autorisé pour une recette portion', r2.ok === true);
+
+  const fractionable = F('Riz basmati');
+  const r3 = canAddIngredientToRecipe(weightRecipe, fractionable);
+  check('un aliment fractionnable reste autorisé dans une recette weight', r3.ok === true);
+});
+
+test('Recettes — store.js : catalogue global, migration additive, factories', () => {
+  const s = defaultState();
+  check('defaultState() initialise recipes: []', Array.isArray(s.recipes) && s.recipes.length === 0);
+
+  // ancien état SANS champ recipes (avant cette évolution) : migration non destructive
+  const legacy = { foods: seedFoods(), meals: [] };
+  const migrated = migrateState(legacy);
+  check('migrate() initialise recipes: [] pour un ancien état', Array.isArray(migrated.recipes) && migrated.recipes.length === 0);
+  check('migrate() ne supprime aucune donnée existante (foods conservés)', migrated.foods.length === legacy.foods.length);
+
+  const r = newRecipe('Chili con carne', 'weight');
+  check('newRecipe() génère un id unique', typeof r.id === 'string' && r.id.length > 0);
+  check('newRecipe() : items vide au départ', Array.isArray(r.items) && r.items.length === 0);
+
+  const ri = newRecipeItem('f_test', 150, 'cru');
+  check('newRecipeItem() : mêmes conventions qu’un item de repas (foodId, qty, state)',
+    ri.foodId === 'f_test' && ri.qty === 150 && ri.state === 'cru');
+});
+
+/* ================================================================ RECETTES DANS L'OPTIMISEUR (ÉTAPE 4) */
+
+test('Recettes — recipeAsVirtualFood() se comporte comme un aliment (fractionnable)', () => {
+  const boeuf = F('Steak haché');
+  const haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 600, 'cru'), newRecipeItem(haricots.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const vf = recipeAsVirtualFood(recipe, byId);
+  check('macros non nulles', vf.kcal > 0 && vf.protein > 0);
+  check('fractionnable (Type A, décision §9/§10)', vf.fractionable === true && vf.gramsPerUnit === 0);
+  check('catégorie dédiée recette', vf.category === 'recette_weight');
+  check('référence "prêt" (déjà agrégée, aucune conversion supplémentaire)', vf.referenceState === 'pret' && vf.cookedFactor === 1);
+});
+
+test('Recettes — le profil (bornes de recherche) est dérivé de CETTE recette, jamais d’une catégorie fixe', () => {
+  const riz = F('Riz basmati');
+  const small = newRecipe('Portion individuelle', 'weight');
+  small.items = [newRecipeItem(riz.id, 60, 'cru')];
+  small.baseGrams = 60; // petite recette (ex. accompagnement pour une personne)
+  const vfSmall = recipeAsVirtualFood(small, byId);
+  check('petite recette (60 g) : borne min bien en-dessous de l’ancienne constante fixe (80 g)',
+    vfSmall.recipeProfile.min < 80, `min=${vfSmall.recipeProfile.min}`);
+  check('bornes toujours proportionnelles à baseGrams (min×10 = max)',
+    vfSmall.recipeProfile.max === vfSmall.recipeProfile.min * 100);
+  check('def = baseGrams de CETTE recette', vfSmall.recipeProfile.def === 60);
+
+  const big = newRecipe('Chili batch cooking', 'weight');
+  big.items = [newRecipeItem(riz.id, 3000, 'cru')];
+  big.baseGrams = 3000; // grosse recette (plusieurs kg, batch cooking)
+  const vfBig = recipeAsVirtualFood(big, byId);
+  check('grosse recette (3 kg) : la borne max dépasse largement 600 g',
+    vfBig.recipeProfile.max > 3000, `max=${vfBig.recipeProfile.max}`);
+  check('les deux recettes n’ont PAS le même profil (pas de catégorie partagée)',
+    vfSmall.recipeProfile.max !== vfBig.recipeProfile.max);
+
+  // profileOf()/referenceFor() utilisent bien ce profil dédié, pas CATEGORY_PROFILE
+  check('profileOf() lit recipeProfile en priorité', profileOf(vfSmall) === vfSmall.recipeProfile);
+  const ref = referenceFor(vfBig);
+  check('referenceFor() reste dans les bornes dérivées de cette recette',
+    ref >= vfBig.recipeProfile.min && ref <= vfBig.recipeProfile.max, `${ref} g`);
+});
+
+test('Recettes — mealMacros() : chemin foodId strictement inchangé sans recipesById', () => {
+  const items = [item(F('Blanc de poulet'), 200), item(F('Riz basmati'), 150)];
+  const withoutRecipes = mealMacros(items, byId, 'thomas');
+  const withEmptyRecipes = mealMacros(items, byId, 'thomas', {});
+  check('résultat identique, recipesById omis ou vide', JSON.stringify(withoutRecipes) === JSON.stringify(withEmptyRecipes));
+});
+
+test('Recettes — mealMacros() intègre un item recipeId (weight) quand recipesById est fourni', () => {
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.items = [newRecipeItem(riz.id, 100, 'cru')];
+  recipe.baseGrams = 100; // 100 g crus -> macros/100g = macros de 100 g de riz cru
+  const recipesById = { [recipe.id]: recipe };
+  const items = [recipeItemInMeal(recipe.id, 200)]; // 2× la base
+  const withRecipes = mealMacros(items, byId, 'thomas', recipesById);
+  const expected = macrosFor(riz, 100, 'cru'); // 100g de riz cru, × 2 (200g de recette = 2×100g base)
+  check('kcal cohérentes avec la composition de la recette (×2)',
+    Math.abs(withRecipes.kcal - expected.kcal * 2) < 0.5, `${withRecipes.kcal.toFixed(1)} vs ${(expected.kcal * 2).toFixed(1)}`);
+
+  const withoutRecipes = mealMacros(items, byId, 'thomas'); // recipesById omis : recette inconnue
+  check('sans recipesById, l’item recette est ignoré (pas d’exception, pas de valeur inventée)',
+    withoutRecipes.kcal === 0 && withoutRecipes.unconvertible === 0);
+});
+
+test('Recettes — adjustQuantities() traite une recette weight comme une variable fractionnable normale', () => {
+  const boeuf = F('Steak haché');
+  const haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 600, 'cru'), newRecipeItem(haricots.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+
+  const profile = recipeAsVirtualFood(recipe, byId).recipeProfile; // bornes dérivées de baseGrams=1000
+  const items = [recipeItemInMeal(recipe.id, 300)];
+  autoAdjust(items, byId, LUNCH, { recipesById });
+  const q = items[0].qty.thomas;
+  info(`chili ajusté : ${q} g (bornes ${profile.min}–${profile.max} g)`);
+  check('quantité dans les bornes dérivées de baseGrams (pas une catégorie fixe)',
+    q >= profile.min && q <= profile.max, `${q} g`);
+  check('résolution 1 g (pas de palier artificiel)', Number.isInteger(q));
+
+  // combiné avec un aliment normal : les deux variables coexistent
+  const mixed = [item(F('Blanc de poulet'), 150), recipeItemInMeal(recipe.id, 300)];
+  autoAdjust(mixed, byId, LUNCH, { recipesById });
+  check('l’aliment normal reste ajusté normalement', mixed[0].qty.thomas > 0);
+  check('la recette reste ajustée dans ses bornes', mixed[1].qty.thomas >= profile.min && mixed[1].qty.thomas <= profile.max);
+});
+
+test('Recettes — une recette verrouillée devient une contribution fixe (comme un aliment verrouillé)', () => {
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.items = [newRecipeItem(riz.id, 100, 'cru')];
+  recipe.baseGrams = 100;
+  const recipesById = { [recipe.id]: recipe };
+  const items = [recipeItemInMeal(recipe.id, 250, { lock: true }), item(F('Blanc de poulet'), 150)];
+  const before = JSON.stringify(items[0].qty);
+  autoAdjust(items, byId, LUNCH, { recipesById });
+  check('quantité verrouillée inchangée', JSON.stringify(items[0].qty) === before);
+});
+
+/* ================================================================ RECETTES PORTION (ÉTAPE 9) */
+
+test('Recettes portion — recipeAsVirtualFood() : la recette ENTIÈRE devient l’unité (comme un aliment indivisible)', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const poulet = F('Blanc de poulet en tranches');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais poulet', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret'), newRecipeItem(poulet.id, 35, 'pret')];
+  const vf = recipeAsVirtualFood(recipe, byId2);
+  check('gramsPerUnit = poids d’UNE portion (13+20+35=68 g)', vf.gramsPerUnit === 68, `${vf.gramsPerUnit} g`);
+  check('non fractionnable (isWholeUnitFood() la reconnaît sans modification)', isWholeUnitFood(vf) === true);
+  check('catégorie dédiée recette_portion', vf.category === 'recette_portion');
+});
+
+test('Recettes portion — l’optimiseur ne produit JAMAIS de portion fractionnaire (2,37 portions interdit)', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const poulet = F('Blanc de poulet en tranches');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais poulet', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret'), newRecipeItem(poulet.id, 35, 'pret')];
+  const recipesById = { [recipe.id]: recipe };
+  const portionGrams = 13 + 20 + 35;
+
+  const items = [recipeItemInMeal(recipe.id, portionGrams)];
+  autoAdjust(items, byId2, SNACK, { recipesById });
+  const q = items[0].qty.thomas;
+  info(`portions ajustées : ${q} g = ${(q / portionGrams).toFixed(4)} portions`);
+  check('quantité toujours un multiple ENTIER du poids d’une portion (jamais 2,37 portions)',
+    q % portionGrams === 0, `${q} g / ${portionGrams} g = ${q / portionGrams}`);
+  check('au moins 1 portion', q >= portionGrams);
+});
+
+test('Recettes portion — mécanisme V1.4.1 réutilisé tel quel : combiné à un aliment non fractionnable classique', () => {
+  // reprend le scénario historique wrap + œuf (V1.4.1), un des deux
+  // remplacé par une recette-portion : AUCUNE ligne de roundForFinalQuantities
+  // n'a été modifiée pour ce cas — c'est la même fonction, sans distinction.
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret')];
+  const recipesById = { [recipe.id]: recipe };
+  const portionGrams = 33;
+
+  const items = [recipeItemInMeal(recipe.id, portionGrams), item(F('Œuf entier'))];
+  autoAdjust(items, byId2, SNACK, { recipesById });
+  check('la recette-portion reste un multiple entier', items[0].qty.thomas % portionGrams === 0, `${items[0].qty.thomas} g`);
+  const gEgg = F('Œuf entier').gramsPerUnit;
+  check('l’œuf reste lui aussi un multiple entier (indépendamment de la recette-portion)',
+    items[1].qty.thomas % gEgg === 0, `${items[1].qty.thomas} g`);
+});
+
+test('Recettes portion — préparation de type portion : preparedQuantity en NOMBRE DE PORTIONS', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret')];
+  const preparation = newPreparation(recipe, 5); // 5 PORTIONS préparées, pas 5 g
+  const vf = preparationAsVirtualFood(preparation, byId2);
+  check('gramsPerUnit = poids d’une portion (33 g)', vf.gramsPerUnit === 33);
+  check('borne max = 5 portions × 33 g = 165 g', vf.recipeProfile.max === 165, `${vf.recipeProfile.max} g`);
+  check('non fractionnable', vf.fractionable === false);
+});
+
+test('Recettes portion — idempotence et déterminisme, comme pour un aliment indivisible classique', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret')];
+  const recipesById = { [recipe.id]: recipe };
+  const items = [recipeItemInMeal(recipe.id, 33)];
+  autoAdjust(items, byId2, SNACK, { recipesById });
+  const first = items[0].qty.thomas;
+  for (let i = 0; i < 5; i++) autoAdjust(items, byId2, SNACK, { recipesById });
+  check('aucune dérive après 5 passages supplémentaires', items[0].qty.thomas === first, `${first} → ${items[0].qty.thomas}`);
+});
+
+test('Recettes portion — preparedGramsOf()/preparationAvailable() : conversion portions → grammes (bug réel corrigé)', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret')];
+  const portionGrams = 33;
+  const preparation = newPreparation(recipe, 5); // 5 PORTIONS, jamais 5 g
+
+  check('preparedGramsOf() convertit correctement (5 portions × 33 g = 165 g)',
+    preparedGramsOf(preparation) === 165, `${preparedGramsOf(preparation)} g`);
+
+  const meal = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newPreparationItem(preparation.id, portionGrams * 2), qty: { thomas: portionGrams * 2, julie: 0 } }, // 2 portions consommées
+  ] };
+  const st = { meals: [meal], breakfasts: [], snacks: [], settings: {} };
+  const available = preparationAvailable(st, preparation);
+  check('disponible en GRAMMES, pas en confondant portions et grammes (165 − 66 = 99 g = 3 portions)',
+    available === 165 - 66, `${available} g`);
+  check('jamais une soustraction directe naïve (5 − 66 aurait donné un nombre absurde et négatif)',
+    available !== 5 - 66);
+});
+
+test('Recettes portion — mode normal (étape 7) respecte le disponible réel exprimé en portions', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret')];
+  const portionGrams = 33;
+  const preparation = newPreparation(recipe, 3); // 3 portions préparées = 99 g
+  const preparationsById = { [preparation.id]: preparation };
+
+  const items = [newPreparationItem(preparation.id, portionGrams)];
+  autoAdjust(items, byId2, SNACK, {
+    preparationsById,
+    preparationAvailability: { [preparation.id]: preparedGramsOf(preparation) - portionGrams },
+  });
+  check('la quantité ne dépasse jamais 3 portions (99 g), même si la cible nutritionnelle en voudrait plus',
+    items[0].qty.thomas <= 99, `${items[0].qty.thomas} g`);
+  check('reste un multiple entier de portion', items[0].qty.thomas % portionGrams === 0);
+});
+
+test('Recettes portion — mode zéro reste (étape 8) : les portions restent ENTIÈRES après répartition', () => {
+  const wasa = { ...F('Pain croustillant'), gramsPerUnit: 13 };
+  const stmoret = F('Fromage frais tartinable');
+  const byId2 = { ...byId, [wasa.id]: wasa };
+  const recipe = newRecipe('Wasa fromage frais', 'portion');
+  recipe.items = [newRecipeItem(wasa.id, 13, 'pret'), newRecipeItem(stmoret.id, 20, 'pret')];
+  const portionGrams = 33;
+  const preparation = newPreparation(recipe, 5); // 5 portions = 165 g, à écouler intégralement
+  const preparationsById = { [preparation.id]: preparation };
+
+  const p1 = { ...newPreparationItem(preparation.id, portionGrams * 2), zeroWaste: true };
+  const p2 = { ...newPreparationItem(preparation.id, portionGrams), zeroWaste: true };
+  const slot1 = { items: [p1], itemId: p1.id, target: SNACK.thomas, person: 'thomas' };
+  const slot2 = { items: [p2], itemId: p2.id, target: SNACK.thomas, person: 'thomas' };
+
+  const result = resolveZeroWasteAllocation([slot1, slot2], preparedGramsOf(preparation), byId2, {}, preparationsById,
+    { roundStep: portionGrams });
+  const sum = result.allocation.reduce((s, v) => s + v, 0);
+  check('Σ affecté = 165 g EXACTEMENT (5 portions)', sum === 165, `${sum} g`);
+  check('CHAQUE allocation reste un multiple entier du poids d’une portion (jamais de portion fractionnaire)',
+    result.allocation.every((v) => v % portionGrams === 0), result.allocation.join(', '));
+});
+
+test('Recettes portion — zeroWasteSlotsFor() : détecte les créneaux marqués sur les repas', () => {
+  const recipe = newRecipe('Wasa fromage frais', 'portion');
+  const preparation = newPreparation(recipe, 3);
+  const marked = { ...newPreparationItem(preparation.id, 33), zeroWaste: true };
+  const unmarked = newPreparationItem(preparation.id, 33); // zeroWaste: false par défaut
+  const meal1 = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [marked] };
+  const meal2 = { id: 'm2', dayIndex: 1, mealType: 'dinner', items: [unmarked] };
+  const st = { meals: [meal1, meal2], breakfasts: [], snacks: [], settings: {} };
+  const slots = zeroWasteSlotsFor(st, preparation.id);
+  check('un créneau par personne pour l’item marqué (2, Thomas + Julie)', slots.length === 2, `${slots.length}`);
+  check('l’item NON marqué est absent (aucune bascule automatique)',
+    slots.every((s) => s.item.id === marked.id));
+});
+
+/* ================================================================ DÉPLOIEMENT BATCH/COURSES (ÉTAPE 10) */
+
+test('Déploiement — deployItems() : un item foodId reste inchangé (chemin existant intact)', () => {
+  const it = item(F('Riz basmati'), 150);
+  const out = deployItems([it], {}, {});
+  check('un seul élément, identique à l’original', out.length === 1 && out[0] === it);
+});
+
+test('Déploiement — deployItems() : une recette weight se déplie en ses ingrédients, à l’échelle de sa quantité', () => {
+  const boeuf = F('Steak haché');
+  const haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 600, 'cru'), newRecipeItem(haricots.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+
+  const it = recipeItemInMeal(recipe.id, 500); // moitié de la recette (500/1000)
+  const out = deployItems([it], recipesById, {});
+  check('deux ingrédients dépliés (bœuf + haricots)', out.length === 2);
+  const boeufOut = out.find((x) => x.foodId === boeuf.id);
+  const haricotsOut = out.find((x) => x.foodId === haricots.id);
+  check('bœuf à l’échelle exacte (600 × 500/1000 = 300 g)', boeufOut.qty.thomas === 300, `${boeufOut.qty.thomas} g`);
+  check('haricots à l’échelle exacte (400 × 500/1000 = 200 g)', haricotsOut.qty.thomas === 200, `${haricotsOut.qty.thomas} g`);
+  check('état de chaque ingrédient conservé', boeufOut.state === 'cru' && haricotsOut.state === 'egoutte');
+});
+
+test('Déploiement — deployItems() : une préparation se déplie via le SNAPSHOT, pas la recette live', () => {
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.items = [newRecipeItem(riz.id, 100, 'cru')];
+  recipe.baseGrams = 100;
+  const preparation = newPreparation(recipe, 100);
+  const preparationsById = { [preparation.id]: preparation };
+
+  // la recette live change APRÈS la préparation — le déploiement doit rester figé
+  recipe.items = [newRecipeItem(F('Blanc de poulet').id, 999, 'cru')];
+
+  const it = newPreparationItem(preparation.id, 200); // 2× la base (100 g)
+  const out = deployItems([it], {}, preparationsById);
+  check('un seul ingrédient déplié (riz, celui du snapshot)', out.length === 1 && out[0].foodId === riz.id);
+  check('à l’échelle exacte (100 × 200/100 = 200 g)', out[0].qty.thomas === 200, `${out[0].qty.thomas} g`);
+});
+
+test('Déploiement — deployItems() : un ingrédient libre ne produit aucun aliment réel', () => {
+  const out = deployItems([freeItem('curry', 'au goût')], {}, {});
+  check('liste vide', out.length === 0);
+});
+
+test('Déploiement — aggregateNeeds()/buildShoppingList() incluent désormais les recettes (bug corrigé)', () => {
+  const boeuf = F('Steak haché');
+  const haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 600, 'cru'), newRecipeItem(haricots.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+
+  const meal = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...recipeItemInMeal(recipe.id, 500), qty: { thomas: 500, julie: 500 } },
+  ], factors: { thomas: 1, julie: 1 } };
+
+  // SANS recipesById (comportement d'avant l'étape 10) : la recette était invisible
+  const needsBefore = aggregateNeeds([meal], byId);
+  check('avant correction : aucun besoin détecté (le bug qu’on corrige)', Object.keys(needsBefore).length === 0);
+
+  // AVEC recipesById : les ingrédients de la recette apparaissent dans les besoins
+  const needsAfter = aggregateNeeds([meal], byId, recipesById, {});
+  check('après correction : bœuf ET haricots détectés', needsAfter[boeuf.id] && needsAfter[haricots.id]);
+  check('quantités correctes (500 g × 60% de bœuf, pour chacune des 2 personnes = 300+300 = 600 g)',
+    Math.abs(needsAfter[boeuf.id].servedGrams - 600) < 0.01, `${needsAfter[boeuf.id].servedGrams} g`);
+});
+
+test('Déploiement — buildShoppingList() : une recette n’apparaît JAMAIS telle quelle, seulement ses ingrédients', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+
+  const meal = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...recipeItemInMeal(recipe.id, 500), qty: { thomas: 500, julie: 0 } },
+  ] };
+  const st = {
+    meals: [meal], breakfasts: [], snacks: [],
+    shopping: { purchased: {} },
+    settings: { budget: 100, cycle: { startWeekday: 1, duration: 1 } },
+  };
+  const shopping = buildShoppingList(st, byId, recipesById, {});
+  check('aucune ligne "Chili con carne" (la recette elle-même n’est jamais un produit)',
+    !shopping.lines.some((l) => l.food.name === 'Chili con carne'));
+  check('une ligne pour le bœuf, l’ingrédient réel', shopping.lines.some((l) => l.food.id === boeuf.id));
+});
+
+test('Déploiement — buildBatchPlan() : les gamelles/plan opératoire ne plantent plus sur un item recette/préparation', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+  const preparation = newPreparation(recipe, 1000);
+  const preparationsById = { [preparation.id]: preparation };
+
+  const meal1 = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...recipeItemInMeal(recipe.id, 300), qty: { thomas: 300, julie: 0 } },
+  ] };
+  const meal2 = { id: 'm2', dayIndex: 0, mealType: 'dinner', items: [
+    { ...newPreparationItem(preparation.id, 250), qty: { thomas: 250, julie: 0 } },
+  ] };
+  const st = {
+    meals: [meal1, meal2], breakfasts: [], snacks: [],
+    shopping: { purchased: {} }, batch: { overrides: {} },
+    settings: { budget: 100, cycle: { startWeekday: 1, duration: 1 }, batch: { enabled: true, maxDays: 3 } },
+  };
+  let plan;
+  check('aucune exception levée (ancien bug : crash sur it.free null)', (() => {
+    try { plan = buildBatchPlan(st, byId, recipesById, preparationsById); return true; }
+    catch (e) { info(e.message); return false; }
+  })());
+  const sess = plan[0];
+  check('la recette (molle) apparaît dans assembleSameDay avec son nom',
+    sess.assembleSameDay.some((r) => r.food.name === 'Chili con carne' && r.grams === 300));
+  check('la préparation apparaît dans assembleSameDay avec son label',
+    sess.assembleSameDay.some((r) => r.food.name === preparation.label && r.grams === 250));
+  const gamelleThomas1 = sess.gamelles.find((g) => g.mealId === 'm1').persons.thomas;
+  check('la gamelle du midi affiche la recette comme UN SEUL élément (jamais dépliée en bœuf)',
+    gamelleThomas1.length === 1 && gamelleThomas1[0].name === 'Chili con carne' && gamelleThomas1[0].grams === 300);
+});
+
+/* ================================================================ PRÉPARATIONS (ÉTAPE 5) */
+
+const fakeState = (meals) => ({ meals, breakfasts: [], snacks: [], settings: {} });
+
+test('Préparations — newPreparation() : snapshot figé, jamais recalculé depuis les ingrédients', () => {
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.items = [newRecipeItem(riz.id, 1200, 'cru')]; // 1200 g crus saisis…
+  recipe.baseGrams = 1200;
+  const prep = newPreparation(recipe, 1000, 'Riz simple #1'); // …mais 1000 g réellement obtenus après cuisson
+
+  check('id unique', typeof prep.id === 'string' && prep.id.length > 0);
+  check('recipeId référence la recette source', prep.recipeId === recipe.id);
+  check('preparedQuantity = poids RÉELLEMENT obtenu (1000 g), jamais recalculé depuis les 1200 g crus',
+    prep.preparedQuantity === 1000);
+  check('label explicite conservé', prep.label === 'Riz simple #1');
+  check('snapshot présent (kind, baseGrams, items)',
+    prep.recipeSnapshot.kind === 'weight' && prep.recipeSnapshot.baseGrams === 1200 && prep.recipeSnapshot.items.length === 1);
+
+  // la recette source est modifiée APRÈS la préparation : le snapshot ne doit RIEN en savoir
+  recipe.items.push(newRecipeItem(F('Blanc de poulet').id, 300, 'cru'));
+  recipe.baseGrams = 1500;
+  check('modifier la recette source après coup ne change PAS le snapshot (copie profonde, pas une référence)',
+    prep.recipeSnapshot.items.length === 1 && prep.recipeSnapshot.baseGrams === 1200);
+});
+
+test('Préparations — label par défaut = nom de la recette si non fourni', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  check('label = nom de la recette par défaut', prep.label === 'Chili con carne');
+});
+
+test('Préparations — store.js : catalogue, migration additive, preparationsById()', () => {
+  const s = defaultState();
+  check('defaultState() initialise preparations: []', Array.isArray(s.preparations) && s.preparations.length === 0);
+
+  const legacy = { foods: seedFoods(), meals: [] }; // ancien état, sans préparations
+  const migrated = migrateState(legacy);
+  check('migrate() initialise preparations: [] additivement', Array.isArray(migrated.preparations) && migrated.preparations.length === 0);
+
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.baseGrams = 500;
+  const prep = newPreparation(recipe, 500);
+  const map = { [prep.id]: prep };
+  check('preparationsById() indexe par id (vérifié sur une map construite à la main)', map[prep.id] === prep);
+});
+
+test('Préparations — items de repas : exclusion mutuelle foodId / recipeId / preparationId', () => {
+  const it1 = newPreparationItem('prep_1', 200);
+  check('newPreparationItem() : preparationId renseigné, foodId et recipeId nuls',
+    it1.preparationId === 'prep_1' && it1.foodId === null && it1.recipeId === null);
+  const it2 = newRecipeMealItem('recipe_1', 300);
+  check('newRecipeMealItem() : recipeId renseigné, foodId et preparationId nuls',
+    it2.recipeId === 'recipe_1' && it2.foodId === null && it2.preparationId === null);
+  const it3 = newItem('f_test', 100);
+  check('newItem() : foodId renseigné, recipeId et preparationId nuls (aucune régression)',
+    it3.foodId === 'f_test' && it3.recipeId === null && it3.preparationId === null);
+});
+
+test('Préparations — disponible = préparé − affecté, dérivé sur tout le cycle (jamais stocké)', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+
+  check('aucune utilisation : disponible = préparé', preparationAvailable(fakeState([]), prep) === 1000);
+
+  const meal1 = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newPreparationItem(prep.id), qty: { thomas: 300, julie: 200 } },
+  ] };
+  const meal2 = { id: 'm2', dayIndex: 1, mealType: 'dinner', items: [
+    { ...newPreparationItem(prep.id), qty: { thomas: 250, julie: 170 } },
+  ] };
+  const st = fakeState([meal1, meal2]);
+  check('utilisé = somme sur tous les repas et les deux personnes (300+200+250+170=920)',
+    preparationUsed(st, prep.id) === 920);
+  check('disponible = 1000 − 920 = 80 (reste prévu)', preparationAvailable(st, prep) === 80);
+
+  // un item référençant une AUTRE préparation ne compte pas
+  const otherPrep = newPreparation(recipe, 500);
+  const meal3 = { id: 'm3', dayIndex: 2, mealType: 'lunch', items: [
+    { ...newPreparationItem(otherPrep.id), qty: { thomas: 400, julie: 400 } },
+  ] };
+  check('seule la préparation demandée est comptée (isolation entre préparations)',
+    preparationUsed(fakeState([meal1, meal2, meal3]), prep.id) === 920);
+
+  // sur-engagement volontaire (avant l'étape 7, rien ne l'empêche encore) : signalé, pas masqué
+  const meal4 = { id: 'm4', dayIndex: 3, mealType: 'lunch', items: [
+    { ...newPreparationItem(prep.id), qty: { thomas: 200, julie: 200 } },
+  ] };
+  const overCommitted = preparationAvailable(fakeState([meal1, meal2, meal4]), prep);
+  check('un sur-engagement produit un disponible négatif, jamais masqué à 0',
+    overCommitted === 1000 - (920 + 400), `${overCommitted}`);
+});
+
+/* ================================================================ CALCUL INVERSE (ÉTAPE 6) */
+
+test('Calcul inverse — recipeNeeded() : besoin agrégé, uniquement les items SANS préparation', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.baseGrams = 1000;
+
+  const meal1 = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newRecipeMealItem(recipe.id), qty: { thomas: 300, julie: 220 } },
+  ] };
+  const meal2 = { id: 'm2', dayIndex: 1, mealType: 'dinner', items: [
+    { ...newRecipeMealItem(recipe.id), qty: { thomas: 280, julie: 200 } },
+  ] };
+  check('besoin = somme sur tous les repas et les deux personnes (300+220+280+200=1000)',
+    recipeNeeded(fakeState([meal1, meal2]), recipe.id) === 1000);
+
+  // exemple exact de la spécification (ÉTAPE 3 du workflow) : 920 g
+  const meal1b = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newRecipeMealItem(recipe.id), qty: { thomas: 300, julie: 200 } },
+  ] };
+  const meal2b = { id: 'm2', dayIndex: 1, mealType: 'dinner', items: [
+    { ...newRecipeMealItem(recipe.id), qty: { thomas: 250, julie: 170 } },
+  ] };
+  check('exemple de la spécification : besoin = 920 g', recipeNeeded(fakeState([meal1b, meal2b]), recipe.id) === 920);
+
+  // un item DÉJÀ lié à une préparation n'est plus un "besoin non couvert"
+  const prep = newPreparation(recipe, 1000);
+  const meal3 = { id: 'm3', dayIndex: 2, mealType: 'lunch', items: [
+    { ...newPreparationItem(prep.id), qty: { thomas: 300, julie: 200 } },
+  ] };
+  check('un item preparationId n’est pas compté comme besoin (déjà couvert par la préparation)',
+    recipeNeeded(fakeState([meal3]), recipe.id) === 0);
+
+  // une recette différente n'est pas comptée
+  const other = newRecipe('Autre recette', 'weight');
+  const meal4 = { id: 'm4', dayIndex: 3, mealType: 'lunch', items: [
+    { ...newRecipeMealItem(other.id), qty: { thomas: 500, julie: 500 } },
+  ] };
+  check('isolation entre recettes : seule la recette demandée est comptée',
+    recipeNeeded(fakeState([meal4]), recipe.id) === 0);
+});
+
+test('Calcul inverse — buildRecipeNeeds() : vue d’ensemble de toutes les recettes non préparées du cycle', () => {
+  const chili = newRecipe('Chili con carne', 'weight');
+  chili.baseGrams = 1000;
+  const riz = newRecipe('Riz simple', 'weight');
+  riz.baseGrams = 500;
+  const recipesById = { [chili.id]: chili, [riz.id]: riz };
+
+  const meal1 = { id: 'm1', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newRecipeMealItem(chili.id), qty: { thomas: 300, julie: 200 } },
+    { ...newRecipeMealItem(riz.id), qty: { thomas: 150, julie: 100 } },
+  ] };
+  const results = buildRecipeNeeds(fakeState([meal1]), recipesById);
+  check('deux recettes distinctes détectées', results.length === 2);
+  const chiliResult = results.find((r) => r.recipeId === chili.id);
+  const rizResult = results.find((r) => r.recipeId === riz.id);
+  check('besoin du chili correct (300+200=500)', chiliResult.needed === 500);
+  check('besoin du riz correct (150+100=250)', rizResult.needed === 250);
+  check('la recette elle-même est jointe (pas seulement son id)', chiliResult.recipe === chili);
+
+  // aucune recette référencée : liste vide, pas d'exception
+  check('cycle sans recette : liste vide', buildRecipeNeeds(fakeState([]), recipesById).length === 0);
+
+  // recette supprimée entre-temps (recipesById ne la contient plus) : ignorée sans exception
+  const orphan = { id: 'm2', dayIndex: 0, mealType: 'lunch', items: [
+    { ...newRecipeMealItem('recette_supprimee'), qty: { thomas: 100, julie: 100 } },
+  ] };
+  check('recette introuvable dans recipesById : ignorée, pas d’exception',
+    buildRecipeNeeds(fakeState([orphan]), recipesById).length === 0);
+});
+
+/* ================================================================ MODE NORMAL (ÉTAPE 7) */
+
+test('Mode normal — preparationAsVirtualFood() dérive du SNAPSHOT, jamais de la recette live', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+
+  // la recette live change du tout au tout APRÈS la préparation
+  recipe.items = [newRecipeItem(F('Riz basmati').id, 1000, 'cru')];
+
+  const vfFromSnapshot = preparationAsVirtualFood(prep, byId);
+  const vfFromLiveRecipe = recipeAsVirtualFood(recipe, byId); // pour comparaison uniquement
+  check('les macros de la préparation restent celles du bœuf (snapshot), pas du riz (recette live)',
+    Math.abs(vfFromSnapshot.kcal - vfFromLiveRecipe.kcal) > 50, `${vfFromSnapshot.kcal.toFixed(0)} vs ${vfFromLiveRecipe.kcal.toFixed(0)}`);
+  check('fractionnable, comme une recette weight', vfFromSnapshot.fractionable === true);
+  check('bornes par défaut ≤ preparedQuantity', vfFromSnapshot.recipeProfile.max === 1000);
+});
+
+test('Mode normal — sans preparationAvailability fourni, borne par défaut = preparedQuantity', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  const preparationsById = { [prep.id]: prep };
+
+  const items = [newPreparationItem(prep.id, 500)];
+  autoAdjust(items, byId, LUNCH, { preparationsById }); // pas de preparationAvailability
+  check('quantité ajustée, plafonnée par preparedQuantity au pire',
+    items[0].qty.thomas <= 1000, `${items[0].qty.thomas} g`);
+});
+
+test('Mode normal — Σ affecté ≤ disponible : l’optimiseur ne force JAMAIS le dépassement du stock', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru'), newRecipeItem(F('Haricots rouges').id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  const preparationsById = { [prep.id]: prep };
+
+  // reproduit exactement l'exemple de la spécification : 1000 g préparés, deux
+  // repas, la cible naturelle de chacun voudrait plus que ce qui reste au second.
+  const meal1 = [newPreparationItem(prep.id, 700)]; // déjà 700 g affectés ailleurs dans le cycle
+  const availabilityForMeal2 = { [prep.id]: 1000 - 700 }; // disponible = 300 g, EXCLUT la contribution du meal2 lui-même
+  const meal2 = [newPreparationItem(prep.id, 250)]; // le meal qu'on ajuste ; sa propre contribution s'ajoute au disponible fourni
+
+  autoAdjust(meal2, byId, LUNCH, { preparationsById, preparationAvailability: availabilityForMeal2 });
+  const q2 = meal2[0].qty.thomas;
+  info(`meal2 ajusté : ${q2} g (disponible fourni 300 g + contribution propre 250 g = plafond 550 g)`);
+  check('la contribution de meal2 ne dépasse jamais son plafond réel (300 + sa propre contribution de départ)',
+    q2 <= 300 + 250);
+  check('total réel (700 déjà ailleurs + meal2) ne dépasse jamais 1000 g de préparé',
+    700 + q2 <= 1000, `700 + ${q2} = ${700 + q2}`);
+});
+
+test('Mode normal — le reliquat n’est jamais forcé (un disponible large ne pousse pas la quantité au plafond)', () => {
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.items = [newRecipeItem(F('Riz basmati').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 5000); // très grosse préparation, largement au-delà du besoin réel
+  const preparationsById = { [prep.id]: prep };
+  const items = [newPreparationItem(prep.id, 200)];
+  autoAdjust(items, byId, LUNCH, { preparationsById, preparationAvailability: { [prep.id]: 5000 - 200 } });
+  check('la quantité reste raisonnable (proche du besoin nutritionnel), pas poussée vers 5000 g',
+    items[0].qty.thomas < 1000, `${items[0].qty.thomas} g`);
+});
+
+test('Mode normal — un item preparationId verrouillé devient une contribution fixe', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  const preparationsById = { [prep.id]: prep };
+  const items = [
+    { ...newPreparationItem(prep.id, 400), locked: { thomas: true, julie: true } },
+    item(F('Blanc de poulet'), 150),
+  ];
+  const before = JSON.stringify(items[0].qty);
+  autoAdjust(items, byId, LUNCH, { preparationsById, preparationAvailability: { [prep.id]: 600 } });
+  check('quantité verrouillée inchangée malgré le disponible', JSON.stringify(items[0].qty) === before);
+});
+
+test('Mode normal — mealMacros() intègre un item preparationId quand preparationsById est fourni', () => {
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.items = [newRecipeItem(riz.id, 100, 'cru')];
+  recipe.baseGrams = 100;
+  const prep = newPreparation(recipe, 100);
+  const preparationsById = { [prep.id]: prep };
+  const items = [newPreparationItem(prep.id, 200)]; // 2× la base
+  const macros = mealMacros(items, byId, 'thomas', {}, preparationsById);
+  const expected = macrosFor(riz, 100, 'cru');
+  check('macros cohérentes avec le snapshot (×2)', Math.abs(macros.kcal - expected.kcal * 2) < 0.5);
+});
+
+/* ================================================================ MODE ZÉRO RESTE (ÉTAPE 8) */
+
+test('Zéro reste — un seul créneau : consomme exactement la totalité (seule solution possible)', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 600, 'cru'), newRecipeItem(F('Haricots rouges').id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const prepItem = { ...newPreparationItem('prep1', 1000), zeroWaste: true };
+  const slot = { items: [prepItem], itemId: prepItem.id, target: LUNCH.thomas, person: 'thomas' };
+  const recipesById = {};
+  const preparationsById = {};
+
+  const result = resolveZeroWasteAllocation([slot], 1000, byId, recipesById, preparationsById);
+  check('une seule allocation', result.allocation.length === 1);
+  check('égale à preparedQuantity EXACTEMENT (1000 g)', result.allocation[0] === 1000, `${result.allocation[0]} g`);
+});
+
+test('Zéro reste — Σ affecté = preparedQuantity EXACTEMENT (deux créneaux, exemple de la spécification)', () => {
+  const boeuf = F('Steak haché');
+  const haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 600, 'cru'), newRecipeItem(haricots.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const preparation = newPreparation(recipe, 1000);
+  const preparationsById = { [preparation.id]: preparation };
+
+  const prepItem1 = { ...newPreparationItem(preparation.id, 300), zeroWaste: true };
+  const prepItem2 = { ...newPreparationItem(preparation.id, 250), zeroWaste: true };
+  const slot1 = { items: [prepItem1], itemId: prepItem1.id, target: LUNCH.thomas, person: 'thomas' };
+  const slot2 = { items: [prepItem2], itemId: prepItem2.id, target: LUNCH.thomas, person: 'thomas' }; // dîner, même cible ici pour simplifier
+
+  const result = resolveZeroWasteAllocation([slot1, slot2], 1000, byId, {}, preparationsById);
+  const sum = result.allocation.reduce((s, v) => s + v, 0);
+  info(`allocations : ${result.allocation.join(' + ')} = ${sum} g`);
+  check('Σ affecté = preparedQuantity EXACTEMENT (jamais approximatif)', sum === 1000, `${sum} g`);
+  check('résolution 1 g (allocations entières)', result.allocation.every((v) => Number.isInteger(v)));
+  check('deux allocations non négatives', result.allocation.every((v) => v >= 0));
+});
+
+test('Zéro reste — dépassement nutritionnel causé par l’égalité, détectable par comparaison avec le mode normal', () => {
+  // préparation largement surdimensionnée par rapport au besoin réel (deux
+  // COLLATIONS, cibles modestes) : le mode normal doit rester dans la cible,
+  // le mode zéro reste doit en sortir — puisqu'il DOIT écouler les 1000 g.
+  const boeuf = F('Steak haché');
+  const haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 600, 'cru'), newRecipeItem(haricots.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const preparation = newPreparation(recipe, 1000);
+  const preparationsById = { [preparation.id]: preparation };
+
+  const prepItem1 = { ...newPreparationItem(preparation.id, 150), zeroWaste: true };
+  const prepItem2 = { ...newPreparationItem(preparation.id, 150), zeroWaste: true };
+
+  // MODE NORMAL (étape 7, sans égalité) : chaque collation cherche son
+  // optimum, plafonné par le disponible — le total naturel reste bien sous 1000 g.
+  const normalItems1 = [{ ...prepItem1 }];
+  const normalItems2 = [{ ...prepItem2 }];
+  autoAdjust(normalItems1, byId, SNACK, { preparationsById, preparationAvailability: { [preparation.id]: 1000 - 150 } });
+  autoAdjust(normalItems2, byId, SNACK, { preparationsById, preparationAvailability: { [preparation.id]: 1000 - 150 } });
+  const normalTotal = normalItems1[0].qty.thomas + normalItems2[0].qty.thomas;
+  const normalMacros1 = mealMacros(normalItems1, byId, 'thomas', {}, preparationsById);
+  const normalEval1 = evaluate(normalMacros1, SNACK.thomas, 0.05);
+
+  // MODE ZÉRO RESTE : les 1000 g DOIVENT être intégralement affectés,
+  // largement au-delà du besoin d'une collation.
+  const slot1 = { items: [prepItem1], itemId: prepItem1.id, target: SNACK.thomas, person: 'thomas' };
+  const slot2 = { items: [prepItem2], itemId: prepItem2.id, target: SNACK.thomas, person: 'thomas' };
+  const zw = resolveZeroWasteAllocation([slot1, slot2], 1000, byId, {}, preparationsById);
+  const zwTotal = zw.allocation.reduce((s, v) => s + v, 0);
+
+  info(`mode normal : ${normalTotal} g au total (statut ${normalEval1.status}) · zéro reste : ${zwTotal} g au total`);
+  check('le mode normal reste dans une échelle raisonnable (pas forcé à 1000 g)', normalTotal < 1000);
+  check('le mode zéro reste force EXACTEMENT les 1000 g malgré tout', zwTotal === 1000);
+
+  // le dépassement causé par le zéro reste se détecte en comparant les DEUX
+  // créneaux : la répartition minimisant le coût total n'est pas forcément
+  // symétrique (perte de Welsch bornée, non convexe — comportement hérité de
+  // l'optimiseur existant, pas introduit ici) ; on compare donc l'écart kcal
+  // CUMULÉ des deux créneaux plutôt qu'un seul isolément.
+  const normalMacros2 = mealMacros(normalItems2, byId, 'thomas', {}, preparationsById);
+  const normalEval2 = evaluate(normalMacros2, SNACK.thomas, 0.05);
+  const zwItems1 = [{ ...prepItem1, qty: { thomas: zw.allocation[0], julie: zw.allocation[0] } }];
+  const zwItems2 = [{ ...prepItem2, qty: { thomas: zw.allocation[1], julie: zw.allocation[1] } }];
+  const zwEval1 = evaluate(mealMacros(zwItems1, byId, 'thomas', {}, preparationsById), SNACK.thomas, 0.05);
+  const zwEval2 = evaluate(mealMacros(zwItems2, byId, 'thomas', {}, preparationsById), SNACK.thomas, 0.05);
+  const cumulKcalDelta = (ev1, ev2) =>
+    Math.abs(ev1.rows.find((r) => r.key === 'kcal').delta) + Math.abs(ev2.rows.find((r) => r.key === 'kcal').delta);
+  const normalCumul = cumulKcalDelta(normalEval1, normalEval2);
+  const zwCumul = cumulKcalDelta(zwEval1, zwEval2);
+  const causedByZeroWaste = zwCumul > normalCumul;
+  info(`écart kcal cumulé — mode normal : ${normalCumul.toFixed(0)} · zéro reste : ${zwCumul.toFixed(0)} · causedByZeroWaste=${causedByZeroWaste}`);
+  check('le dépassement causé par le zéro reste est bien détecté (écart kcal cumulé strictement plus grand)',
+    causedByZeroWaste === true);
+});
+
+test('Zéro reste — un item sans zeroWaste:true n’est jamais inclus dans le calcul (aucune bascule automatique)', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.baseGrams = 1000;
+  const preparation = newPreparation(recipe, 1000);
+  const preparationsById = { [preparation.id]: preparation };
+  // item normal (zeroWaste: false, valeur par défaut de newPreparationItem)
+  const normalItem = newPreparationItem(preparation.id, 300);
+  check('zeroWaste vaut false par défaut, jamais basculé automatiquement', normalItem.zeroWaste === false);
+  // resolveZeroWasteAllocation() n'est appelée qu'avec les créneaux que
+  // l'APPELANT choisit d'y inclure — cet item normal, non passé en slot,
+  // n'a aucune influence sur un éventuel calcul zéro reste ailleurs.
+  const other = { ...newPreparationItem(preparation.id, 700), zeroWaste: true };
+  const slot = { items: [other], itemId: other.id, target: LUNCH.thomas, person: 'thomas' };
+  const result = resolveZeroWasteAllocation([slot], 1000, byId, {}, preparationsById);
+  check('un seul créneau pris en compte : le total lui revient entièrement, l’item normal ignoré',
+    result.allocation[0] === 1000);
+});
+
+test('Zéro reste — plusieurs autres ingrédients dans le même repas se réoptimisent autour de l’allocation imposée', () => {
+  const recipe = newRecipe('Chili con carne', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 600, 'cru'), newRecipeItem(F('Haricots rouges').id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  const preparation = newPreparation(recipe, 1000);
+  const preparationsById = { [preparation.id]: preparation };
+  const prepItem1 = { ...newPreparationItem(preparation.id, 300), zeroWaste: true };
+  const prepItem2 = { ...newPreparationItem(preparation.id, 250), zeroWaste: true };
+  const riz = item(F('Riz basmati'), 100);
+
+  const slot1 = { items: [prepItem1, riz], itemId: prepItem1.id, target: LUNCH.thomas, person: 'thomas' };
+  const slot2 = { items: [prepItem2], itemId: prepItem2.id, target: LUNCH.thomas, person: 'thomas' };
+  const result = resolveZeroWasteAllocation([slot1, slot2], 1000, byId, {}, preparationsById);
+  const sum = result.allocation.reduce((s, v) => s + v, 0);
+  check('égalité respectée malgré la présence d’un autre ingrédient', sum === 1000);
+  check('le riz (autre ingrédient du créneau 1) a bien été réoptimisé (present dans les quantités retournées)',
+    result.quantities[0][riz.id] !== undefined && result.quantities[0][riz.id] > 0);
+});
+
+/* ================================================================ SECTIONS (ÉTAPE 2) */
+
+test('Sections — item.section par défaut à "plat", jamais persisté comme liste séparée', () => {
+  const it1 = newItem('f_test', 100, 'cru');
+  check('newItem() : section par défaut "plat"', it1.section === 'plat');
+  const it2 = newFreeItem('curry', 'au goût');
+  check('newFreeItem() : section par défaut "plat"', it2.section === 'plat');
+});
+
+test('Sections — sectionsUsed() calculé à l’affichage, dans l’ordre fixe', () => {
+  const items = [
+    { ...newItem('f_a'), section: 'dessert' },
+    { ...newItem('f_b'), section: 'entree' },
+    { ...newItem('f_c'), section: 'plat' },
+    { ...newItem('f_d'), section: 'plat' }, // doublon : ne doit apparaître qu'une fois
+  ];
+  const used = sectionsUsed(items);
+  check('ordre fixe respecté (entree avant plat avant dessert), pas l’ordre d’insertion',
+    JSON.stringify(used) === JSON.stringify(['entree', 'plat', 'dessert']));
+  check('pas de doublon', used.length === 3);
+  check('une section absente des items n’apparaît pas (accompagnement)', !used.includes('accompagnement'));
+});
+
+test('Sections — compatibilité ancien repas : item sans .section traité comme "plat" à la LECTURE', () => {
+  // simule un item stocké AVANT cette évolution : aucune mutation active des
+  // données, seule la lecture applique le défaut (décision §15/§18).
+  const legacyItem = { id: 'it_legacy', foodId: 'f_test', free: null, state: null,
+    qty: { thomas: 100, julie: 100 }, locked: { thomas: false, julie: false } }; // pas de .section
+  check('l’item stocké ne porte toujours pas de .section (aucune conversion active)',
+    legacyItem.section === undefined);
+  const used = sectionsUsed([legacyItem]);
+  check('mais il est bien traité comme "plat" à la lecture', used.length === 1 && used[0] === 'plat');
+});
+
+test('Sections — liste fixe (décision §7)', () => {
+  check('7 sections, dans cet ordre exact',
+    JSON.stringify(SECTIONS) === JSON.stringify(['entree', 'plat', 'accompagnement', 'fromage', 'dessert', 'collation', 'autre']));
+  check('DEFAULT_SECTION = "plat"', DEFAULT_SECTION === 'plat');
 });
 
 /* ---------------------------------------------------------------- bilan */

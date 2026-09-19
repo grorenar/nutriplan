@@ -5,6 +5,7 @@ import * as sync from './core/sync.js';
 import { toast } from './core/util.js';
 import * as planning from './views/planning.js';
 import * as foods from './views/foods.js';
+import * as recipes from './views/recipes.js';
 import * as catalogs from './views/catalogs.js';
 import * as batch from './views/batch.js';
 import * as shopping from './views/shopping.js';
@@ -15,6 +16,7 @@ import { openPrintDialog } from './views/print.js';
 const VIEWS = [
   { id: 'planning', label: 'Planning', icon: '▤', render: planning.render, title: 'Planning du cycle' },
   { id: 'foods', label: 'Aliments', icon: '◎', render: foods.render, title: 'Banque alimentaire' },
+  { id: 'recipes', label: 'Recettes', icon: '📖', render: recipes.render, title: 'Recettes' },
   { id: 'breakfasts', label: 'Petits-déj.', icon: '☕', render: catalogs.renderBreakfasts, title: 'Petits-déjeuners' },
   { id: 'snacks', label: 'Collations', icon: '◍', render: catalogs.renderSnacks, title: 'Collations' },
   { id: 'batch', label: 'Batch', icon: '⊞', render: batch.render, title: 'Batch cooking' },

@@ -3,7 +3,7 @@
  * Aucune de ces fonctions ne modifie le planning.
  */
 
-import { convertGrams, toReferenceGrams, PERSONS, mealMacros } from './nutrition.js';
+import { convertGrams, toReferenceGrams, PERSONS, mealMacros, preparedGramsOf, portionGramsOf } from './nutrition.js';
 
 /** Utilisations totales d'une option de catalogue, par personne. */
 export function optionUses(option, kind) {
@@ -40,16 +40,65 @@ export function cycleSources(state) {
 }
 
 /**
+ * Déplie UN item en ses aliments réels : un item `foodId` est retourné tel
+ * quel ; un item `recipeId`/`preparationId` est développé en une contribution
+ * par ingrédient de la recette (ou du snapshot figé pour une préparation), à
+ * l'échelle de SA propre quantité par personne — jamais stocké, recalculé à
+ * chaque appel. Un ingrédient libre ne produit rien (pas d'aliment réel).
+ * Étape 10 : c'est le SEUL endroit qui traduit une recette/préparation en
+ * aliments — `buildBatchPlan`/`buildShoppingList`/`aggregateNeeds` restent
+ * ignorants du concept de recette, exactement comme `meal-volume.js`.
+ */
+function deployItem(it, recipesById, preparationsById) {
+  if (it.foodId) return [it];
+  let composition;
+  let base;
+  if (it.recipeId) {
+    const recipe = recipesById[it.recipeId];
+    if (!recipe) return [];
+    composition = recipe.items;
+    base = recipe.kind === 'portion' ? portionGramsOf(recipe) : Number(recipe.baseGrams) || 0;
+  } else if (it.preparationId) {
+    const prep = preparationsById[it.preparationId];
+    if (!prep?.recipeSnapshot) return [];
+    composition = prep.recipeSnapshot.items;
+    base = prep.recipeSnapshot.kind === 'portion' ? portionGramsOf(prep.recipeSnapshot) : Number(prep.recipeSnapshot.baseGrams) || 0;
+  } else {
+    return []; // ingrédient libre : aucun aliment réel à en tirer
+  }
+  if (!(base > 0)) return [];
+  return (composition || []).map((ri) => ({
+    foodId: ri.foodId,
+    state: ri.state,
+    qty: {
+      thomas: (Number(ri.qty) || 0) * ((it.qty?.thomas || 0) / base),
+      julie: (Number(ri.qty) || 0) * ((it.qty?.julie || 0) / base),
+    },
+  }));
+}
+
+/** Déplie une liste d'items — voir `deployItem()`. */
+export function deployItems(items, recipesById = {}, preparationsById = {}) {
+  const out = [];
+  for (const it of items) out.push(...deployItem(it, recipesById, preparationsById));
+  return out;
+}
+
+/**
  * Besoins agrégés par aliment sur une liste de sources.
  * Le facteur est appliqué PAR PERSONNE avant agrégation : les quantités de
  * Thomas et de Julie peuvent différer et leurs nombres d'utilisations aussi.
+ * `recipesById`/`preparationsById` (optionnels, `{}` par défaut) : les items
+ * recette/préparation sont dépliés en aliments réels avant agrégation —
+ * chemin additif, sans effet sur le comportement existant pour un item foodId.
  */
-export function aggregateNeeds(sources, foodsById) {
+export function aggregateNeeds(sources, foodsById, recipesById = {}, preparationsById = {}) {
   const out = {}; // foodId -> { food, refGrams, servedGrams, uses, days:Set }
   for (const source of sources) {
     const factors = source.factors || { thomas: source.factor ?? 1, julie: source.factor ?? 1 };
     const maxFactor = Math.max(factors.thomas || 0, factors.julie || 0);
-    for (const it of source.items) {
+    const flatItems = deployItems(source.items, recipesById, preparationsById);
+    for (const it of flatItems) {
       if (!it.foodId) continue;
       const food = foodsById[it.foodId];
       if (!food) continue;
@@ -68,6 +117,103 @@ export function aggregateNeeds(sources, foodsById) {
     }
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Préparations — stock dérivé (étape 5)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Quantité déjà affectée à une préparation, sur tout le cycle et les deux
+ * personnes — même principe d'agrégation par facteur que `aggregateNeeds()`
+ * (un item dans une option de catalogue réutilisée N fois pèse N fois plus).
+ */
+export function preparationUsed(state, preparationId) {
+  let used = 0;
+  for (const source of cycleSources(state)) {
+    const factors = source.factors || { thomas: source.factor ?? 1, julie: source.factor ?? 1 };
+    for (const it of source.items) {
+      if (it.preparationId !== preparationId) continue;
+      used += PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0) * (factors[p] || 0), 0);
+    }
+  }
+  return used;
+}
+
+/**
+ * Disponible = préparé − déjà affecté. Toujours dérivé, jamais stocké
+ * (décision verrouillée). Peut être négatif : un sur-engagement n'est pas
+ * masqué ici (rien n'empêche encore le dépassement avant l'étape 7, qui fera
+ * de cette valeur une contrainte réelle sur l'optimiseur).
+ */
+export function preparationAvailable(state, preparation) {
+  // toujours en GRAMMES (l'unité de stockage réelle des item.qty) : pour une
+  // préparation `kind:'portion'`, preparedQuantity est en PORTIONS — la
+  // comparer directement à preparationUsed() (grammes) serait faux.
+  return preparedGramsOf(preparation) - preparationUsed(state, preparation.id);
+}
+
+/**
+ * Créneaux "zéro reste" d'une préparation : un par (item `zeroWaste:true` qui
+ * la référence, personne), sur les REPAS uniquement pour cette version —
+ * volontairement PAS les options de petit-déjeuner/collation, dont le
+ * facteur d'utilisation (une option peut être réutilisée N fois dans le
+ * cycle) rendrait "Σ allocation = preparedQuantity" incorrect sans que le
+ * solveur en soit informé ; un repas a toujours un facteur de 1. Limite
+ * assumée, pas un oubli.
+ */
+export function zeroWasteSlotsFor(state, preparationId) {
+  const slots = [];
+  for (const meal of state.meals) {
+    for (const it of meal.items) {
+      if (it.preparationId !== preparationId || !it.zeroWaste) continue;
+      for (const person of PERSONS) slots.push({ meal, item: it, person });
+    }
+  }
+  return slots;
+}
+
+/* ------------------------------------------------------------------ */
+/* Calcul inverse — besoin d'une recette non encore préparée (étape 6) */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Besoin total d'une recette, agrégé sur tout le cycle et les deux personnes :
+ * somme des items qui la référencent SANS préparation encore matérialisée
+ * (mode "molle" — la recette n'est pas encore cuisinée). Un item déjà lié à
+ * une préparation (`preparationId` renseigné) n'est pas un besoin non couvert :
+ * son suivi passe par `preparationUsed()`, pas par cette fonction.
+ * Ne tient PAS compte du disponible d'une préparation existante de cette
+ * recette (raffinement volontairement différé, cf. spécification §20) :
+ * purement additif, comme `aggregateNeeds()` pour les aliments.
+ */
+export function recipeNeeded(state, recipeId) {
+  let needed = 0;
+  for (const source of cycleSources(state)) {
+    const factors = source.factors || { thomas: source.factor ?? 1, julie: source.factor ?? 1 };
+    for (const it of source.items) {
+      if (it.recipeId !== recipeId || it.preparationId) continue;
+      needed += PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0) * (factors[p] || 0), 0);
+    }
+  }
+  return needed;
+}
+
+/**
+ * Vue d'ensemble : pour chaque recette référencée sans préparation quelque
+ * part dans le cycle, le besoin total agrégé — base du calcul inverse
+ * (ÉTAPE 3 de la spécification : « Besoin total estimé / Quantité recommandée
+ * à préparer »). L'utilisateur choisit ensuite la quantité réelle à préparer
+ * via `newPreparation()` ; rien n'est décidé ni matérialisé automatiquement.
+ */
+export function buildRecipeNeeds(state, recipesById) {
+  const ids = new Set();
+  for (const source of cycleSources(state)) {
+    for (const it of source.items) if (it.recipeId && !it.preparationId) ids.add(it.recipeId);
+  }
+  return [...ids]
+    .map((recipeId) => ({ recipe: recipesById[recipeId], recipeId, needed: recipeNeeded(state, recipeId) }))
+    .filter((x) => x.recipe); // recette supprimée entre-temps : ignorée, pas d'exception
 }
 
 /* ------------------------------------------------------------------ */
@@ -184,13 +330,13 @@ function servedGrams(food, qty, itemState) {
  * plan opératoire de préparation, et détail des gamelles à remplir.
  * Cette fonction ne modifie jamais le planning : elle le lit.
  */
-export function buildBatchPlan(state, foodsById) {
+export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsById = {}) {
   const sessions = batchSessions(state.settings);
   return sessions.map((s) => {
     // nombre de jours que la préparation de cette session doit couvrir
     const coveredDays = s.endDay - s.startDay + 1;
     const meals = state.meals.filter((m) => m.dayIndex >= s.startDay && m.dayIndex <= s.endDay);
-    const needs = aggregateNeeds(meals, foodsById);
+    const needs = aggregateNeeds(meals, foodsById, recipesById, preparationsById);
 
     // ---- A. à préparer en batch
     const components = [];
@@ -232,11 +378,25 @@ export function buildBatchPlan(state, foodsById) {
     }
     components.sort((a, b) => b.requiredRaw - a.requiredRaw);
 
-    // ---- B et C : par repas concerné
+    // ---- B et C : par repas concerné (une recette/préparation n'est jamais
+    // dépliée ici — contrairement à aggregateNeeds/buildShoppingList — une
+    // gamelle affiche "Chili con carne 300 g", jamais ses ingrédients séparés ;
+    // elle est déjà considérée "prête à assembler", comme un plat déjà cuit).
     const cookSameDay = [];
     const assembleSameDay = [];
     for (const meal of meals) {
       for (const it of meal.items) {
+        if (it.recipeId || it.preparationId) {
+          const total = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
+          if (!total) continue;
+          const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipesById[it.recipeId]?.name;
+          if (!label) continue;
+          assembleSameDay.push({
+            food: { name: label }, dayIndex: meal.dayIndex, mealType: meal.mealType,
+            grams: total, summary: null, note: null,
+          });
+          continue;
+        }
         const food = it.foodId && foodsById[it.foodId];
         if (!food) continue;
         const cat = batchCategory(food);
@@ -266,6 +426,12 @@ export function buildBatchPlan(state, foodsById) {
           person,
           meal.items
             .map((it) => {
+              if (it.recipeId || it.preparationId) {
+                const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipesById[it.recipeId]?.name;
+                const qty = it.qty?.[person] || 0;
+                if (!label || !qty) return null;
+                return { free: false, food: null, name: label, category: 'assemble', grams: qty, cooked: false };
+              }
               if (!it.foodId) {
                 return it.free ? { free: true, name: it.free.name, quantity: it.free.quantity, category: 'free' } : null;
               }
@@ -307,8 +473,8 @@ export function buildBatchPlan(state, foodsById) {
 /* Liste de courses                                                    */
 /* ------------------------------------------------------------------ */
 
-export function buildShoppingList(state, foodsById) {
-  const needs = aggregateNeeds(cycleSources(state), foodsById);
+export function buildShoppingList(state, foodsById, recipesById = {}, preparationsById = {}) {
+  const needs = aggregateNeeds(cycleSources(state), foodsById, recipesById, preparationsById);
   const lines = Object.values(needs).map((entry) => {
     const { food, refGrams } = entry;
     const pack = Number(food.packageWeight) > 0 ? Number(food.packageWeight) : null;
@@ -338,8 +504,8 @@ export function buildShoppingList(state, foodsById) {
 /* Suggestions d'optimisation du cycle (jamais appliquées automatiquement) */
 /* ------------------------------------------------------------------ */
 
-export function optimizeSuggestions(state, foodsById) {
-  const needs = aggregateNeeds(cycleSources(state), foodsById);
+export function optimizeSuggestions(state, foodsById, recipesById = {}, preparationsById = {}) {
+  const needs = aggregateNeeds(cycleSources(state), foodsById, recipesById, preparationsById);
   const entries = Object.values(needs);
   const suggestions = [];
 
@@ -365,7 +531,7 @@ export function optimizeSuggestions(state, foodsById) {
   });
 
   // budget + substitutions moins chères dans la même catégorie
-  const shopping = buildShoppingList(state, foodsById);
+  const shopping = buildShoppingList(state, foodsById, recipesById, preparationsById);
   if (shopping.overBudget > 0) {
     suggestions.push({
       kind: 'budget',
@@ -404,11 +570,11 @@ export function optimizeSuggestions(state, foodsById) {
 /* Totaux journaliers (indicatif)                                      */
 /* ------------------------------------------------------------------ */
 
-export function dayTotals(state, foodsById, dayIndex, person) {
+export function dayTotals(state, foodsById, dayIndex, person, recipesById = {}, preparationsById = {}) {
   const meals = state.meals.filter((m) => m.dayIndex === dayIndex);
   const total = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   for (const m of meals) {
-    const macros = mealMacros(m.items, foodsById, person);
+    const macros = mealMacros(m.items, foodsById, person, recipesById, preparationsById);
     total.kcal += macros.kcal;
     total.protein += macros.protein;
     total.carbs += macros.carbs;

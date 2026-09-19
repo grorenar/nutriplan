@@ -4,7 +4,7 @@
  * Cet écran ne modifie jamais le planning.
  */
 
-import { getState, update, foodsById } from '../core/store.js';
+import { getState, update, foodsById, recipesById, preparationsById } from '../core/store.js';
 import { buildBatchPlan, BATCH_CATEGORY_LABEL } from '../core/derive.js';
 import { dayName, esc, grams, num, toast } from '../core/util.js';
 import { MEAL_TYPES, PERSONS, PERSON_LABEL } from '../core/nutrition.js';
@@ -16,7 +16,7 @@ export function render(root) {
     return;
   }
   const byId = foodsById();
-  const plan = buildBatchPlan(s, byId);
+  const plan = buildBatchPlan(s, byId, recipesById(), preparationsById());
   const startWeekday = s.settings.cycle.startWeekday;
 
   root.innerHTML = `

@@ -52,6 +52,61 @@ create table if not exists foods (
   primary key (user_id, id)
 );
 
+-- ---------------------------------------------------------------------
+-- Recettes/préparations (étape 5) — voir "SPÉCIFICATION D'ARCHITECTURE
+-- FINALE" du même échange. Additif, aucune table existante modifiée.
+-- Les macros d'une recette/préparation ne sont JAMAIS stockées : toujours
+-- recalculées depuis recipe_items / preparations.recipe_snapshot.
+-- ---------------------------------------------------------------------
+create table if not exists recipes (
+  user_id           uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  id                text not null,
+  name              text not null,
+  kind              text not null default 'weight',     -- 'weight' | 'portion'
+  base_grams        numeric,                             -- requis si kind = 'weight' ; poids RÉEL après cuisson de la composition de référence
+  batch_allowed     boolean default false,
+  shelf_life_days   numeric,
+  cooking_method    text,
+  cooking_temp      numeric,
+  cooking_time      numeric,
+  prep_time         numeric,
+  equipment         text,
+  instructions      text,
+  primary key (user_id, id),
+  check (kind in ('weight', 'portion'))
+);
+
+create table if not exists recipe_items (
+  user_id           uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  id                text not null,           -- "<recipe_id>:<food_id>" ou uid dédié
+  recipe_id         text not null,
+  food_id           text not null,
+  quantity          numeric not null default 0,   -- grammes (base_grams si weight, 1 portion si portion)
+  reference_state   text,
+  primary key (user_id, id),
+  foreign key (user_id, recipe_id) references recipes(user_id, id) on delete cascade
+);
+create index if not exists recipe_items_recipe_idx on recipe_items (user_id, recipe_id);
+
+-- Une préparation est un événement RÉEL (quantité effectivement obtenue,
+-- jamais recalculée) : recipe_snapshot fige la composition au moment de sa
+-- création — modifier la recette source ensuite ne change JAMAIS une
+-- préparation déjà créée. "on delete restrict" (pas cascade) : supprimer une
+-- recette qui a des préparations existantes est refusé, pour ne jamais
+-- perdre silencieusement leur historique.
+create table if not exists preparations (
+  user_id           uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  id                text not null,
+  recipe_id         text not null,
+  label             text,
+  prepared_quantity numeric not null default 0,
+  created_at        timestamptz not null default now(),
+  recipe_snapshot   jsonb not null,          -- copie figée de { kind, base_grams, items } au moment de la création
+  primary key (user_id, id),
+  foreign key (user_id, recipe_id) references recipes(user_id, id) on delete restrict
+);
+create index if not exists preparations_recipe_idx on preparations (user_id, recipe_id);
+
 create table if not exists targets (
   user_id    uuid not null default auth.uid() references auth.users(id) on delete cascade,
   id         text not null,                          -- "thomas:lunch"
@@ -221,6 +276,51 @@ alter table snack_options add column if not exists uses_julie_afternoon int not 
 alter table snack_options add column if not exists uses_julie_evening int not null default 0;
 alter table snack_options alter column type set default 'snack';
 
+-- Recettes/préparations (étape 5) : un item peut désormais référencer une
+-- recette (mode "molle", calcul inverse) ou une préparation (utilisation
+-- ferme, tire sur son stock) au lieu d'un aliment.
+--
+-- IMPORTANT : ces colonnes sont volontairement NULLABLES, DEFAULT compris.
+-- nutriplan_replace_all() insère via jsonb_populate_record() à partir du
+-- payload JSON envoyé par le client ; pour une clé absente du JSON (un ancien
+-- item local, jamais réécrit — décision verrouillée : "ne pas convertir
+-- activement les anciennes données"), jsonb_populate_record() insère NULL et
+-- N'APPLIQUE PAS le DEFAULT de la colonne. Une contrainte NOT NULL ferait donc
+-- échouer la synchronisation de tout item existant. 'plat' reste le défaut
+-- pour une ligne insérée directement en SQL (hors de ce chemin JSON) ; côté
+-- application, l'absence de section est déjà interprétée comme 'plat' à la
+-- lecture (store.js::sectionsUsed/itemLabel) — la même convention s'applique
+-- ici : NULL == 'plat', jamais recalculé ni réécrit.
+alter table meal_items add column if not exists section text default 'plat';
+alter table meal_items add column if not exists recipe_id text;
+alter table meal_items add column if not exists preparation_id text;
+alter table meal_items add column if not exists zero_waste boolean default false;
+
+alter table breakfast_items add column if not exists section text default 'plat';
+alter table breakfast_items add column if not exists recipe_id text;
+alter table breakfast_items add column if not exists preparation_id text;
+alter table breakfast_items add column if not exists zero_waste boolean default false;
+
+alter table snack_items add column if not exists section text default 'plat';
+alter table snack_items add column if not exists recipe_id text;
+alter table snack_items add column if not exists preparation_id text;
+alter table snack_items add column if not exists zero_waste boolean default false;
+
+-- PostgreSQL ne propose pas "add constraint if not exists" : on supprime puis
+-- recrée (comme les policies RLS plus bas), pour que le script reste rejouable.
+do $$
+begin
+  alter table meal_items drop constraint if exists meal_items_one_ref;
+  alter table meal_items add constraint meal_items_one_ref
+    check (num_nonnulls(food_id, recipe_id, preparation_id, free_ingredient_name) <= 1);
+  alter table breakfast_items drop constraint if exists breakfast_items_one_ref;
+  alter table breakfast_items add constraint breakfast_items_one_ref
+    check (num_nonnulls(food_id, recipe_id, preparation_id, free_ingredient_name) <= 1);
+  alter table snack_items drop constraint if exists snack_items_one_ref;
+  alter table snack_items add constraint snack_items_one_ref
+    check (num_nonnulls(food_id, recipe_id, preparation_id, free_ingredient_name) <= 1);
+end $$;
+
 -- ---------------------------------------------------------------------
 -- Sécurité : chaque compte ne voit QUE ses propres lignes.
 -- ---------------------------------------------------------------------
@@ -228,7 +328,7 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'foods','targets','settings','meals','meal_items',
+    'foods','recipes','recipe_items','preparations','targets','settings','meals','meal_items',
     'breakfast_options','breakfast_items','snack_options','snack_items',
     'shopping_items','batch_items'
   ] loop
@@ -265,9 +365,12 @@ declare
   t      text;
   n      int;
   counts jsonb := '{}'::jsonb;
-  -- ordre parents -> enfants (les suppressions se font en sens inverse)
+  -- ordre parents -> enfants (les suppressions se font en sens inverse) :
+  -- recipes avant recipe_items/preparations (FK), preparations avant recipes
+  -- à la SUPPRESSION (ordre inverse de ce tableau) pour respecter le
+  -- "on delete restrict" plutôt que d'échouer dessus.
   tables text[] := array[
-    'foods','targets','settings','meals','meal_items',
+    'foods','recipes','recipe_items','preparations','targets','settings','meals','meal_items',
     'breakfast_options','breakfast_items','snack_options','snack_items',
     'shopping_items','batch_items'
   ];

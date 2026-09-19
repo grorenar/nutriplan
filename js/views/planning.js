@@ -1,6 +1,6 @@
 /** Écran PLANNING — cycles de courses/batch, sans aucune date réelle. */
 
-import { getState, update, foodsById, ensureCycleMeals, newMeal } from '../core/store.js';
+import { getState, update, foodsById, ensureCycleMeals, newMeal, recipesById, preparationsById, itemLabel } from '../core/store.js';
 import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, autoAdjust } from '../core/nutrition.js';
 import { optimizeSuggestions, dayTotals } from '../core/derive.js';
 import { dayName, esc, num, toast, uid } from '../core/util.js';
@@ -12,6 +12,8 @@ let duplicateFrom = null;
 export function render(root) {
   const s = getState();
   const byId = foodsById();
+  const recipesMap = recipesById();
+  const preparationsMap = preparationsById();
   const { startWeekday, duration } = s.settings.cycle;
 
   const days = [];
@@ -24,12 +26,12 @@ export function render(root) {
           <span class="day__num">Jour ${d + 1}</span>
           <span class="spacer"></span>
           ${PERSONS.map((p) => {
-            const t = dayTotals(s, byId, d, p);
+            const t = dayTotals(s, byId, d, p, recipesMap, preparationsMap);
             return `<small class="nums">${PERSON_LABEL[p]} ${num(t.kcal, 0)} kcal · ${num(t.protein, 0)} P</small>`;
           }).join(' ')}
         </div>
         <div class="grid grid--2">
-          ${meals.map((m) => mealCard(m, byId, s)).join('')}
+          ${meals.map((m) => mealCard(m, byId, s, recipesMap, preparationsMap)).join('')}
         </div>
       </section>`);
   }
@@ -40,7 +42,7 @@ export function render(root) {
       <span class="spacer"></span>
       <button class="btn" data-optimize>Optimiser le cycle</button>
     </div>
-    ${showSuggestions ? suggestionsPanel(s, byId) : ''}
+    ${showSuggestions ? suggestionsPanel(s, byId, recipesMap, preparationsMap) : ''}
     ${days.join('')}
     ${duplicateFrom ? duplicatePanel(s) : ''}
   `;
@@ -48,16 +50,16 @@ export function render(root) {
   wire(root);
 }
 
-function mealCard(meal, byId, s) {
+function mealCard(meal, byId, s, recipesMap, preparationsMap) {
   if (!meal) return '';
   const empty = meal.items.length === 0;
   const ings = meal.items
-    .map((it) => (it.foodId ? byId[it.foodId]?.name || '?' : it.free.name))
+    .map((it) => itemLabel(it, byId, recipesMap, preparationsMap))
     .slice(0, 6)
     .join(', ');
 
   const blocks = PERSONS.map((person) => {
-    const macros = mealMacros(meal.items, byId, person);
+    const macros = mealMacros(meal.items, byId, person, recipesMap, preparationsMap);
     const target = s.settings.targets[person][meal.mealType];
     const ev = evaluate(macros, target, s.settings.tolerance);
     const chips = ev.rows
@@ -81,8 +83,8 @@ function mealCard(meal, byId, s) {
   </article>`;
 }
 
-function suggestionsPanel(s, byId) {
-  const list = optimizeSuggestions(s, byId);
+function suggestionsPanel(s, byId, recipesMap, preparationsMap) {
+  const list = optimizeSuggestions(s, byId, recipesMap, preparationsMap);
   return `<div class="card" style="margin-bottom:16px">
     <div class="card__head">
       <h3>Suggestions pour ce cycle</h3>

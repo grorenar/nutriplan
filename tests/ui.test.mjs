@@ -45,6 +45,7 @@ const jsErrors = [];
 window.addEventListener('error', (e) => jsErrors.push(e.message));
 
 const app = await import(join(root, 'js/app.js'));
+const store = await import(join(root, 'js/core/store.js')); // même instance de module que celle utilisée par app.js
 document.dispatchEvent(new window.Event('DOMContentLoaded'));
 await new Promise((r) => setTimeout(r, 50));
 
@@ -56,7 +57,7 @@ const type = (el, v) => { el.value = v; el.dispatchEvent(new window.Event('input
 const wait = () => new Promise((r) => setTimeout(r, 20));
 
 console.log('\n— Démarrage');
-check('7 entrées de navigation', $$('#nav button').length === 7);
+check('8 entrées de navigation (Recettes ajoutée)', $$('#nav button').length === 8);
 check('8 créneaux de repas pour un cycle de 4 jours', $$('.meal-card').length === 8);
 check('état de synchronisation affiché', /Mode local/.test($('#status').textContent));
 
@@ -389,6 +390,176 @@ click($('[data-view="shopping"]'));
 await wait();
 check('collation utilisée : présente dans les courses', /cajou/i.test($('#view').textContent));
 
+console.log('\n— Volume par section (étape 3 : indépendant du reste du repas)');
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[1]); // un créneau encore vide, distinct de celui déjà composé
+await wait();
+// section cible par défaut = "Plat" : de grosses quantités de pâtes crues (cookedFactor 2.4)
+// suffisent, une fois cuites, à dépasser le seuil "extrêmement volumineux" (> 900 g) à elles seules.
+add('pâtes com', 'Pâtes complètes');
+await wait();
+const pastaRow2 = () => $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
+change(pastaRow2().querySelectorAll('[data-qty]')[0], '400');
+change(pastaRow2().querySelectorAll('[data-qty]')[1], '400');
+await wait();
+// verrouillées (pas seulement épinglées pour cette passe) : la masse voulue ne
+// doit pas bouger quand un autre ingrédient est ajouté ensuite.
+click(pastaRow2().querySelectorAll('[data-lock]')[0]);
+click(pastaRow2().querySelectorAll('[data-lock]')[1]);
+await wait();
+// on bascule la section cible sur "Entrée" avant d'ajouter un aliment léger
+click($$('#drawer [data-target-section]').find((c) => c.textContent.trim() === 'Entrée'));
+add('haricots', 'Haricots verts');
+await wait();
+const haricotsRow = () => $$('#drawer .item').find((el) => /Haricots verts/.test(el.textContent));
+change(haricotsRow().querySelectorAll('[data-qty]')[0], '80');
+change(haricotsRow().querySelectorAll('[data-qty]')[1], '80');
+await wait();
+click(haricotsRow().querySelectorAll('[data-lock]')[0]);
+click(haricotsRow().querySelectorAll('[data-lock]')[1]);
+await wait();
+check('les 400 g de pâtes n’ont pas été réoptimisés après l’ajout des haricots (verrou)',
+  pastaRow2().querySelectorAll('[data-qty]')[0].value === '400');
+const summary = $('#drawer .drawer__body').textContent;
+check('le PLAT est signalé volumineux', /Plat — .*volumineux/.test(summary), summary.match(/Plat — [^—]*/)?.[0]);
+check('l’ENTRÉE n’est PAS signalée (masse trop faible)', !/Entrée — .*volumineux/.test(summary));
+check('deux groupes de section affichés, dans l’ordre fixe (Entrée avant Plat)',
+  $$('#drawer .section-group h4').map((h) => h.textContent).join(',') === 'Entrée,Plat');
+// déplacer l'item d'entrée vers "Plat" : un seul champ modifié (item.section)
+const entreeRow = $$('#drawer .item').find((el) => /Haricots verts/.test(el.textContent));
+change(entreeRow.querySelector('[data-section-of]'), 'plat');
+await wait();
+check('un item déplacé de section change immédiatement de groupe',
+  $$('#drawer .section-group h4').map((h) => h.textContent).join(',') === 'Plat');
+click($('#drawer [data-close]'));
+await wait();
+
+console.log('\n— Recettes & préparations (étape 7 : mode normal, Σ affecté ≤ disponible)');
+// aucun écran de création de recette n'existe encore dans l'UI (limite connue,
+// signalée) : on seed directement la recette via store.js, comme le ferait un
+// futur écran « Recettes ».
+const beef = store.getState().foods.find((f) => /Steak haché/.test(f.name));
+const beans = store.getState().foods.find((f) => /Haricots rouges/.test(f.name));
+store.update((s) => {
+  const recipe = store.newRecipe('Chili con carne', 'weight');
+  recipe.items = [store.newRecipeItem(beef.id, 600, 'cru'), store.newRecipeItem(beans.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  s.recipes.push(recipe);
+});
+await wait();
+
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[2]); // encore un créneau vide, distinct des deux précédents
+await wait();
+check('le panneau "Recettes & préparations" liste la recette créée',
+  /Chili con carne/.test($('#drawer .drawer__body').textContent));
+click($('#drawer [data-add-recipe]'));
+await wait();
+check('un item "recette" (référence molle, sans préparation) est ajouté',
+  /recette/.test($$('#drawer .item').find((el) => /Chili con carne/.test(el.textContent))?.textContent || ''));
+check('libellé "pas encore préparée"', /pas encore préparée/.test($('#drawer .drawer__body').textContent));
+
+// matérialisation : création d'une préparation de 1000 g
+const qtyInput = $('#drawer [data-new-prep-qty]');
+type(qtyInput, '1000');
+click($('#drawer [data-new-prep]'));
+await wait();
+check('toast de confirmation de création', /Préparation.*créée/.test(document.getElementById('toasts')?.textContent || ''));
+check('la préparation apparaît avec son disponible (1000 g / 1000 g)',
+  /Disponible : 1000 g \/ 1000 g préparés/.test($('#drawer .drawer__body').textContent));
+
+// utilisation dans CE repas
+click($('#drawer [data-use-preparation]'));
+await wait();
+const usedRow = $$('#drawer .item').find((el) => /préparation/.test(el.textContent) && /Chili con carne/.test(el.textContent));
+check('un item "préparation" (utilisation ferme) est ajouté', !!usedRow);
+// le disponible est un stock PARTAGÉ entre Thomas ET Julie (§7) : les deux
+// quantités de ce même item y contribuent, pas seulement celle de Thomas.
+const usedQtyThomas = Number(usedRow.querySelectorAll('[data-qty]')[0].value);
+const usedQtyJulie = Number(usedRow.querySelectorAll('[data-qty]')[1].value);
+const usedQty = usedQtyThomas + usedQtyJulie;
+check('quantité initiale non nulle', usedQty > 0);
+check('le disponible affiché a diminué en conséquence dans le panneau',
+  new RegExp(`Disponible : ${1000 - usedQty} g / 1000 g préparés`).test($('#drawer .drawer__body').textContent),
+  `thomas=${usedQtyThomas} julie=${usedQtyJulie}`);
+
+click($('#drawer [data-close]'));
+await wait();
+
+// le disponible réduit est bien PARTAGÉ : visible depuis un AUTRE repas
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[3]);
+await wait();
+check('le disponible reflète l’utilisation faite dans l’AUTRE repas (stock partagé entre repas)',
+  new RegExp(`Disponible : ${1000 - usedQty} g / 1000 g préparés`).test($('#drawer .drawer__body').textContent));
+click($('#drawer [data-close]'));
+await wait();
+
+console.log('\n— Mode zéro reste (étape 8 : Σ affecté = preparedQuantity, jamais approximatif)');
+// une préparation DÉDIÉE, distincte de celle du bloc précédent (qui a déjà
+// un item en mode normal) : évite de mélanger les deux régimes dans ce test.
+const riz = store.getState().foods.find((f) => /Riz basmati/i.test(f.name));
+store.update((s) => {
+  const recipe = store.newRecipe('Riz simple', 'weight');
+  recipe.items = [store.newRecipeItem(riz.id, 500, 'cru')];
+  recipe.baseGrams = 500;
+  s.recipes.push(recipe);
+  s.preparations.push(store.newPreparation(recipe, 1000, 'Riz simple #1'));
+});
+await wait();
+
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[4]);
+await wait();
+const rizPrepUseBtn = () => $$('#drawer [data-use-preparation]').find((b) =>
+  b.closest('.item').textContent.includes('Riz simple'));
+click(rizPrepUseBtn());
+await wait();
+const rizRow1 = () => $$('#drawer .item').find((el) => /Riz simple/.test(el.textContent) && /préparation/.test(el.textContent));
+click(rizRow1().querySelector('[data-zero-waste]'));
+await wait();
+check('la case "mode zéro reste" est cochée sur ce créneau', rizRow1().querySelector('[data-zero-waste]').checked);
+click($('#drawer [data-close]'));
+await wait();
+
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[5]);
+await wait();
+click($$('#drawer [data-use-preparation]').find((b) => b.closest('.item').textContent.includes('Riz simple')));
+await wait();
+const rizRow2 = () => $$('#drawer .item').find((el) => /Riz simple/.test(el.textContent) && /préparation/.test(el.textContent));
+click(rizRow2().querySelector('[data-zero-waste]'));
+await wait();
+
+const zeroWasteBtn = () => $$('#drawer [data-zero-waste-apply]').find((b) =>
+  b.closest('.item').textContent.includes('Riz simple'));
+check('le bouton "Répartir en zéro reste" est actif (2 créneaux marqués)', !zeroWasteBtn().disabled);
+click(zeroWasteBtn());
+await wait();
+check('toast confirmant la répartition, avec le total affecté',
+  /Zéro reste appliqué : 1000 g \/ 1000 g affectés/.test(document.getElementById('toasts')?.textContent || ''),
+  document.getElementById('toasts')?.textContent || '');
+
+// vérification indépendante, directement sur l'état : Σ EXACTEMENT 1000 g
+const finalState = store.getState();
+const rizPrep = finalState.preparations.find((p) => p.label === 'Riz simple #1');
+let sumAllocated = 0;
+for (const meal of finalState.meals) {
+  for (const it of meal.items) {
+    if (it.preparationId === rizPrep.id && it.zeroWaste) sumAllocated += it.qty.thomas + it.qty.julie;
+  }
+}
+check('Σ affecté (les deux créneaux, les deux personnes) = preparedQuantity EXACTEMENT',
+  sumAllocated === 1000, `${sumAllocated} g`);
+
+click($('#drawer [data-close]'));
+await wait();
+
 console.log('\n— Fin de saisie');
 check('aucune modale ouverte et aucun champ actif → synchronisation autorisée',
   app.isEditing() === false, String(app.isEditing()));
@@ -401,11 +572,43 @@ if (anyInput) {
 }
 
 console.log('\n— Navigation complète');
-for (const id of ['foods', 'breakfasts', 'snacks', 'batch', 'shopping', 'settings']) {
+for (const id of ['foods', 'recipes', 'breakfasts', 'snacks', 'batch', 'shopping', 'settings']) {
   click($(`[data-view="${id}"]`));
   await wait();
   check(`vue ${id} rendue`, $('#view').textContent.length > 50, `${$('#title').textContent}`);
 }
+
+console.log('\n— Écran Recettes (création via l’UI, pas seulement via store.js)');
+click($('[data-view="recipes"]'));
+await wait();
+click($('[data-new]'));
+await wait();
+change($('[data-r="name"]'), 'Riz aux légumes');
+change($('[data-r="kind"]'), 'weight');
+change($('[data-r="baseGrams"]'), '800');
+await wait();
+type($('[data-ing-search]'), 'riz basmati');
+click($$('[data-ing-add]').find((b) => /Riz basmati/i.test(b.textContent)));
+await wait();
+check('l’ingrédient ajouté apparaît dans la composition', /Riz basmati/.test($('.drawer__body').textContent));
+change($('[data-ing-qty="0"]'), '600');
+await wait();
+
+// refus d'un ingrédient non fractionnable dans une recette weight (décision verrouillée)
+type($('[data-ing-search]'), 'wrap');
+const wrapBtn = $$('[data-ing-add]').find((b) => /Wrap/i.test(b.textContent));
+click(wrapBtn);
+await wait();
+check('un aliment non fractionnable est refusé dans une recette weight, avec message explicite',
+  /non fractionnable/.test(document.getElementById('toasts')?.textContent || ''));
+check('il n’a PAS été ajouté à la composition malgré le clic',
+  !/Wrap/.test($$('.drawer__body .items')[0]?.textContent || ''));
+
+click($('[data-save]'));
+await wait();
+check('toast de confirmation', /Recette enregistrée/.test(document.getElementById('toasts')?.textContent || ''));
+check('la recette apparaît dans la liste', /Riz aux légumes/.test($('#view').textContent));
+check('type et référence affichés', /Au poids/.test($('#view').textContent) && /800 g/.test($('#view').textContent));
 
 console.log('\n— Courses et batch');
 click($('[data-view="shopping"]'));

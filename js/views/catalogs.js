@@ -8,7 +8,7 @@
  * purement informative : rien n'est choisi ni corrigé automatiquement.
  */
 
-import { getState, update, foodsById, catalogKey, newOption } from '../core/store.js';
+import { getState, update, foodsById, catalogKey, newOption, recipesById, preparationsById, itemLabel } from '../core/store.js';
 import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core/nutrition.js';
 import { coverageReport, optionUses } from '../core/derive.js';
 import { esc, num, uid } from '../core/util.js';
@@ -17,6 +17,8 @@ import { openEditor } from './editor.js';
 export function renderBreakfasts(root) {
   const s = getState();
   const byId = foodsById();
+  const recipesMap = recipesById();
+  const preparationsMap = preparationsById();
   const report = coverageReport(s);
 
   root.innerHTML = `
@@ -29,7 +31,7 @@ export function renderBreakfasts(root) {
     </div>
     ${
       s.breakfasts.length
-        ? `<div class="grid grid--2">${s.breakfasts.map((o) => optionCard(o, 'breakfast', byId, s)).join('')}</div>`
+        ? `<div class="grid grid--2">${s.breakfasts.map((o) => optionCard(o, 'breakfast', byId, s, recipesMap, preparationsMap)).join('')}</div>`
         : `<div class="empty">Aucun petit-déjeuner enregistré. Crée une composition : elle sera réutilisable sans être liée à un jour.</div>`
     }`;
 
@@ -39,6 +41,8 @@ export function renderBreakfasts(root) {
 export function renderSnacks(root) {
   const s = getState();
   const byId = foodsById();
+  const recipesMap = recipesById();
+  const preparationsMap = preparationsById();
   const report = coverageReport(s);
 
   root.innerHTML = `
@@ -51,7 +55,7 @@ export function renderSnacks(root) {
     </div>
     ${
       s.snacks.length
-        ? `<div class="grid grid--2">${s.snacks.map((o) => optionCard(o, 'snack', byId, s)).join('')}</div>`
+        ? `<div class="grid grid--2">${s.snacks.map((o) => optionCard(o, 'snack', byId, s, recipesMap, preparationsMap)).join('')}</div>`
         : `<div class="empty">Aucune collation enregistrée.</div>`
     }`;
 
@@ -163,12 +167,12 @@ function usesBlock(opt, kind) {
   </table>`;
 }
 
-function optionCard(opt, kind, byId, s) {
-  const ings = opt.items.map((it) => (it.foodId ? byId[it.foodId]?.name || '?' : it.free.name)).join(', ');
+function optionCard(opt, kind, byId, s, recipesMap = {}, preparationsMap = {}) {
+  const ings = opt.items.map((it) => itemLabel(it, byId, recipesMap, preparationsMap)).join(', ');
   const targetType = kind === 'breakfast' ? 'breakfast' : opt.targetSlot === 'evening' ? 'snack_evening' : 'snack_afternoon';
 
   const blocks = PERSONS.map((person) => {
-    const macros = mealMacros(opt.items, byId, person);
+    const macros = mealMacros(opt.items, byId, person, recipesMap, preparationsMap);
     const ev = evaluate(macros, s.settings.targets[person][targetType], s.settings.tolerance);
     const chips = ev.rows
       .map((r) => `<span class="macro is-${r.status}"><b>${num(r.value, 0)}</b> <span class="goal">${r.label}</span></span>`)

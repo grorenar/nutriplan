@@ -212,7 +212,10 @@ test('10 — le module de volume est strictement isolé du moteur nutritionnel',
   autoAdjust(items, byId, LUNCH);
   const veg = items[2].qty.thomas;
   info(`référence figée (indépendante du module de volume) : légume = ${veg} g`);
-  check('résultat de référence de l’optimiseur inchangé (170 g)', veg === 170, `${veg} g`);
+  // valeur recalculée après le passage à la résolution 1 g (roundQuantity) :
+  // l'important ici n'est pas le chiffre en lui-même mais qu'il reste identique
+  // que meal-volume.js soit présent ou non (isolation du moteur).
+  check('résultat de référence de l’optimiseur inchangé (175 g)', veg === 175, `${veg} g`);
 });
 
 /* ---------------------------------------------------------------- bilan */

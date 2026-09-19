@@ -60,7 +60,15 @@ export const CATEGORY_PROFILE = {
   autre: { min: 5, max: 300, def: 60, eCat: 100, step: 5 },
 };
 
-export const profileOf = (food) => CATEGORY_PROFILE[food?.category] || CATEGORY_PROFILE.autre;
+/**
+ * `food.recipeProfile`, quand présent, prime sur la catégorie : c'est le cas
+ * de l'aliment virtuel d'une recette `weight` (recipeAsVirtualFood), dont les
+ * bornes sont dérivées de SA PROPRE échelle (baseGrams), jamais d'une
+ * catégorie partagée — une recette va de 40 g à plusieurs kg, une constante
+ * de catégorie unique n'a pas de sens ici (décision explicite). Un `food` réel
+ * n'a jamais ce champ : chemin de catégorie strictement inchangé pour lui.
+ */
+export const profileOf = (food) => food?.recipeProfile || CATEGORY_PROFILE[food?.category] || CATEGORY_PROFILE.autre;
 
 /**
  * Référence de portion pour un aliment (architecture C) : moyenne géométrique
@@ -188,13 +196,19 @@ export function macrosFor(food, qty, itemState) {
   return m;
 }
 
-/** Macros totales d'une liste d'ingrédients pour une personne. */
-export function mealMacros(items, foodsById, person) {
+/**
+ * Macros totales d'une liste d'ingrédients pour une personne.
+ * `recipesById`/`preparationsById` (optionnels, `{}` par défaut) : items
+ * `recipeId`/`preparationId` inclus dans le total — chemin additif, sans
+ * effet quand ils sont omis (aucun appelant existant n'en a besoin tant qu'il
+ * ne manipule que des `foodId`).
+ */
+export function mealMacros(items, foodsById, person, recipesById = {}, preparationsById = {}) {
   const total = emptyMacros();
   total.unconvertible = 0; // ingrédients exclus faute de conversion définie
   for (const it of items) {
-    if (!it.foodId) continue; // ingrédient libre : ne participe pas aux macros
-    const food = foodsById[it.foodId];
+    if (!it.foodId && !it.recipeId && !it.preparationId) continue; // ingrédient libre : ne participe pas aux macros
+    const food = resolveItemFood(it, foodsById, recipesById, preparationsById);
     if (!food) continue;
     const m = macrosFor(food, it.qty?.[person] || 0, it.state);
     if (m.unconvertible) {
@@ -209,6 +223,205 @@ export function mealMacros(items, foodsById, person) {
     total.fiber += m.fiber;
   }
   return total;
+}
+
+/* ------------------------------------------------------------------ */
+/* Recettes (catalogue) — étape 1                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Macros d'une recette, ramenées à une base de 100 (g pour `kind:'weight'`,
+ * "100 unités de portion" pour `kind:'portion'`, la composition décrivant
+ * alors UNE portion). Jamais stockées : toujours recalculées depuis
+ * `recipe.items`, avec `macrosFor()` — aucune nouvelle logique de calcul
+ * nutritionnel, seulement une agrégation.
+ */
+export function recipeMacrosPer100g(recipe, foodsById) {
+  const total = emptyMacros();
+  total.unconvertible = 0;
+  for (const ri of recipe?.items || []) {
+    const food = foodsById[ri.foodId];
+    if (!food) continue;
+    const m = macrosFor(food, ri.qty, ri.state);
+    if (m.unconvertible) { total.unconvertible += 1; continue; }
+    total.kcal += m.kcal;
+    total.protein += m.protein;
+    total.carbs += m.carbs;
+    total.fat += m.fat;
+    total.fiber += m.fiber;
+  }
+  const base = recipe?.kind === 'portion'
+    ? (recipe.items || []).reduce((s, ri) => s + (Number(ri.qty) || 0), 0)
+    : Number(recipe?.baseGrams) || 0;
+  // base non renseignée (recette weight sans baseGrams, ou aucun ingrédient) :
+  // macros nulles explicites, jamais un total non mis à l'échelle.
+  if (base <= 0) return { ...emptyMacros(), unconvertible: total.unconvertible };
+  const scale = 100 / base;
+  return {
+    kcal: total.kcal * scale, protein: total.protein * scale,
+    carbs: total.carbs * scale, fat: total.fat * scale, fiber: total.fiber * scale,
+    unconvertible: total.unconvertible,
+  };
+}
+
+/**
+ * Une recette `kind:'weight'` (poids continu) ne peut contenir aucun aliment
+ * non fractionnable : cette combinaison — un ingrédient interne à discrétiser
+ * pendant qu'une quantité totale scale en continu — n'est pas traitée dans
+ * cette version (cf. décision verrouillée). Un aliment non fractionnable doit
+ * passer par une recette `kind:'portion'`, où la recette entière devient
+ * l'unité indivisible.
+ */
+export function canAddIngredientToRecipe(recipe, food) {
+  if (recipe?.kind === 'weight' && isWholeUnitFood(food)) {
+    return {
+      ok: false,
+      reason: `« ${food?.name || 'cet aliment'} » est non fractionnable : une recette au poids ne peut pas ` +
+        `en contenir. Bascule cette recette en recette « portion », ou choisis un autre aliment.`,
+    };
+  }
+  return { ok: true, reason: null };
+}
+
+/** Somme des grammes d'UNE portion — la seule échelle pertinente pour une recette `kind:'portion'`. */
+/** Poids d'UNE portion (recette ou snapshot `kind:'portion'`) — seule échelle pertinente pour ce type. */
+export const portionGramsOf = (recipeLike) => Math.max(1, (recipeLike?.items || []).reduce((s, ri) => s + (Number(ri.qty) || 0), 0));
+
+/**
+ * `preparation.preparedQuantity` en GRAMMES — l'unité de stockage réelle,
+ * toujours celle des `item.qty` : en grammes directement pour `kind:'weight'`,
+ * convertie depuis un NOMBRE DE PORTIONS pour `kind:'portion'` (où
+ * `preparedQuantity` est stocké en portions — décision verrouillée). Toute
+ * comparaison avec des quantités d'items doit passer par cette conversion.
+ */
+export function preparedGramsOf(preparation) {
+  if (preparation?.recipeSnapshot?.kind === 'portion') {
+    return (Number(preparation.preparedQuantity) || 0) * portionGramsOf(preparation.recipeSnapshot);
+  }
+  return Number(preparation?.preparedQuantity) || 0;
+}
+
+/**
+ * Traduit une recette en un objet qui se comporte comme un `food` du point de
+ * vue de l'optimiseur — mêmes champs, aucune nouvelle mécanique numérique :
+ * `adjustQuantities()`/`mealMacros()` l'utilisent sans savoir qu'il s'agit
+ * d'une recette. `referenceState:'pret'` + `cookedFactor:1` car les macros
+ * sont déjà agrégées (recipeMacrosPer100g) : aucune conversion supplémentaire
+ * n'est nécessaire pour cet objet.
+ *
+ * `kind:'weight'` (Type A, continue) : bornes dérivées de `baseGrams`, PAS de
+ * constante de catégorie partagée — une recette petite (40 g) et un batch de
+ * plusieurs kg n'ont rien de commun : [baseGrams/10, baseGrams×10],
+ * résolution 1 g (déjà garantie par `roundQuantity()`).
+ *
+ * `kind:'portion'` (Type B, indivisible — étape 9) : la recette ENTIÈRE
+ * devient l'unité, exactement comme un aliment non fractionnable
+ * (`gramsPerUnit` = poids d'UNE portion, `fractionable:false`) — RÉUTILISE
+ * `isWholeUnitFood()`/`roundQuantity()`/`roundForFinalQuantities()` tels
+ * quels, aucune ligne de ces fonctions n'a été modifiée pour ce cas.
+ */
+export function recipeAsVirtualFood(recipe, foodsById) {
+  const m = recipeMacrosPer100g(recipe, foodsById);
+  if (recipe.kind === 'portion') {
+    const portionGrams = portionGramsOf(recipe);
+    return {
+      id: recipe.id,
+      name: recipe.name,
+      category: 'recette_portion',
+      kcal: m.kcal, protein: m.protein, carbs: m.carbs, fat: m.fat, fiber: m.fiber,
+      referenceState: 'pret',
+      cookedFactor: 1,
+      gramsPerUnit: portionGrams,
+      unitName: 'portion',
+      fractionable: false,
+      isRecipe: true,
+      recipeProfile: { min: portionGrams, max: portionGrams * 10, def: portionGrams, eCat: m.kcal > 0 ? m.kcal : 100 },
+    };
+  }
+  const def = Math.max(1, Number(recipe.baseGrams) || 0);
+  return {
+    id: recipe.id,
+    name: recipe.name,
+    category: 'recette_weight',
+    kcal: m.kcal, protein: m.protein, carbs: m.carbs, fat: m.fat, fiber: m.fiber,
+    referenceState: 'pret',
+    cookedFactor: 1,
+    gramsPerUnit: 0,
+    fractionable: true,
+    isRecipe: true,
+    recipeProfile: { min: Math.max(1, def / 10), max: def * 10, def, eCat: m.kcal > 0 ? m.kcal : 100 },
+  };
+}
+
+/**
+ * Traduit une PRÉPARATION en aliment virtuel — même principe que
+ * `recipeAsVirtualFood()` (Type A continu / Type B indivisible selon
+ * `recipeSnapshot.kind`), avec deux différences volontaires :
+ *  - les macros dérivent du SNAPSHOT figé (`preparation.recipeSnapshot`),
+ *    JAMAIS de la recette source (qui a pu être modifiée depuis) ;
+ *  - la borne par défaut (`weight`) est `[preparedQuantity/10, preparedQuantity]`
+ *    — un plafond structurel large. `adjustQuantities()` la resserre au
+ *    disponible RÉEL (mode normal, `Σ affecté ≤ disponible`) quand
+ *    l'appelant le fournit via `options.preparationAvailability`.
+ *  - en `portion`, `preparedQuantity` s'exprime en NOMBRE DE PORTIONS (pas
+ *    en grammes) — cohérent avec la décision verrouillée : une préparation
+ *    de recette portion est préparée "en portions", pas en grammes.
+ */
+export function preparationAsVirtualFood(preparation, foodsById) {
+  const snapshot = preparation.recipeSnapshot;
+  const m = recipeMacrosPer100g(snapshot, foodsById);
+  if (snapshot?.kind === 'portion') {
+    const portionGrams = portionGramsOf(snapshot);
+    const preparedPortions = Math.max(1, Number(preparation.preparedQuantity) || 0);
+    return {
+      id: preparation.id,
+      name: preparation.label,
+      category: 'preparation_portion',
+      kcal: m.kcal, protein: m.protein, carbs: m.carbs, fat: m.fat, fiber: m.fiber,
+      referenceState: 'pret',
+      cookedFactor: 1,
+      gramsPerUnit: portionGrams,
+      unitName: 'portion',
+      fractionable: false,
+      isPreparation: true,
+      recipeProfile: { min: portionGrams, max: preparedPortions * portionGrams, def: portionGrams, eCat: m.kcal > 0 ? m.kcal : 100 },
+    };
+  }
+  const def = Math.max(1, Number(preparation.preparedQuantity) || 0);
+  return {
+    id: preparation.id,
+    name: preparation.label,
+    category: 'preparation_weight',
+    kcal: m.kcal, protein: m.protein, carbs: m.carbs, fat: m.fat, fiber: m.fiber,
+    referenceState: 'pret',
+    cookedFactor: 1,
+    gramsPerUnit: 0,
+    fractionable: true,
+    isPreparation: true,
+    recipeProfile: { min: Math.max(1, def / 10), max: def, def, eCat: m.kcal > 0 ? m.kcal : 100 },
+  };
+}
+
+/**
+ * Résout l'aliment (réel ou virtuel) représenté par un item, pour un des
+ * trois chemins possibles (`foodId` inchangé ; `recipeId` ; `preparationId`,
+ * via le snapshot figé) — `weight` (Type A) et `portion` (Type B, étape 9)
+ * traités identiquement du point de vue de cette résolution, la différence
+ * vit entièrement dans `recipeAsVirtualFood()`/`preparationAsVirtualFood()`.
+ * Factorisée pour que `mealMacros()` et `adjustQuantities()` résolvent un
+ * item exactement de la même façon.
+ */
+function resolveItemFood(it, foodsById, recipesById, preparationsById = {}) {
+  if (it.foodId) return foodsById[it.foodId] || null;
+  if (it.recipeId) {
+    const recipe = recipesById[it.recipeId];
+    return recipe ? recipeAsVirtualFood(recipe, foodsById) : null;
+  }
+  if (it.preparationId) {
+    const prep = preparationsById[it.preparationId];
+    return prep && prep.recipeSnapshot ? preparationAsVirtualFood(prep, foodsById) : null;
+  }
+  return null; // ingrédient libre
 }
 
 /* ------------------------------------------------------------------ */
@@ -330,7 +543,6 @@ export function snapQuantity(food, qty) {
 }
 
 export function roundQuantity(food, qty, min = 0, max = Infinity) {
-  const p = profileOf(food);
   // Aliment non fractionnable : uniquement des unités entières (jamais 1,37 œuf).
   if (isWholeUnitFood(food)) {
     const g = Number(food.gramsPerUnit);
@@ -339,10 +551,11 @@ export function roundQuantity(food, qty, min = 0, max = Infinity) {
     if (units * g < min) units = Math.ceil(min / g);
     return units * g;
   }
-  // Aliment fractionnable : l'unité n'est qu'un confort d'affichage,
-  // l'arrondi suit le pas de la catégorie (sinon une c. à soupe d'huile
-  // imposerait des paliers de 5 g et empêcherait d'atteindre la cible).
-  return Math.max(p.step, round(qty, p.step));
+  // Aliment fractionnable : résolution au gramme près. `p.step` ne sert plus
+  // qu'au pas d'incrémentation du champ de saisie (quantityStep) — jamais à la
+  // recherche ni à l'arrondi final, qui imposaient auparavant des paliers de
+  // catégorie (5 g, 10 g) sans rapport avec la précision réellement possible.
+  return clamp(Math.round(qty), min, max);
 }
 
 /**
@@ -623,25 +836,32 @@ function roundForFinalQuantities(vars, fixed, t, best, starts, iterations) {
  * @returns {{quantities: Object<string, number>, changed: boolean}}
  *          quantités par identifiant d'ingrédient (seuls les déverrouillés changent).
  */
-export function adjustQuantities(items, foodsById, target, person, options = {}) {
-  const iterations = options.iterations ?? 60;
-  const result = {};
-  if (!target) return { quantities: result, changed: false };
-
+/**
+ * Construit `vars[]`/`fixed{}` à partir d'une liste d'items — cœur commun de
+ * `adjustQuantities()` et de `resolveZeroWasteAllocation()` (étape 8), pour
+ * qu'un item soit résolu EXACTEMENT de la même façon dans les deux cas.
+ *
+ * `forced` (optionnel, `{}` par défaut) : `{ itemId: grammes }` — traite cet
+ * item comme verrouillé à CETTE quantité précise, quelle que soit sa
+ * quantité stockée ou son propre `locked`. C'est le seul mécanisme dont a
+ * besoin le mode zéro reste : imposer la quantité d'UN item (celui qui tire
+ * sur la préparation) pendant que les autres se réoptimisent autour.
+ */
+function buildVarsAndFixed(items, foodsById, recipesById, preparationsById, person, pinned, preparationAvailability, forced = {}) {
   const vars = [];
   const fixed = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
 
-  const pinned = new Set(options.pinned || []);
-
   for (const it of items) {
-    const qty = it.qty?.[person] || 0;
-    if (!it.foodId) continue;
+    const isForced = Object.prototype.hasOwnProperty.call(forced, it.id);
+    const qty = isForced ? forced[it.id] : it.qty?.[person] || 0;
+    if (!it.foodId && !it.recipeId && !it.preparationId) continue;
     // quantité nulle = ingrédient absent pour cette personne : on l'ignore
-    if (qty <= 0) continue;
-    const food = foodsById[it.foodId];
+    // (sauf si elle est explicitement imposée à 0 par le mode zéro reste)
+    if (qty <= 0 && !isForced) continue;
+    const food = resolveItemFood(it, foodsById, recipesById, preparationsById);
     if (!food) continue;
     // "épinglé" = quantité saisie à l'instant par l'utilisateur : traitée comme fixe
-    const locked = !!it.locked?.[person] || pinned.has(it.id);
+    const locked = isForced || !!it.locked?.[person] || pinned.has(it.id);
     const m = macrosFor(food, qty, it.state);
     // conversion impossible : on laisse la quantité telle quelle et on ne
     // l'intègre à aucun calcul (ni contribution fixe, ni variable d'ajustement)
@@ -659,16 +879,46 @@ export function adjustQuantities(items, foodsById, target, person, options = {})
     // contribution par gramme (dans l'état de l'ingrédient)
     const per1 = macrosFor(food, 1, it.state);
     const p = profileOf(food);
+    let max = p.max;
+    let min = p.min;
+    if (it.preparationId && preparationAvailability[it.preparationId] !== undefined) {
+      // le disponible fourni exclut déjà la contribution COURANTE de cet item
+      // (calculé sur tout le cycle) : on la lui rend, pour que sa propre borne
+      // reflète "ce qu'il reste, lui compris" plutôt que de le pénaliser lui-même.
+      const available = preparationAvailability[it.preparationId];
+      max = Math.max(0, Math.min(p.max, available + qty));
+      min = Math.min(min, max); // un disponible faible ne doit jamais rendre min > max
+    }
     vars.push({
       id: it.id,
       food,
       per1,
-      min: p.min,
-      max: p.max,
+      min,
+      max,
       ref: referenceFor(food),
       q0: qty,
     });
   }
+  return { vars, fixed };
+}
+
+export function adjustQuantities(items, foodsById, target, person, options = {}) {
+  const iterations = options.iterations ?? 60;
+  const result = {};
+  if (!target) return { quantities: result, changed: false };
+
+  const pinned = new Set(options.pinned || []);
+  // {} par défaut : chemin additif, comportement des items foodId inchangé
+  // quand aucune recette/préparation n'est passée (aucun appelant existant
+  // n'en a besoin tant qu'il ne manipule que des foodId).
+  const recipesById = options.recipesById || {};
+  const preparationsById = options.preparationsById || {};
+  // disponible RÉEL par préparation (cycle entier), calculé par l'appelant
+  // (nutrition.js ne connaît ni l'état global ni derive.js) — mode normal
+  // uniquement (§8) : une contrainte D'INÉGALITÉ, jamais d'égalité ici.
+  const preparationAvailability = options.preparationAvailability || {};
+
+  const { vars, fixed } = buildVarsAndFixed(items, foodsById, recipesById, preparationsById, person, pinned, preparationAvailability);
 
   if (!vars.length) return { quantities: result, changed: false };
 
@@ -699,6 +949,134 @@ export function adjustQuantities(items, foodsById, target, person, options = {})
     if (Math.abs(rounded[i] - vars[i].q0) > 0.001) changed = true;
   }
   return { quantities: result, changed };
+}
+
+/**
+ * MODE ZÉRO RESTE (étape 8, point important n°2) — répartit EXACTEMENT
+ * `preparedQuantity` entre N "créneaux" (un par item `zeroWaste:true`
+ * référençant la même préparation, chacun dans son propre repas/personne) :
+ *
+ *     Σ allocation[i] === preparedQuantity     (égalité STRICTE, prioritaire)
+ *
+ * Les objectifs nutritionnels restent l'objectif d'optimisation SECONDAIRE :
+ * ils choisissent la MEILLEURE répartition parmi celles qui respectent
+ * l'égalité, mais ne peuvent jamais l'empêcher d'être satisfaite (§24 — en
+ * cas de conflit, l'égalité de stock prime sur l'exactitude nutritionnelle).
+ *
+ * Algorithme : N−1 allocations LIBRES, la Nième = preparedQuantity − Σ(autres)
+ * — jamais N variables indépendantes, qui pourraient violer l'égalité par
+ * construction. Descente par coordonnées sur ces N−1 allocations, chaque
+ * coordonnée résolue par `minimize1D` : EXACTEMENT le même schéma que
+ * `solveFromStart()`, un niveau au-dessus (sur des allocations plutôt que
+ * sur des grammes d'un aliment). Pour chaque allocation candidate, le repas
+ * concerné est réoptimisé NORMALEMENT — même `solveFromStart`/`costOf`/
+ * `roundForFinalQuantities` que partout ailleurs, via `buildVarsAndFixed`
+ * avec l'item de la préparation imposé (`forced`) — aucune nouvelle
+ * mécanique numérique, aucune modification de WEIGHTS/BETA/GAMMA/welschLoss.
+ *
+ * `slots[i] = { items, itemId, target, person }` : `items` est la liste
+ * COMPLÈTE des items du repas concerné (l'item `itemId`, qui référence la
+ * préparation, en fait partie) — les AUTRES items de ce même repas se
+ * réoptimisent autour de l'allocation imposée à `itemId`.
+ *
+ * @returns {{ allocation: number[], quantities: Object<string,number>[] }}
+ *          `allocation[i]` = quantité imposée à l'item zeroWaste du créneau i
+ *          (Σ === preparedQuantity, résolution 1 g) ; `quantities[i]` = les
+ *          quantités optimisées des AUTRES items de ce créneau (même forme
+ *          que le retour de `adjustQuantities()`).
+ */
+export function resolveZeroWasteAllocation(slots, preparedQuantity, foodsById, recipesById, preparationsById, options = {}) {
+  const n = slots.length;
+  if (!n) return { allocation: [], quantities: [] };
+  const total = Math.max(0, Number(preparedQuantity) || 0);
+  const innerIterations = options.innerIterations ?? 30;
+  const outerIterations = options.outerIterations ?? 20;
+  // pas d'arrondi final : 1 g pour une préparation `weight`, le poids d'une
+  // portion pour une préparation `portion` (les portions restent entières —
+  // réutilise le même principe que roundQuantity/roundForFinalQuantities,
+  // jamais une mécanique nouvelle). `total` est TOUJOURS un multiple de
+  // `roundStep` par construction (preparedGramsOf = portions × portionGrams),
+  // donc le dernier créneau absorbe un reliquat qui est lui aussi un multiple
+  // exact — l'égalité ET la granularité sont préservées simultanément.
+  const roundStep = Math.max(1, Number(options.roundStep) || 1);
+
+  const targetOf = (target) => ({
+    kcal: Math.max(1, target?.kcal || 0),
+    protein: Math.max(1, target?.protein || 0),
+    carbs: Math.max(1, target?.carbs || 0),
+    fat: Math.max(1, target?.fat || 0),
+  });
+
+  /** Réoptimise un créneau, l'item zéro reste étant imposé à `qty` grammes. */
+  function solveSlot(slot, qty) {
+    const { vars, fixed } = buildVarsAndFixed(
+      slot.items, foodsById, recipesById, preparationsById, slot.person,
+      new Set(), {}, { [slot.itemId]: qty }
+    );
+    const t = targetOf(slot.target);
+    if (!vars.length) return { quantities: {}, cost: costOf(vars, fixed, t, []) };
+    const starts = [(v) => v.q0, (v) => v.ref];
+    let best = null;
+    for (const startOf of starts) {
+      const r = solveFromStart(vars, fixed, t, startOf, innerIterations);
+      if (!best || r.cost < best.cost - 1e-9) best = r;
+    }
+    const rounded = roundForFinalQuantities(vars, fixed, t, best, starts, innerIterations);
+    const quantities = {};
+    for (let i = 0; i < vars.length; i++) quantities[vars[i].id] = rounded[i];
+    return { quantities, cost: costOf(vars, fixed, t, rounded) };
+  }
+
+  function evaluate(alloc) {
+    let totalCost = 0;
+    const results = new Array(n);
+    for (let i = 0; i < n; i++) {
+      results[i] = solveSlot(slots[i], alloc[i]);
+      totalCost += results[i].cost;
+    }
+    return { totalCost, results };
+  }
+
+  // point de départ : répartition égale (toujours dans le domaine [0, total])
+  let alloc = new Array(n).fill(total / n);
+
+  if (n > 1) {
+    for (let iter = 0; iter < outerIterations; iter++) {
+      let move = 0;
+      for (let i = 0; i < n - 1; i++) {
+        // la dernière allocation N'EST JAMAIS une variable libre : elle absorbe
+        // toujours exactement ce qu'il reste, ce qui GARANTIT l'égalité à
+        // chaque candidat évalué, y compris avant convergence de la descente.
+        let fixedSumOthers = 0;
+        for (let j = 0; j < n; j++) if (j !== i && j !== n - 1) fixedSumOthers += alloc[j];
+
+        const costAt = (x) => {
+          const last = total - x - fixedSumOthers;
+          if (x < 0 || x > total || last < 0) return Infinity; // hors domaine : jamais retenu
+          const candidate = alloc.slice();
+          candidate[i] = x;
+          candidate[n - 1] = last;
+          return evaluate(candidate).totalCost;
+        };
+        const { x } = minimize1D(costAt, 0, total, 24);
+        const last = total - x - fixedSumOthers;
+        if (last < 0) continue;
+        move = Math.max(move, Math.abs(x - alloc[i]));
+        alloc[i] = x;
+        alloc[n - 1] = last;
+      }
+      if (move < 0.5) break;
+    }
+  }
+
+  // arrondi final (résolution `roundStep`) : la dernière allocation absorbe
+  // l'écart d'arrondi pour préserver l'égalité EXACTE — priorité absolue (§24).
+  const roundedAlloc = alloc.map((v) => Math.round(v / roundStep) * roundStep);
+  const sumRounded = roundedAlloc.reduce((s, v) => s + v, 0);
+  roundedAlloc[n - 1] += total - sumRounded;
+
+  const finalEval = evaluate(roundedAlloc);
+  return { allocation: roundedAlloc, quantities: finalEval.results.map((r) => r.quantities) };
 }
 
 /**

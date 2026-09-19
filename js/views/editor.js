@@ -3,20 +3,26 @@
  * C'est ici que vit l'expérience "calcul + ajustement en continu".
  */
 
-import { getState, update, foodsById, newItem, newFreeItem, catalogKey } from '../core/store.js';
+import {
+  getState, update, foodsById, newItem, newFreeItem, catalogKey,
+  SECTIONS, SECTION_LABEL, DEFAULT_SECTION, sectionsUsed,
+  recipesById, preparationsById, newRecipeMealItem, newPreparationItem, newPreparation,
+} from '../core/store.js';
 import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
   mealMacros, macrosFor, evaluate, autoAdjust, initialQuantity, diagnose,
   snapQuantity, isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep,
-  conversionInfo, stateLabel,
+  conversionInfo, stateLabel, recipeAsVirtualFood, resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf,
 } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid } from '../core/util.js';
 import { analyzeMealVolume } from '../core/meal-volume.js';
+import { preparationAvailable, zeroWasteSlotsFor } from '../core/derive.js';
 
 let ctx = null; // { kind, id }
 let pickerQuery = '';
 let pickerCategory = 'all';
 let addFor = 'both'; // utilisé quand les compositions diffèrent
+let addSection = DEFAULT_SECTION; // section cible d'un ajout depuis le picker
 let host = null;
 
 export const isOpen = () => ctx !== null;
@@ -26,6 +32,7 @@ export function openEditor(kind, id) {
   pickerQuery = '';
   pickerCategory = 'all';
   addFor = 'both';
+  addSection = DEFAULT_SECTION;
   renderEditor();
 }
 
@@ -82,13 +89,27 @@ function mutate(fn, { adjust = true, force = false, pinned = [] } = {}) {
     if (!e) return;
     fn(e, s);
     if (adjust && (force || s.settings.autoAdjust)) {
-      autoAdjust(e.items, foodsByIdFrom(s), targetsForState(s), { pinned });
+      // disponible RÉEL de chaque préparation, sur l'état À CET INSTANT (après
+      // la mutation qui vient de s'appliquer) : adjustQuantities() rend à
+      // chaque item sa propre contribution courante (cf. nutrition.js), donc
+      // le calculer une seule fois ici, avant les deux passes thomas/julie,
+      // est correct pour les deux (mode normal, Σ affecté ≤ disponible — §8).
+      const preparationAvailability = {};
+      for (const p of s.preparations) preparationAvailability[p.id] = preparationAvailable(s, p);
+      autoAdjust(e.items, foodsByIdFrom(s), targetsForState(s), {
+        pinned,
+        recipesById: recipesByIdFrom(s),
+        preparationsById: preparationsByIdFrom(s),
+        preparationAvailability,
+      });
     }
   });
   renderEditor();
 }
 
 const foodsByIdFrom = (s) => Object.fromEntries(s.foods.map((f) => [f.id, f]));
+const recipesByIdFrom = (s) => Object.fromEntries(s.recipes.map((r) => [r.id, r]));
+const preparationsByIdFrom = (s) => Object.fromEntries(s.preparations.map((p) => [p.id, p]));
 function targetsForState(s) {
   const type = targetType();
   return { thomas: s.settings.targets.thomas[type], julie: s.settings.targets.julie[type] };
@@ -109,6 +130,8 @@ export function renderEditor() {
 
   const scroll = host.querySelector('.drawer__body')?.scrollTop || 0;
   const byId = foodsById();
+  const recipesMap = recipesById();
+  const preparationsMap = preparationsById();
   const targets = targetsFor(state);
   const tol = state.settings.tolerance;
   const typeLabel = MEAL_TYPES[targetType()];
@@ -131,9 +154,9 @@ export function renderEditor() {
     </div>`;
 
   const body = `
-    ${renderSummary(entity, byId, targets, tol, state)}
-    ${renderItems(entity, byId, state)}
-    ${renderPicker(state, entity)}`;
+    ${renderSummary(entity, byId, targets, tol, state, recipesMap, preparationsMap)}
+    ${renderItems(entity, byId, recipesMap, preparationsMap)}
+    ${renderPicker(state, entity, recipesMap, preparationsMap)}`;
 
   // Le panneau n'est créé qu'à l'ouverture : les re-rendus suivants remplacent
   // seulement son contenu, donc pas de réapparition ni d'animation rejouée.
@@ -155,12 +178,22 @@ export function renderEditor() {
   wire(host, entity);
 }
 
-function renderSummary(entity, byId, targets, tol, state) {
+function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, preparationsMap = {}) {
   const blocks = PERSONS.map((person) => {
-    const macros = mealMacros(entity.items, byId, person);
+    // cible nutritionnelle UNIQUE pour tout le repas (décision §6) : les
+    // sections ne sont jamais des sous-problèmes d'optimisation séparés.
+    const macros = mealMacros(entity.items, byId, person, recipesMap, preparationsMap);
     const ev = evaluate(macros, targets[person], tol);
     const diag = diagnose(macros, targets[person], state.foods, tol);
-    const vol = analyzeMealVolume(entity.items, byId, person);
+    // le volume, lui, est analysé INDÉPENDAMMENT par section (décision §6/§8) :
+    // un plat volumineux ne doit pas noyer une entrée ou un dessert normaux
+    // dans une seule masse globale.
+    const volBySection = sectionsUsed(entity.items)
+      .map((section) => ({
+        section,
+        vol: analyzeMealVolume(entity.items.filter((it) => (it.section || DEFAULT_SECTION) === section), byId, person),
+      }))
+      .filter((x) => x.vol.level > 0);
     const chips = ev.rows
       .map(
         (r) => `<span class="macro is-${r.status}">
@@ -179,18 +212,18 @@ function renderSummary(entity, byId, targets, tol, state) {
               .join(', ')}${diag.suggestions.length ? ` — piste : ${esc(diag.suggestions.join(', '))}` : ''}</small>`
           : `<small>Tous les macros dans la cible ±${Math.round(tol * 100)} %.</small>`
       }
-      ${
-        vol.level > 0
-          ? `<div class="tag${vol.level >= 2 ? ' sync-error' : ''}" style="margin-top:4px">
-               ${esc(vol.label)} — environ ${num(vol.grams, 0)} g dans l'assiette${vol.partial ? ' (estimation partielle : au moins un ingrédient sans rendement cru → cuit renseigné n’est pas compté)' : ''}
+      ${volBySection
+        .map(
+          ({ section, vol }) => `<div class="tag${vol.level >= 2 ? ' sync-error' : ''}" style="margin-top:4px">
+               ${esc(SECTION_LABEL[section])} — ${esc(vol.label)} — environ ${num(vol.grams, 0)} g${vol.partial ? ' (estimation partielle : au moins un ingrédient sans rendement cru → cuit renseigné n’est pas compté)' : ''}
              </div>`
-          : ''
-      }
+        )
+        .join('')}
     </div>`;
   }).join('');
 
   // ingrédients écartés du total faute de conversion définie
-  const excluded = mealMacros(entity.items, byId, PERSONS[0]).unconvertible || 0;
+  const excluded = mealMacros(entity.items, byId, PERSONS[0], recipesMap, preparationsMap).unconvertible || 0;
   const notice = excluded
     ? `<div class="sync-error"><small>${excluded} ingrédient(s) exclu(s) du total : aucune conversion définie entre l'état pesé et celui de leurs valeurs nutritionnelles.</small></div>`
     : '';
@@ -214,17 +247,109 @@ function unitHint(food, qty) {
   return `≈ ${txt} ${esc(unitLabel(food, u))}`;
 }
 
-function renderItems(entity, byId, state) {
+/** Sélecteur de section, réutilisé sur chaque ligne : déplacer un item ne modifie qu'un champ. */
+function sectionSelect(it) {
+  return `<select data-section-of="${it.id}" class="section-select" aria-label="Section">
+    ${SECTIONS.map((s) => `<option value="${s}" ${(it.section || DEFAULT_SECTION) === s ? 'selected' : ''}>${esc(SECTION_LABEL[s])}</option>`).join('')}
+  </select>`;
+}
+
+function renderItems(entity, byId, recipesMap, preparationsMap) {
   if (!entity.items.length) {
     return `<div class="empty" style="margin:12px 0">Aucun ingrédient. Ajoute un aliment ci-dessous : la quantité est proposée automatiquement.</div>`;
   }
-  const rows = entity.items
-    .map((it) => {
-      const food = it.foodId ? byId[it.foodId] : null;
+  const used = sectionsUsed(entity.items);
+  const groups = used
+    .map((section) => {
+      const rows = entity.items
+        .filter((it) => (it.section || DEFAULT_SECTION) === section)
+        .map((it) => renderItemRow(it, byId, recipesMap, preparationsMap))
+        .join('');
+      return `<div class="section-group" style="margin-bottom:14px">
+        <h4 style="margin:0 0 6px">${esc(SECTION_LABEL[section])}</h4>
+        ${rows}
+      </div>`;
+    })
+    .join('');
+  return `<div class="items" style="margin:12px 0">${groups}</div>`;
+}
+
+/**
+ * Libellé du stock d'une préparation, dans SON unité naturelle : grammes pour
+ * `kind:'weight'`, nombre de portions pour `kind:'portion'` — `disponibleGrams`
+ * et `prep.preparedQuantity` sont toujours en grammes/portions respectivement
+ * en interne (voir `preparedGramsOf()`), converti ici uniquement pour l'affichage.
+ */
+function stockLabel(prep, disponibleGrams) {
+  if (prep.recipeSnapshot?.kind === 'portion') {
+    const portionGrams = portionGramsOf(prep.recipeSnapshot);
+    const disponiblePortions = disponibleGrams / portionGrams;
+    return `Disponible : ${num(disponiblePortions, 1)} portion(s) / ${num(prep.preparedQuantity, 0)} portion(s) préparées`;
+  }
+  return `Disponible : ${num(disponibleGrams, 0)} g / ${num(prep.preparedQuantity, 0)} g préparés`;
+}
+
+/** Ligne d'un item référençant une recette (molle) ou une préparation (ferme) : affichage simplifié. */
+function renderRecipeOrPreparationRow(it, recipesMap, preparationsMap) {
+  const isPrep = Boolean(it.preparationId);
+  const recipe = isPrep ? null : recipesMap[it.recipeId];
+  const prep = isPrep ? preparationsMap[it.preparationId] : null;
+  if (isPrep && !prep) {
+    return `<div class="item"><div class="item__main"><div class="item__name">Préparation supprimée</div>
+      <div class="item__meta">Cette préparation n'existe plus.</div></div>
+      <div class="item__tools">${sectionSelect(it)}<button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button></div></div>`;
+  }
+  if (!isPrep && !recipe) {
+    return `<div class="item"><div class="item__main"><div class="item__name">Recette supprimée</div>
+      <div class="item__meta">Cette recette n'existe plus.</div></div>
+      <div class="item__tools">${sectionSelect(it)}<button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button></div></div>`;
+  }
+  const name = isPrep ? prep.label : recipe.name;
+  const badge = isPrep ? '<span class="pill">préparation</span>' : '<span class="pill">recette</span>';
+  const disponible = isPrep ? preparationAvailable(getState(), prep) : null;
+  const qtyBoxes = PERSONS.map((person) => {
+    const qty = it.qty[person] || 0;
+    const locked = !!it.locked[person];
+    return `<div class="qty-box">
+      <span class="person-name person-name--${person}">${PERSON_LABEL[person]}</span>
+      <div class="qty-box__row">
+        <input type="number" min="0" step="1" inputmode="decimal" value="${qty}"
+               data-qty="${it.id}" data-person="${person}" data-unitmode="0"
+               aria-label="Quantité ${PERSON_LABEL[person]}">
+        <span class="item__unit">g</span>
+        <button class="lock" data-lock="${it.id}" data-person="${person}" aria-pressed="${locked}"
+                title="${locked ? 'Quantité verrouillée' : 'Quantité ajustable'}">${locked ? '🔒' : '🔓'}</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="item">
+    <div class="item__main">
+      <div class="item__name">${esc(name)} ${badge}</div>
+      <div class="item__meta">${isPrep ? stockLabel(prep, disponible) : 'Référence directe — pas encore préparée (calcul inverse)'}</div>
+      ${
+        isPrep
+          ? `<label class="check" style="margin-top:6px">
+               <input type="checkbox" data-zero-waste="${it.id}" ${it.zeroWaste ? 'checked' : ''}>
+               Mode zéro reste (écouler cette préparation en priorité, même au-delà des objectifs)
+             </label>`
+          : ''
+      }
+      <div class="item__qty" style="margin-top:8px">${qtyBoxes}</div>
+    </div>
+    <div class="item__tools">
+      ${sectionSelect(it)}
+      <button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button>
+    </div>
+  </div>`;
+}
+
+function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
+  if (it.recipeId || it.preparationId) return renderRecipeOrPreparationRow(it, recipesMap, preparationsMap);
+  const food = it.foodId ? byId[it.foodId] : null;
       if (!food && it.foodId) {
         return `<div class="item"><div class="item__main"><div class="item__name">Aliment supprimé</div>
           <div class="item__meta">Cet ingrédient n'existe plus dans la banque.</div></div>
-          <div class="item__tools"><button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button></div></div>`;
+          <div class="item__tools">${sectionSelect(it)}<button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button></div></div>`;
       }
       if (!food) {
         return `<div class="item">
@@ -233,6 +358,7 @@ function renderItems(entity, byId, state) {
             <div class="item__meta">Quantité : ${esc(it.free.quantity || 'au goût')} — non compté dans les macros, le batch et le budget.</div>
           </div>
           <div class="item__tools">
+            ${sectionSelect(it)}
             <button class="btn btn--sm" data-promote="${it.id}">Créer l'aliment</button>
             <button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button>
           </div>
@@ -306,13 +432,10 @@ function renderItems(entity, byId, state) {
           ${conv.message ? `<div class="tag sync-error" style="margin-top:6px">⚠️ ${esc(conv.message)}</div>` : ''}
         </div>
         <div class="item__tools">
+          ${sectionSelect(it)}
           <button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button>
         </div>
       </div>`;
-    })
-    .join('');
-
-  return `<div class="items" style="margin:12px 0">${rows}</div>`;
 }
 
 /** Liste filtrée des aliments proposés (recherche + filtres). */
@@ -355,7 +478,7 @@ function updateResults() {
   box.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
 }
 
-function renderPicker(state, entity) {
+function renderPicker(state, entity, recipesMap, preparationsMap) {
   const chips = [
     ['all', 'Tous'],
     ['fav', 'Favoris'],
@@ -377,8 +500,14 @@ function renderPicker(state, entity) {
            .join('')}
        </div>`;
 
+  const sectionSelector = `<div class="row" style="margin-bottom:8px">
+       <small>Dans la section :</small>
+       ${SECTIONS.map((s) => `<button class="chip" data-target-section="${s}" aria-pressed="${addSection === s}">${esc(SECTION_LABEL[s])}</button>`).join('')}
+     </div>`;
+
   return `<div class="card">
     <div class="card__head"><h3>Ajouter un ingrédient</h3></div>
+    ${sectionSelector}
     ${personSelector}
     <input type="text" data-search value="${esc(pickerQuery)}" placeholder="Rechercher un aliment…">
     <div class="chips" style="margin:10px 0">${chips}</div>
@@ -389,8 +518,72 @@ function renderPicker(state, entity) {
       <button class="btn" data-free-add>Ajouter</button>
     </div>
     <small>Un ingrédient libre apparaît dans le repas et à l'impression, mais ne compte ni dans les macros, ni dans le batch, ni dans le budget.</small>
+  </div>
+  ${renderRecipesPanel(state, recipesMap, preparationsMap)}`;
+}
+
+/**
+ * Recettes/préparations — recettes `kind:'weight'` uniquement pour l'instant
+ * (les recettes `kind:'portion'` seront intégrées à l'étape 9).
+ */
+function renderRecipesPanel(state, recipesMap, preparationsMap) {
+  const recipes = Object.values(recipesMap);
+  if (!recipes.length) {
+    return `<div class="card" style="margin-top:16px">
+      <div class="card__head"><h3>Recettes & préparations</h3></div>
+      <small>Aucune recette créée pour l'instant. Crée-en une dans l'écran Recettes.</small>
+    </div>`;
+  }
+  const recipeRows = recipes
+    .map((r) => `<div class="item" style="padding:6px 0">
+        <div class="item__main">
+          <div class="item__name">${esc(r.name)} <span class="pill">${r.kind === 'portion' ? 'portion' : 'au poids'}</span></div>
+          <div class="item__meta">${r.kind === 'portion' ? `1 portion = ${num(portionGramsOf(r), 0)} g` : `${num(r.baseGrams, 0)} g de référence`}</div>
+        </div>
+        <div class="item__tools">
+          <button class="btn btn--sm" data-add-recipe="${r.id}">+ Recette (sans préparation)</button>
+        </div>
+      </div>`)
+    .join('');
+
+  const preparations = Object.values(preparationsMap);
+  const prepRows = preparations
+    .map((p) => {
+      const disponible = preparationAvailable(state, p);
+      const recipeName = recipesMap[p.recipeId]?.name || '?';
+      const slots = zeroWasteSlotsFor(state, p.id);
+      return `<div class="item" style="padding:6px 0">
+        <div class="item__main">
+          <div class="item__name">${esc(p.label)} <span class="tag">${esc(recipeName)}</span></div>
+          <div class="item__meta">${stockLabel(p, disponible)}</div>
+          ${slots.length ? `<small>${slots.length} créneau(x) en mode zéro reste pour cette préparation</small>` : ''}
+        </div>
+        <div class="item__tools">
+          <button class="btn btn--sm" data-use-preparation="${p.id}" ${disponible <= 0 ? 'disabled' : ''}>+ Utiliser</button>
+          <button class="btn btn--sm" data-zero-waste-apply="${p.id}" ${slots.length < 2 ? 'disabled' : ''}
+                  title="${slots.length < 2 ? 'Coche « mode zéro reste » sur au moins 2 créneaux (repas) référençant cette préparation' : ''}">
+            Répartir en zéro reste
+          </button>
+        </div>
+      </div>`;
+    })
+    .join('');
+
+  return `<div class="card" style="margin-top:16px">
+    <div class="card__head"><h3>Recettes & préparations</h3></div>
+    ${recipeRows}
+    ${preparations.length ? `<div style="margin-top:8px">${prepRows}</div>` : '<small>Aucune préparation matérialisée pour l’instant.</small>'}
+    <div class="row" style="margin-top:12px">
+      <select data-new-prep-recipe style="flex:1;min-width:150px">
+        ${recipes.map((r) => `<option value="${r.id}">${esc(r.name)} (${r.kind === 'portion' ? 'portion' : 'poids'})</option>`).join('')}
+      </select>
+      <input type="number" min="1" step="1" data-new-prep-qty placeholder="Quantité préparée (g, ou nb de portions)" style="flex:1;min-width:150px">
+      <button class="btn" data-new-prep>Créer une préparation</button>
+    </div>
+    <small>Quantité RÉELLEMENT obtenue après cuisson (en grammes pour une recette au poids, en NOMBRE DE PORTIONS pour une recette portion) — jamais recalculée depuis les ingrédients.</small>
   </div>`;
 }
+
 
 /* ------------------------------------------------------------------ */
 /* Interactions                                                        */
@@ -404,6 +597,7 @@ function onAddFood(e) {
   const qty = initialQuantity(food);
   mutate((en, s) => {
     const item = newItem(foodId, qty, food.referenceState);
+    item.section = addSection;
     if (!en.sameComposition && addFor !== 'both') {
       for (const p of PERSONS) item.qty[p] = p === addFor ? qty : 0;
     }
@@ -473,6 +667,33 @@ function wire(root, entity) {
         if (f) f.unitEntry = !f.unitEntry;
       });
       renderEditor();
+    });
+  });
+
+  root.querySelectorAll('[data-section-of]').forEach((sel) => {
+    sel.addEventListener('change', (e) => {
+      const id = e.target.dataset.sectionOf;
+      const v = e.target.value;
+      // déplacer un item d'une section à l'autre ne modifie qu'un champ,
+      // sans effet sur les macros : pas de réajustement.
+      mutate((en) => {
+        const it = en.items.find((i) => i.id === id);
+        if (it) it.section = v;
+      }, { adjust: false });
+    });
+  });
+
+  root.querySelectorAll('[data-zero-waste]').forEach((box) => {
+    box.addEventListener('change', (e) => {
+      const id = e.target.dataset.zeroWaste;
+      const v = e.target.checked;
+      // aucun réajustement automatique ici : le mode normal (≤ disponible)
+      // continue de s'appliquer tant que "Répartir en mode zéro reste" n'a
+      // pas été explicitement déclenché — jamais de bascule automatique.
+      mutate((en) => {
+        const it = en.items.find((i) => i.id === id);
+        if (it) it.zeroWaste = v;
+      }, { adjust: false });
     });
   });
 
@@ -548,6 +769,13 @@ function wire(root, entity) {
     });
   });
 
+  root.querySelectorAll('[data-target-section]').forEach((chip) => {
+    chip.addEventListener('click', (e) => {
+      addSection = e.currentTarget.dataset.targetSection;
+      renderEditor();
+    });
+  });
+
   root.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
 
   root.querySelector('[data-free-add]')?.addEventListener('click', () => {
@@ -556,6 +784,126 @@ function wire(root, entity) {
     const name = nameEl.value.trim();
     if (!name) { toast('Donne un nom à l\'ingrédient libre', 'error'); return; }
     const quantity = qtyEl.value.trim() || 'au goût';
-    mutate((en) => { en.items.push(newFreeItem(name, quantity)); }, { adjust: false });
+    mutate((en) => {
+      const item = newFreeItem(name, quantity);
+      item.section = addSection;
+      en.items.push(item);
+    }, { adjust: false });
+  });
+
+  root.querySelectorAll('[data-add-recipe]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const recipeId = e.currentTarget.dataset.addRecipe;
+      const recipe = getState().recipes.find((r) => r.id === recipeId);
+      if (!recipe) return;
+      // quantité initiale = 1 portion pour une recette portion, la référence pour une recette au poids
+      const qty = recipe.kind === 'portion'
+        ? portionGramsOf(recipe)
+        : Math.max(1, Math.round(Number(recipe.baseGrams) || 0));
+      mutate((en) => {
+        const it = newRecipeMealItem(recipeId, qty);
+        it.section = addSection;
+        if (!en.sameComposition && addFor !== 'both') {
+          for (const p of PERSONS) it.qty[p] = p === addFor ? qty : 0;
+        }
+        en.items.push(it);
+      });
+    });
+  });
+
+  root.querySelectorAll('[data-use-preparation]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const prepId = e.currentTarget.dataset.usePreparation;
+      const prep = getState().preparations.find((p) => p.id === prepId);
+      if (!prep) return;
+      const disponible = preparationAvailable(getState(), prep); // toujours en grammes (preparedGramsOf)
+      // quantité initiale : 1 portion pour une préparation portion (jamais une
+      // fraction de portion), sinon une tranche raisonnable du disponible.
+      const qty = prep.recipeSnapshot?.kind === 'portion'
+        ? Math.min(portionGramsOf(prep.recipeSnapshot), Math.max(1, disponible))
+        : Math.max(1, Math.round(Math.min(disponible, 200)));
+      mutate((en) => {
+        const it = newPreparationItem(prepId, qty);
+        it.section = addSection;
+        if (!en.sameComposition && addFor !== 'both') {
+          for (const p of PERSONS) it.qty[p] = p === addFor ? qty : 0;
+        }
+        en.items.push(it);
+      });
+    });
+  });
+
+  root.querySelector('[data-new-prep]')?.addEventListener('click', () => {
+    const recipeSel = root.querySelector('[data-new-prep-recipe]');
+    const qtyEl = root.querySelector('[data-new-prep-qty]');
+    const recipe = getState().recipes.find((r) => r.id === recipeSel?.value);
+    const qty = Number(qtyEl?.value);
+    if (!recipe) { toast('Choisis une recette', 'error'); return; }
+    if (!(qty > 0)) { toast('Indique la quantité réellement obtenue (g)', 'error'); return; }
+    update((s) => {
+      const r = s.recipes.find((x) => x.id === recipe.id);
+      if (r) s.preparations.push(newPreparation(r, qty));
+    });
+    toast(`Préparation « ${recipe.name} » créée (${qty} g)`);
+    renderEditor();
+  });
+
+  root.querySelectorAll('[data-zero-waste-apply]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const prepId = e.currentTarget.dataset.zeroWasteApply;
+      let summary = null;
+      update((s) => {
+        const prep = s.preparations.find((p) => p.id === prepId);
+        if (!prep) return;
+        const slots = zeroWasteSlotsFor(s, prepId);
+        if (slots.length < 2) return;
+        const byIdFoods = foodsByIdFrom(s);
+        const recMap = recipesByIdFrom(s);
+        const prepMap = preparationsByIdFrom(s);
+        const targetForMeal = (meal, person) => s.settings.targets[person][meal.mealType];
+
+        // évaluations AVANT (mode normal courant), pour détecter un
+        // dépassement CAUSÉ par l'égalité — une comparaison, pas un
+        // mécanisme séparé (§9/§20 de la spécification).
+        const before = slots.map(({ meal, person }) =>
+          evaluate(mealMacros(meal.items, byIdFoods, person, recMap, prepMap), targetForMeal(meal, person), s.settings.tolerance)
+        );
+
+        const roundStep = prep.recipeSnapshot?.kind === 'portion' ? portionGramsOf(prep.recipeSnapshot) : 1;
+        const result = resolveZeroWasteAllocation(
+          slots.map(({ meal, item, person }) => ({
+            items: meal.items, itemId: item.id, target: targetForMeal(meal, person), person,
+          })),
+          preparedGramsOf(prep), byIdFoods, recMap, prepMap, { roundStep }
+        );
+
+        slots.forEach((slot, i) => {
+          slot.item.qty[slot.person] = result.allocation[i];
+          for (const [itemId, qty] of Object.entries(result.quantities[i])) {
+            const other = slot.meal.items.find((x) => x.id === itemId);
+            if (other) other.qty[slot.person] = qty;
+          }
+        });
+
+        const after = slots.map(({ meal, person }) =>
+          evaluate(mealMacros(meal.items, byIdFoods, person, recMap, prepMap), targetForMeal(meal, person), s.settings.tolerance)
+        );
+        const causedByZeroWaste = after.some((ev, i) => ev.status !== 'ok' && before[i].status === 'ok');
+        const sumGrams = result.allocation.reduce((a, b) => a + b, 0);
+        const isPortion = prep.recipeSnapshot?.kind === 'portion';
+        summary = {
+          sumLabel: isPortion ? `${sumGrams / roundStep} portion(s)` : `${sumGrams} g`,
+          preparedLabel: isPortion ? `${prep.preparedQuantity} portion(s)` : `${prep.preparedQuantity} g`,
+          causedByZeroWaste,
+        };
+      });
+      if (summary) {
+        toast(
+          `Zéro reste appliqué : ${summary.sumLabel} / ${summary.preparedLabel} affectés` +
+          (summary.causedByZeroWaste ? ' — dépassement des objectifs causé par le zéro reste' : '')
+        );
+      }
+      renderEditor();
+    });
   });
 }

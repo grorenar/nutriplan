@@ -1,6 +1,6 @@
 /** Écran COURSES — besoin vs quantité à acheter, budget. Aucune gestion de stock. */
 
-import { getState, update, foodsById } from '../core/store.js';
+import { getState, update, foodsById, recipesById, preparationsById } from '../core/store.js';
 import { buildShoppingList } from '../core/derive.js';
 import { CATEGORIES } from '../core/nutrition.js';
 import { esc, grams, euros, num } from '../core/util.js';
@@ -8,7 +8,7 @@ import { esc, grams, euros, num } from '../core/util.js';
 export function render(root) {
   const s = getState();
   const byId = foodsById();
-  const { lines, total, unpriced, budget, overBudget } = buildShoppingList(s, byId);
+  const { lines, total, unpriced, budget, overBudget } = buildShoppingList(s, byId, recipesById(), preparationsById());
   const unpricedLines = lines.filter((l) => l.cost === null);
 
   const groups = {};

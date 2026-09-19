@@ -1,6 +1,6 @@
 /** Impression A4 — construit un document propre dans #print puis lance l'impression. */
 
-import { getState, foodsById } from '../core/store.js';
+import { getState, foodsById, recipesById, preparationsById } from '../core/store.js';
 import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, stateLabel } from '../core/nutrition.js';
 import { buildBatchPlan, buildShoppingList, BATCH_CATEGORY_LABEL, coverageReport } from '../core/derive.js';
 import { dayName, esc, grams, euros, num } from '../core/util.js';
@@ -44,15 +44,17 @@ export function openPrintDialog() {
 export function printSections(sections) {
   const s = getState();
   const byId = foodsById();
+  const recipesMap = recipesById();
+  const preparationsMap = preparationsById();
   const target = document.getElementById('print');
   const parts = [
     `<h1>Nutriplan — cycle de ${s.settings.cycle.duration} jours</h1>
      <div class="print-meta">Départ ${dayName(s.settings.cycle.startWeekday, 0).toLowerCase()} · budget cible ${euros(s.settings.budget)} · tolérance ±${num(s.settings.tolerance * 100, 0)} %</div>`,
   ];
 
-  if (sections.includes('planning')) parts.push(planningSection(s, byId));
-  if (sections.includes('batch') && s.settings.batch.enabled) parts.push(batchSection(s, byId));
-  if (sections.includes('shopping')) parts.push(shoppingSection(s, byId));
+  if (sections.includes('planning')) parts.push(planningSection(s, byId, recipesMap, preparationsMap));
+  if (sections.includes('batch') && s.settings.batch.enabled) parts.push(batchSection(s, byId, recipesMap, preparationsMap));
+  if (sections.includes('shopping')) parts.push(shoppingSection(s, byId, recipesMap, preparationsMap));
   if (sections.includes('nutrition')) parts.push(nutritionSection(s, byId));
   if (sections.includes('catalogs')) parts.push(catalogsSection(s, byId));
 
@@ -60,7 +62,13 @@ export function printSections(sections) {
   window.print();
 }
 
-function itemLine(it, byId) {
+function itemLine(it, byId, recipesMap, preparationsMap) {
+  if (it.recipeId) return `${esc(recipesMap[it.recipeId]?.name || '?')} (recette, pas encore préparée)`;
+  if (it.preparationId) {
+    const prep = preparationsMap[it.preparationId];
+    const q = (p) => `${PERSON_LABEL[p]} ${num(it.qty[p], 0)} g`;
+    return `${esc(prep?.label || '?')} (préparation) — ${esc(q('thomas'))} / ${esc(q('julie'))}`;
+  }
   if (!it.foodId) return `${esc(it.free.name)} — ${esc(it.free.quantity || 'au goût')}`;
   const f = byId[it.foodId];
   if (!f) return 'Aliment supprimé';
@@ -70,7 +78,7 @@ function itemLine(it, byId) {
   return `${esc(f.name)} — ${esc(q('thomas'))} / ${esc(q('julie'))}${it.locked.thomas || it.locked.julie ? ' [verrouillé]' : ''}`;
 }
 
-function planningSection(s, byId) {
+function planningSection(s, byId, recipesMap, preparationsMap) {
   const days = [];
   for (let d = 0; d < s.settings.cycle.duration; d++) {
     const meals = s.meals.filter((m) => m.dayIndex === d);
@@ -79,11 +87,11 @@ function planningSection(s, byId) {
       ${meals
         .map((m) => {
           const mt = PERSONS.map((p) => {
-            const macros = mealMacros(m.items, byId, p);
+            const macros = mealMacros(m.items, byId, p, recipesMap, preparationsMap);
             return `${PERSON_LABEL[p]} : ${num(macros.kcal, 0)} kcal, ${num(macros.protein, 0)} P, ${num(macros.carbs, 0)} G, ${num(macros.fat, 0)} L`;
           }).join(' · ');
           return `<p><strong>${esc(MEAL_TYPES[m.mealType])} — ${esc(m.name || 'sans nom')}</strong><br>
-            ${m.items.length ? `<ul>${m.items.map((it) => `<li>${itemLine(it, byId)}</li>`).join('')}</ul>` : '<em>Non composé</em>'}
+            ${m.items.length ? `<ul>${m.items.map((it) => `<li>${itemLine(it, byId, recipesMap, preparationsMap)}</li>`).join('')}</ul>` : '<em>Non composé</em>'}
             <span class="nums">${mt}</span></p>`;
         })
         .join('')}
@@ -92,8 +100,8 @@ function planningSection(s, byId) {
   return `<div class="print-section"><h2>Planning</h2>${days.join('')}</div>`;
 }
 
-function batchSection(s, byId) {
-  const plan = buildBatchPlan(s, byId);
+function batchSection(s, byId, recipesMap = {}, preparationsMap = {}) {
+  const plan = buildBatchPlan(s, byId, recipesMap, preparationsMap);
   const startWeekday = s.settings.cycle.startWeekday;
   const slot = (d, type) => `${dayName(startWeekday, d).toLowerCase()} ${type === 'lunch' ? 'midi' : 'soir'}`;
 
@@ -171,8 +179,8 @@ function batchSection(s, byId) {
   </div>`;
 }
 
-function shoppingSection(s, byId) {
-  const { lines, total, budget } = buildShoppingList(s, byId);
+function shoppingSection(s, byId, recipesMap = {}, preparationsMap = {}) {
+  const { lines, total, budget } = buildShoppingList(s, byId, recipesMap, preparationsMap);
   return `<div class="print-section"><h2>Liste de courses</h2>
     <table><thead><tr><th></th><th>Article</th><th>Besoin</th><th>À acheter</th><th>Surplus</th><th>Prix</th></tr></thead>
     <tbody>${lines

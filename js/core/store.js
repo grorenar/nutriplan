@@ -35,6 +35,8 @@ export function defaultState() {
   return {
     version: 1,
     foods: seedFoods(),
+    recipes: [], // catalogue global de recettes (composition figée, macros dérivées — jamais stockées)
+    preparations: [], // événements de préparation réels (quantité préparée, snapshot figé de la recette)
     settings: {
       targets: deepCopy(DEFAULT_TARGETS),
       tolerance: 0.05,
@@ -96,6 +98,49 @@ export function normalizeFood(f) {
   };
 }
 
+/**
+ * Complète une recette venant d'une version antérieure (ou d'un import partiel).
+ * `items[]` : { foodId, qty, state } — mêmes conventions qu'un item de repas,
+ * réutilisées telles quelles (macrosFor() s'applique sans adaptation).
+ */
+export function normalizeRecipe(r) {
+  return {
+    kind: 'weight', // 'weight' | 'portion'
+    baseGrams: null,
+    items: [],
+    batchAllowed: false,
+    shelfLifeDays: null,
+    cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+    ...r,
+  };
+}
+
+/** Complète une préparation venant d'une version antérieure (ou d'un import partiel). */
+export function normalizePreparation(p) {
+  return {
+    label: '',
+    createdAt: new Date().toISOString(),
+    recipeSnapshot: null,
+    ...p,
+  };
+}
+
+/**
+ * Préparation réelle, matérialisée à partir d'une recette : `preparedQuantity`
+ * saisie par l'utilisateur (jamais recalculée depuis les ingrédients — décision
+ * verrouillée), `recipeSnapshot` figé au moment de la création (copie profonde,
+ * pas une référence) — si la recette source est modifiée ensuite, cette
+ * préparation garde sa composition d'origine.
+ */
+export const newPreparation = (recipe, preparedQuantity, label = '') => ({
+  id: uid('prep'),
+  recipeId: recipe.id,
+  label: label || recipe.name,
+  preparedQuantity: Math.max(0, Number(preparedQuantity) || 0),
+  createdAt: new Date().toISOString(),
+  recipeSnapshot: deepCopy({ kind: recipe.kind, baseGrams: recipe.baseGrams, items: recipe.items }),
+});
+
 /** Compteurs d'utilisation d'une option dans le cycle, par personne. */
 export const emptyBreakfastUses = () => ({ thomas: 0, julie: 0 });
 export const emptySnackUses = () => ({
@@ -153,6 +198,8 @@ function migrate(s) {
   merged.meta = { ...base.meta, ...(s.meta || {}) };
   if (!Array.isArray(merged.foods) || !merged.foods.length) merged.foods = seedFoods();
   merged.foods = merged.foods.map(normalizeFood);
+  merged.recipes = (Array.isArray(merged.recipes) ? merged.recipes : []).map(normalizeRecipe);
+  merged.preparations = (Array.isArray(merged.preparations) ? merged.preparations : []).map(normalizePreparation);
   merged.breakfasts = (merged.breakfasts || []).map(normalizeBreakfast);
   // fusion des deux anciens catalogues de collations en un seul
   merged.snacks = [
@@ -250,9 +297,51 @@ export function foodsById() {
   return map;
 }
 
+export function recipesById() {
+  const map = {};
+  for (const r of getState().recipes) map[r.id] = r;
+  return map;
+}
+
+export const newRecipe = (name = '', kind = 'weight') => ({
+  id: uid('recipe'),
+  name,
+  kind, // 'weight' | 'portion'
+  baseGrams: kind === 'weight' ? 0 : null,
+  items: [],
+  batchAllowed: false,
+  shelfLifeDays: null,
+  cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+});
+
+/** Ingrédient d'une recette : mêmes conventions qu'un item de repas (qty, state). */
+export const newRecipeItem = (foodId, qty = 0, itemState = null) => ({
+  id: uid('ri'),
+  foodId,
+  qty,
+  state: itemState,
+});
+
+export function preparationsById() {
+  const map = {};
+  for (const p of getState().preparations) map[p.id] = p;
+  return map;
+}
+
+/** Sections d'un repas — liste fixe pour cette version (décision verrouillée). */
+export const SECTIONS = ['entree', 'plat', 'accompagnement', 'fromage', 'dessert', 'collation', 'autre'];
+export const DEFAULT_SECTION = 'plat';
+export const SECTION_LABEL = {
+  entree: 'Entrée', plat: 'Plat', accompagnement: 'Accompagnement',
+  fromage: 'Fromage', dessert: 'Dessert', collation: 'Collation', autre: 'Autre',
+};
+
 export const newItem = (foodId, qty = 0, itemState = null) => ({
   id: uid('it'),
+  section: DEFAULT_SECTION,
   foodId,
+  recipeId: null,
+  preparationId: null,
   free: null,
   state: itemState,
   qty: { thomas: qty, julie: qty },
@@ -261,12 +350,60 @@ export const newItem = (foodId, qty = 0, itemState = null) => ({
 
 export const newFreeItem = (name, quantity) => ({
   id: uid('it'),
+  section: DEFAULT_SECTION,
   foodId: null,
+  recipeId: null,
+  preparationId: null,
   free: { name, quantity },
   state: null,
   qty: { thomas: 0, julie: 0 },
   locked: { thomas: false, julie: false },
 });
+
+/** Item de repas référençant une recette directement, SANS préparation : mode "molle" du calcul inverse (étape 6). */
+export const newRecipeMealItem = (recipeId, qty = 0) => ({
+  id: uid('it'),
+  section: DEFAULT_SECTION,
+  foodId: null,
+  recipeId,
+  preparationId: null,
+  free: null,
+  state: null,
+  qty: { thomas: qty, julie: qty },
+  locked: { thomas: false, julie: false },
+});
+
+/** Item de repas référençant une préparation : utilisation ferme, tire sur son stock (étape 7). */
+export const newPreparationItem = (preparationId, qty = 0) => ({
+  id: uid('it'),
+  section: DEFAULT_SECTION,
+  foodId: null,
+  recipeId: null,
+  preparationId,
+  free: null,
+  state: null,
+  qty: { thomas: qty, julie: qty },
+  locked: { thomas: false, julie: false },
+  zeroWaste: false, // mode normal par défaut — jamais basculé automatiquement (décision verrouillée)
+});
+
+/** Sections effectivement utilisées par une liste d'items, dans l'ordre de SECTIONS. Jamais persisté. */
+export function sectionsUsed(items) {
+  const present = new Set(items.map((it) => it.section || DEFAULT_SECTION));
+  return SECTIONS.filter((s) => present.has(s));
+}
+
+/**
+ * Libellé d'affichage d'un item, quel que soit son type de référence — utilisé
+ * par toutes les vues qui listent des items (planning, catalogues, impression)
+ * pour rester cohérentes entre elles sans dupliquer cette logique.
+ */
+export const itemLabel = (it, byId, recipesMap = {}, preparationsMap = {}) => {
+  if (it.foodId) return byId[it.foodId]?.name || '?';
+  if (it.recipeId) return `${recipesMap[it.recipeId]?.name || '?'} (recette)`;
+  if (it.preparationId) return preparationsMap[it.preparationId]?.label || '?';
+  return it.free?.name || '?';
+};
 
 export const newMeal = (dayIndex, mealType) => ({
   id: uid('meal'),
