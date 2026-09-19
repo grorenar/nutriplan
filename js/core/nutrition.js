@@ -14,11 +14,12 @@ import { clamp, round } from './util.js';
 export const CATEGORIES = [
   { id: 'proteine', label: 'Protéine' },
   { id: 'feculent', label: 'Féculent' },
+  { id: 'legumineuse', label: 'Légumineuse' },
   { id: 'legume', label: 'Légume' },
   { id: 'fruit', label: 'Fruit' },
   { id: 'laitier', label: 'Produit laitier' },
   { id: 'matiere_grasse', label: 'Matière grasse' },
-  { id: 'oleagineux', label: 'Oléagineux' },
+  { id: 'oleagineux', label: 'Noix & graines' },
   { id: 'autre', label: 'Autre' },
 ];
 
@@ -42,24 +43,41 @@ export const MEAL_TYPES = {
 };
 
 /**
- * Profils par catégorie : bornes raisonnables (en grammes, dans l'état de l'ingrédient)
- * et force d'ancrage. Plus l'ancrage est élevé, moins l'algorithme se permet de
- * s'éloigner de la quantité actuelle.
- *   -> les légumes et les fruits sont fortement ancrés : ils ne servent jamais
- *      de variable d'ajustement pour "remplir" les calories.
+ * Profils par catégorie : bornes raisonnables (en grammes, dans l'état de l'ingrédient),
+ * portion type (`def` = réf_cat) et énergie type d'une portion (`eCat` = E_cat).
+ * Ces deux derniers nombres alimentent `referenceFor()` : un point de départ pour des
+ * proportions réalistes, jamais une cible nutritionnelle.
  */
 export const CATEGORY_PROFILE = {
-  proteine: { min: 50, max: 250, def: 150, anchor: 0.05, step: 5 },
-  feculent: { min: 20, max: 400, def: 90, anchor: 0.03, step: 5 },
-  legume: { min: 60, max: 320, def: 200, anchor: 40, step: 10 },
-  fruit: { min: 30, max: 260, def: 120, anchor: 15, step: 10 },
-  laitier: { min: 40, max: 500, def: 150, anchor: 0.08, step: 5 },
-  matiere_grasse: { min: 2, max: 45, def: 10, anchor: 0.03, step: 1 },
-  oleagineux: { min: 5, max: 80, def: 20, anchor: 0.8, step: 5 },
-  autre: { min: 5, max: 300, def: 60, anchor: 2.0, step: 5 },
+  proteine: { min: 50, max: 250, def: 150, eCat: 164, step: 5 },
+  feculent: { min: 20, max: 400, def: 90, eCat: 266, step: 5 },
+  legumineuse: { min: 40, max: 300, def: 150, eCat: 207, step: 5 },
+  legume: { min: 60, max: 320, def: 200, eCat: 65, step: 10 },
+  fruit: { min: 30, max: 260, def: 120, eCat: 78, step: 10 },
+  laitier: { min: 40, max: 500, def: 150, eCat: 112, step: 5 },
+  matiere_grasse: { min: 2, max: 45, def: 10, eCat: 90, step: 1 },
+  oleagineux: { min: 5, max: 80, def: 20, eCat: 148, step: 5 },
+  autre: { min: 5, max: 300, def: 60, eCat: 100, step: 5 },
 };
 
 export const profileOf = (food) => CATEGORY_PROFILE[food?.category] || CATEGORY_PROFILE.autre;
+
+/**
+ * Référence de portion pour un aliment (architecture C) : moyenne géométrique
+ * entre une référence en masse (réf_cat, la portion type de la catégorie) et
+ * une référence iso-énergétique (réf_cat × E_cat / densité), bornée à
+ * [réf_cat/3, réf_cat×3] pour les densités extrêmes.
+ *   réf = clamp( √(réf_cat × E_cat × 100 / densité) , réf_cat/3 , réf_cat×3 )
+ * C'est un point de départ pour des proportions réalistes, jamais une cible
+ * nutritionnelle : l'optimiseur peut s'en écarter librement.
+ */
+export function referenceFor(food) {
+  const p = profileOf(food);
+  const density = Number(food?.kcal) || 0;
+  if (density <= 0) return p.def;
+  const raw = Math.sqrt((p.def * p.eCat * 100) / density);
+  return clamp(raw, p.def / 3, p.def * 3);
+}
 
 /* ------------------------------------------------------------------ */
 /* Conversion d'état                                                   */
@@ -337,24 +355,178 @@ export function initialQuantity(food) {
 }
 
 /**
+ * Perte bornée (Welsch) : quadratique près de zéro, mais son gradient sature
+ * puis décroît au-delà d'un certain écart, au lieu de croître indéfiniment
+ * (perte de Huber, essayée puis abandonnée : sur une cible structurellement
+ * inatteignable, elle tire les ingrédients jusqu'à leur borne maximale).
+ * `C` fixe l'échelle à laquelle la perte « accepte » de manquer la cible
+ * plutôt que de produire une composition absurde.
+ */
+const WELSCH_C = 0.08;
+
+/** Poids de la pénalité de disproportion (dispersion + échelle globale). */
+const BETA = 0.006;
+/** Poids du terme d'échelle globale à l'intérieur de la pénalité. */
+const GAMMA = 3;
+
+const welschLoss = (d) => WELSCH_C * (1 - Math.exp(-(d * d) / (2 * WELSCH_C)));
+
+const GOLDEN = (Math.sqrt(5) - 1) / 2;
+
+/** Minimum d'une fonction 1D sur [a, b] par recherche en section dorée. */
+function goldenSectionMin(f, a, b, iterations = 24) {
+  let x1 = b - GOLDEN * (b - a);
+  let x2 = a + GOLDEN * (b - a);
+  let f1 = f(x1);
+  let f2 = f(x2);
+  for (let i = 0; i < iterations; i++) {
+    if (f1 <= f2) {
+      b = x2; x2 = x1; f2 = f1;
+      x1 = b - GOLDEN * (b - a); f1 = f(x1);
+    } else {
+      a = x1; x1 = x2; f1 = f2;
+      x2 = a + GOLDEN * (b - a); f2 = f(x2);
+    }
+  }
+  const x = (a + b) / 2;
+  return { x, f: f(x) };
+}
+
+/**
+ * Minimisation 1D sur [lo, hi] par grille de 48 points puis section dorée
+ * autour de CHAQUE vallée détectée (minimum local de la grille). Le coût
+ * n'est pas garanti unimodal (mesuré : des minima locaux existent) — une
+ * simple recherche ternaire échouerait sur ces cas. Retenu après comparaison :
+ * zéro échec, pour un nombre d'évaluations très inférieur à la recherche ternaire.
+ */
+function minimize1D(f, lo, hi, gridPoints = 48) {
+  if (!(hi > lo)) { const x = lo; return { x, f: f(x) }; }
+  const xs = new Array(gridPoints);
+  const fs = new Array(gridPoints);
+  for (let i = 0; i < gridPoints; i++) {
+    xs[i] = lo + ((hi - lo) * i) / (gridPoints - 1);
+    fs[i] = f(xs[i]);
+  }
+  let best = { x: xs[0], f: fs[0] };
+  for (let i = 1; i < gridPoints; i++) if (fs[i] < best.f) best = { x: xs[i], f: fs[i] };
+  for (let i = 0; i < gridPoints; i++) {
+    const isValley = (i === 0 || fs[i] <= fs[i - 1]) && (i === gridPoints - 1 || fs[i] <= fs[i + 1]);
+    if (!isValley) continue;
+    const a = xs[Math.max(0, i - 1)];
+    const b = xs[Math.min(gridPoints - 1, i + 1)];
+    const refined = goldenSectionMin(f, a, b);
+    if (refined.f < best.f) best = refined;
+  }
+  return best;
+}
+
+const MACRO_ORDER = ['kcal', 'protein', 'carbs', 'fat'];
+
+/**
+ * Résout l'ajustement par descente par coordonnées EN ESPACE LOGARITHMIQUE
+ * (x = ln q), à partir d'un jeu de quantités de départ donné par `startOf`.
+ * Chaque coordonnée est minimisée par `minimize1D` sur le coût complet ; les
+ * contributions des autres variables sont gelées pendant cette minimisation
+ * (Gauss-Seidel), ce qui rend chaque évaluation de coût en O(1).
+ */
+function solveFromStart(vars, fixed, t, startOf, iterations) {
+  const n = vars.length;
+  const q = vars.map((v) => clamp(startOf(v), v.min, v.max));
+  const refLn = vars.map((v) => Math.log(v.ref));
+  const u = q.map((qi, i) => Math.log(qi) - refLn[i]);
+
+  const sum = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+  for (let i = 0; i < n; i++) for (const k of MACRO_ORDER) sum[k] += vars[i].per1[k] * q[i];
+
+  for (let iter = 0; iter < iterations; iter++) {
+    let move = 0;
+    for (let i = 0; i < n; i++) {
+      const v = vars[i];
+      const sumOthers = {};
+      for (const k of MACRO_ORDER) sumOthers[k] = sum[k] - v.per1[k] * q[i];
+      let sumU = 0;
+      let sumU2 = 0;
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        sumU += u[j];
+        sumU2 += u[j] * u[j];
+      }
+
+      const costAt = (x) => {
+        const qi = Math.exp(x);
+        let macroCost = 0;
+        for (const k of MACRO_ORDER) {
+          const val = sumOthers[k] + v.per1[k] * qi;
+          const d = (val + fixed[k] - t[k]) / t[k];
+          macroCost += WEIGHTS[k] * welschLoss(d);
+        }
+        const ui = x - refLn[i];
+        const s1 = sumU + ui;
+        const s2 = sumU2 + ui * ui;
+        const dispersion = s2 - (s1 * s1) / n;
+        const scaleTerm = (GAMMA * s1 * s1) / n;
+        return macroCost + BETA * (dispersion + scaleTerm);
+      };
+
+      const { x } = minimize1D(costAt, Math.log(v.min), Math.log(v.max));
+      const nextQ = clamp(Math.exp(x), v.min, v.max);
+      move = Math.max(move, Math.abs(nextQ - q[i]));
+      for (const k of MACRO_ORDER) sum[k] = sumOthers[k] + v.per1[k] * nextQ;
+      q[i] = nextQ;
+      u[i] = Math.log(nextQ) - refLn[i];
+    }
+    if (move < 0.05) break;
+  }
+
+  let macroCost = 0;
+  for (const k of MACRO_ORDER) {
+    const d = (sum[k] + fixed[k] - t[k]) / t[k];
+    macroCost += WEIGHTS[k] * welschLoss(d);
+  }
+  const meanU = n ? u.reduce((s, x) => s + x, 0) / n : 0;
+  const dispersion = u.reduce((s, x) => s + (x - meanU) ** 2, 0);
+  const cost = macroCost + BETA * (dispersion + GAMMA * n * meanU * meanU);
+
+  return { q, cost };
+}
+
+/**
  * Cœur de l'application : ajuste les quantités des ingrédients DÉVERROUILLÉS
- * pour rapprocher simultanément kcal / P / G / L des objectifs.
+ * pour rapprocher simultanément kcal / P / G / L des objectifs — architecture C.
  *
- * Méthode : descente par coordonnées sur un coût quadratique convexe
- *   coût = Σ_macro  w · ((valeur - cible) / cible)²  +  Σ_ingrédient  λ · ((q - q₀) / échelle)²
- * avec bornes par catégorie. Le terme d'ancrage (λ) empêche les compositions absurdes :
- * les légumes et les fruits, fortement ancrés, ne bougent quasiment pas.
+ * Coût minimisé, par personne :
+ *   Σ_macro  W · ρ_C( (valeur - cible) / cible )
+ *     + β · [ Σᵢ (uᵢ - ū)²  +  γ · n · ū² ]
+ *   avec  uᵢ = ln(qᵢ / réfᵢ)  (réfᵢ = referenceFor(food), architecture C)
+ *         ρ_C(d) = perte bornée de Welsch (WELSCH_C)
+ *
+ * Le premier terme rapproche les 4 macros de leurs cibles avec une perte qui
+ * « accepte » de manquer une cible structurellement inatteignable plutôt que
+ * de produire une composition absurde. Le second est une pénalité de
+ * disproportion (jamais une interdiction) fondée sur des VARIATIONS RELATIVES
+ * par rapport aux références de catégorie : elle pénalise un ingrédient qui
+ * s'écarte des autres (dispersion) et un repas globalement gonflé ou rétréci
+ * (échelle). Il n'y a plus d'ancrage sur la quantité de départ : un aliment
+ * mal saisi au départ n'est plus jamais figé.
+ *
+ * Minimisation : descente par coordonnées en espace logarithmique, chaque
+ * coordonnée résolue par grille 48 points + section dorée (le coût 1D n'est
+ * pas garanti unimodal). Multi-départ (quantité actuelle, référence, quantité
+ * mise à l'échelle du besoin calorique) : on retient le résultat de coût le
+ * plus bas, pour éviter de rester bloqué dans un minimum local médiocre.
  *
  * Garanties :
  *  - aucun ingrédient n'est ajouté ni supprimé ;
  *  - un ingrédient verrouillé n'est jamais modifié ;
- *  - les ingrédients libres (sans foodId) sont ignorés.
+ *  - les ingrédients libres (sans foodId) sont ignorés ;
+ *  - aucun plafond de masse spécifique à une catégorie, aucun terme de volume
+ *    dans ce coût (le volume d'un repas est une couche séparée, informative).
  *
  * @returns {{quantities: Object<string, number>, changed: boolean}}
  *          quantités par identifiant d'ingrédient (seuls les déverrouillés changent).
  */
 export function adjustQuantities(items, foodsById, target, person, options = {}) {
-  const iterations = options.iterations ?? 260;
+  const iterations = options.iterations ?? 60;
   const result = {};
   if (!target) return { quantities: result, changed: false };
 
@@ -395,10 +567,8 @@ export function adjustQuantities(items, foodsById, target, person, options = {})
       per1,
       min: p.min,
       max: p.max,
-      anchor: p.anchor,
-      // ancrage sur la quantité actuelle
+      ref: referenceFor(food),
       q0: qty,
-      q: qty,
     });
   }
 
@@ -410,61 +580,25 @@ export function adjustQuantities(items, foodsById, target, person, options = {})
     carbs: Math.max(1, target.carbs || 0),
     fat: Math.max(1, target.fat || 0),
   };
-  const keys = ['kcal', 'protein', 'carbs', 'fat'];
 
-  // somme courante des contributions variables
-  const sum = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-  for (const v of vars) for (const k of keys) sum[k] += v.per1[k] * v.q;
+  // départ « quantité actuelle mise à l'échelle du besoin calorique »
+  const currentKcal = fixed.kcal + vars.reduce((s, v) => s + v.per1.kcal * v.q0, 0);
+  const scaleFactor = currentKcal > 0 ? clamp(t.kcal / currentKcal, 0.1, 10) : 1;
 
-  /**
-   * Pondération robuste (IRLS / Huber) : au-delà de DELTA d'écart relatif, l'influence
-   * d'une macro cesse de croître. Sans cela, une macro structurellement inatteignable
-   * (aucune matière grasse dans le repas, par exemple) tire les autres aliments vers le
-   * haut et fait sortir protéines et glucides de leur cible. Avec, les macros atteignables
-   * restent sur leur objectif et le manque est simplement signalé.
-   */
-  const DELTA = 0.15;
-  const effW = { ...WEIGHTS };
+  const starts = [(v) => v.q0, (v) => v.ref, (v) => v.q0 * scaleFactor];
 
-  for (let iter = 0; iter < iterations; iter++) {
-    let move = 0;
-    for (const k of keys) {
-      const rel = Math.abs((sum[k] + fixed[k] - t[k]) / t[k]);
-      effW[k] = WEIGHTS[k] * (rel > DELTA ? DELTA / rel : 1);
-    }
-    for (const v of vars) {
-      // retrait de la contribution de la variable courante
-      for (const k of keys) sum[k] -= v.per1[k] * v.q;
-
-      let numer = 0;
-      let denom = 0;
-      for (const k of keys) {
-        const c = v.per1[k];
-        if (!c) continue;
-        const w = effW[k] / (t[k] * t[k]);
-        const rest = sum[k] + fixed[k];
-        numer += w * c * (t[k] - rest);
-        denom += w * c * c;
-      }
-      // L'optimum est D'ABORD borné, PUIS mélangé à la quantité actuelle (ancrage relatif).
-      // Borner avant le mélange est essentiel : sans cela, un optimum théorique absurde
-      // (3,5 kg de haricots verts pour atteindre 1050 kcal) tire quand même la quantité
-      // vers le haut malgré un ancrage fort.
-      const best = clamp(denom > 0 ? numer / denom : v.q, v.min, v.max);
-      const next = clamp((best + v.anchor * v.q0) / (1 + v.anchor), v.min, v.max);
-      move = Math.max(move, Math.abs(next - v.q));
-      v.q = next;
-
-      for (const k of keys) sum[k] += v.per1[k] * v.q;
-    }
-    if (move < 0.05) break;
+  let best = null;
+  for (const startOf of starts) {
+    const r = solveFromStart(vars, fixed, t, startOf, iterations);
+    if (!best || r.cost < best.cost - 1e-9) best = r;
   }
 
   let changed = false;
-  for (const v of vars) {
-    const rounded = roundQuantity(v.food, clamp(v.q, v.min, v.max), v.min, v.max);
+  for (let i = 0; i < vars.length; i++) {
+    const v = vars[i];
+    const rounded = roundQuantity(v.food, clamp(best.q[i], v.min, v.max), v.min, v.max);
     result[v.id] = rounded;
-    if (Math.abs(rounded - (items.find((i) => i.id === v.id)?.qty?.[person] || 0)) > 0.001) changed = true;
+    if (Math.abs(rounded - v.q0) > 0.001) changed = true;
   }
   return { quantities: result, changed };
 }

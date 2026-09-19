@@ -11,6 +11,7 @@ import {
   conversionInfo, stateLabel,
 } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid } from '../core/util.js';
+import { analyzeMealVolume } from '../core/meal-volume.js';
 
 let ctx = null; // { kind, id }
 let pickerQuery = '';
@@ -65,13 +66,22 @@ function targetsFor(state) {
   };
 }
 
-/** Mutation de l'entité + ajustement automatique optionnel. */
-function mutate(fn, { adjust = true, pinned = [] } = {}) {
+/**
+ * Mutation de l'entité + ajustement optionnel.
+ * `adjust` : un ajustement est-il pertinent après cette mutation (ajout d'un
+ * ingrédient, changement de quantité…) ? `force` : l'utilisateur l'a-t-il
+ * demandé explicitement (bouton "Ajuster maintenant") ? Dans ce cas
+ * l'ajustement s'exécute TOUJOURS, même si le réglage "Ajustement auto" est
+ * décoché — sinon le bouton ne fait rien tout en affichant un message de
+ * succès. Un ajustement automatique (après ajout, saisie…) reste, lui,
+ * soumis au réglage.
+ */
+function mutate(fn, { adjust = true, force = false, pinned = [] } = {}) {
   update((s) => {
     const e = entityFrom(s);
     if (!e) return;
     fn(e, s);
-    if (adjust && s.settings.autoAdjust) {
+    if (adjust && (force || s.settings.autoAdjust)) {
       autoAdjust(e.items, foodsByIdFrom(s), targetsForState(s), { pinned });
     }
   });
@@ -150,6 +160,7 @@ function renderSummary(entity, byId, targets, tol, state) {
     const macros = mealMacros(entity.items, byId, person);
     const ev = evaluate(macros, targets[person], tol);
     const diag = diagnose(macros, targets[person], state.foods, tol);
+    const vol = analyzeMealVolume(entity.items, byId, person);
     const chips = ev.rows
       .map(
         (r) => `<span class="macro is-${r.status}">
@@ -167,6 +178,13 @@ function renderSummary(entity, byId, targets, tol, state) {
               .map((r) => `${r.label} ${r.delta > 0 ? '+' : ''}${num(r.delta, 0)}`)
               .join(', ')}${diag.suggestions.length ? ` — piste : ${esc(diag.suggestions.join(', '))}` : ''}</small>`
           : `<small>Tous les macros dans la cible ±${Math.round(tol * 100)} %.</small>`
+      }
+      ${
+        vol.level > 0
+          ? `<div class="tag${vol.level >= 2 ? ' sync-error' : ''}" style="margin-top:4px">
+               ${esc(vol.label)} — environ ${num(vol.grams, 0)} g dans l'assiette${vol.partial ? ' (estimation partielle : au moins un ingrédient sans rendement cru → cuit renseigné n’est pas compté)' : ''}
+             </div>`
+          : ''
       }
     </div>`;
   }).join('');
@@ -426,7 +444,7 @@ function wire(root, entity) {
   });
 
   root.querySelector('[data-adjust]')?.addEventListener('click', () => {
-    mutate(() => {}, { adjust: true });
+    mutate(() => {}, { adjust: true, force: true });
     toast('Quantités ajustées');
   });
 

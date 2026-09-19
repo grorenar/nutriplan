@@ -10,7 +10,7 @@ import {
   autoAdjust, adjustQuantities, mealMacros, macrosFor, evaluate, diagnose,
   initialQuantity, roundQuantity, convertGrams, toReferenceGrams, profileOf,
   snapQuantity, toUnits, fromUnits, isWholeUnitFood, MACRO_KEYS, computeYield, quantityStep,
-  canConvert, conversionInfo, stateLabel, STATES,
+  canConvert, conversionInfo, stateLabel, STATES, referenceFor, CATEGORY_PROFILE, CATEGORIES,
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
@@ -276,6 +276,97 @@ test('J — composition différente : un aliment absent (0 g) est ignoré', () =
     const m = mealMacros(items, byId, p);
     check(`${p} : kcal dans ±5 %`, Math.abs(dev(m.kcal, LUNCH[p].kcal)) <= 0.05, `${m.kcal.toFixed(0)}`);
   }
+});
+
+/* ================================================================ ARCHITECTURE C (V1.4) */
+
+test('V1.4 — anchor supprimé de CATEGORY_PROFILE', () => {
+  for (const [id, p] of Object.entries(CATEGORY_PROFILE)) {
+    check(`${id} : aucune clé "anchor"`, !('anchor' in p));
+    check(`${id} : clé "eCat" présente`, typeof p.eCat === 'number' && p.eCat > 0, `${p.eCat}`);
+  }
+});
+
+test('V1.4 — un légume n’est plus figé (ancien point fixe de l’ancrage)', () => {
+  // reproduction du bug V1.4 : un légume seul, très loin de la cible calorique.
+  // Sous l’ancien anchor (40 pour les légumes), le déplacement mesuré était de 0 g.
+  const items = [item(F('Courgettes'))];
+  const initial = items[0].qty.thomas;
+  for (let i = 0; i < 3; i++) autoAdjust(items, byId, LUNCH);
+  const moved = Math.abs(items[0].qty.thomas - initial);
+  show(items, LUNCH);
+  check('la courgette a réellement bougé (pas de point fixe)', moved > 20, `${initial} g → ${items[0].qty.thomas} g`);
+});
+
+test('V1.4 — référence de portion (architecture C)', () => {
+  // √(réf_cat × E_cat × 100 / densité), bornée à [réf_cat/3, réf_cat×3]
+  check('référence courgettes ≈ 255 g', Math.abs(referenceFor(F('Courgettes')) - 255) < 2,
+    `${referenceFor(F('Courgettes')).toFixed(1)} g`);
+  check('référence haricots verts ≈ 208 g', Math.abs(referenceFor(F('Haricots verts')) - 208) < 2,
+    `${referenceFor(F('Haricots verts')).toFixed(1)} g`);
+  // densité extrême : le clamp [réf_cat/3, réf_cat×3] doit borner la référence
+  const p = profileOf({ category: 'matiere_grasse' });
+  const dense = referenceFor({ category: 'matiere_grasse', kcal: 20000 });
+  check('densité extrême (très dense) : référence bornée au plancher réf_cat/3',
+    Math.abs(dense - p.def / 3) < 0.01, `${dense}`);
+  const light = referenceFor({ category: 'matiere_grasse', kcal: 1 });
+  check('densité extrême (très légère) : référence bornée au plafond réf_cat×3',
+    Math.abs(light - p.def * 3) < 0.01, `${light}`);
+  // aucune calorie renseignée : repli sur réf_cat (pas de division par zéro)
+  check('aliment à 0 kcal : repli sur réf_cat, pas de division par zéro',
+    referenceFor({ category: 'autre', kcal: 0 }) === profileOf({ category: 'autre' }).def);
+});
+
+test('V1.4 — catégorie legumineuse', () => {
+  check('lentilles → legumineuse', F('Lentilles').category === 'legumineuse');
+  check('pois chiches → legumineuse', F('Pois chiches').category === 'legumineuse');
+  check('haricots rouges → legumineuse', F('Haricots rouges').category === 'legumineuse');
+  check('identifiants inchangés',
+    F('Lentilles').id === 'f_lentilles' && F('Pois chiches').id === 'f_pois_chiches' &&
+    F('Haricots rouges').id === 'f_haricots_rouges');
+  check('catégorie legumineuse déclarée dans CATEGORIES', CATEGORIES.some((c) => c.id === 'legumineuse'));
+});
+
+test('V1.4 — libellé « Noix & graines »', () => {
+  check('libellé de la catégorie oléagineux', CATEGORIES.find((c) => c.id === 'oleagineux')?.label === 'Noix & graines');
+  check('identifiant de catégorie inchangé', F('Amandes').category === 'oleagineux');
+});
+
+test('V1.4 — multi-départ : même résultat quel que soit le point de départ', () => {
+  const base = [item(F('Blanc de poulet')), item(F('Riz basmati')), item(F('Haricots verts'), 200), item(F('Huile d’olive'))];
+  const scales = [0.25, 0.5, 1, 2, 4];
+  const finals = scales.map((s) => {
+    const its = base.map((it) => ({ ...it, qty: { thomas: it.qty.thomas * s, julie: it.qty.julie * s } }));
+    for (let i = 0; i < 4; i++) autoAdjust(its, byId, LUNCH);
+    return its.map((it) => it.qty.thomas);
+  });
+  info(finals.map((f, i) => `×${scales[i]} → ${f.join('/')}`).join(' | '));
+  const ref = finals[2]; // départ ×1
+  check('même résultat (±1 g) quel que soit le point de départ',
+    finals.every((f) => f.every((v, i) => Math.abs(v - ref[i]) <= 1)));
+});
+
+test('V1.4 — idempotence : ré-application sans dérive', () => {
+  const items = [item(F('Blanc de poulet')), item(F('Riz basmati')), item(F('Haricots verts'), 200), item(F('Huile d’olive'))];
+  for (let i = 0; i < 4; i++) autoAdjust(items, byId, LUNCH); // convergence
+  const before = items.map((it) => it.qty.thomas);
+  autoAdjust(items, byId, LUNCH);
+  const after = items.map((it) => it.qty.thomas);
+  check('0 g de déplacement à la ré-application', before.every((v, i) => v === after[i]), `${before.join(',')} → ${after.join(',')}`);
+});
+
+test('V1.4 — les bornes ne sont pas le mécanisme porteur (scénario normal)', () => {
+  const items = [item(F('Blanc de poulet')), item(F('Pâtes complètes'))];
+  autoAdjust(items, byId, LUNCH);
+  items.push(item(F('Haricots verts'), 200));
+  autoAdjust(items, byId, LUNCH);
+  // documenté, non asserté (cf. passation V1.4 §13.3.a.8) : sur un scénario
+  // courant, le résultat n'est normalement pas produit par une borne.
+  info(items.map((it) => {
+    const p = profileOf(byId[it.foodId]);
+    const onBound = it.qty.thomas <= p.min || it.qty.thomas >= p.max;
+    return `${byId[it.foodId].name} ${it.qty.thomas} g (bornes ${p.min}-${p.max})${onBound ? ' ← sur une borne' : ''}`;
+  }).join(' | '));
 });
 
 /* ================================================================ UNITÉS */

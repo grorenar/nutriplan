@@ -123,6 +123,28 @@ change($$('#drawer [data-qty]')[2], '150');
 check('poulet inchangé après modification des pâtes', qty()[0] === '180');
 check('aucun ingrédient supprimé', $$('#drawer .item').length === 4);
 
+console.log('\n— « Ajuster maintenant » avec ajustement automatique désactivé');
+// le panneau ne recrée que son contenu à chaque rendu : on requête l'élément
+// à chaque fois plutôt que de garder une référence, qui deviendrait périmée.
+if ($('#drawer [data-auto]').checked) click($('#drawer [data-auto]'));
+await wait();
+check('ajustement automatique décoché', $('#drawer [data-auto]').checked === false);
+// on modifie une quantité déverrouillée : sans ajustement auto, rien ne bouge d'autre
+change($$('#drawer [data-qty]')[2], '5');
+await wait();
+const beforeAdjust = qty();
+check('aucun réajustement automatique pendant la saisie (auto désactivé)', qty()[2] === '5');
+click($('#drawer [data-adjust]'));
+await wait();
+const afterAdjust = qty();
+check('« Ajuster maintenant » modifie réellement les quantités malgré autoAdjust=false',
+  beforeAdjust.some((v, i) => v !== afterAdjust[i]), `${beforeAdjust.join(',')} → ${afterAdjust.join(',')}`);
+check('toast de confirmation affiché',
+  /Quantités ajustées/.test(document.getElementById('toasts')?.textContent || ''));
+click($('#drawer [data-auto]'));
+await wait();
+check('ajustement automatique réactivé', $('#drawer [data-auto]').checked === true);
+
 console.log('\n— Ingrédient libre');
 $('#drawer [data-free-name]').value = 'Curry';
 $('#drawer [data-free-qty]').value = 'au goût';

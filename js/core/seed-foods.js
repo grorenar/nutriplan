@@ -29,10 +29,12 @@ const T = [
   ['oeuf', 'Œuf entier', 'proteine', 143, 12.6, 0.7, 9.9, 0, 'cru', 0.90, 'œuf', 60, false, 3.2, 360, false, true],
   ['blanc_oeuf', 'Blanc d’œuf', 'proteine', 48, 11, 0.7, 0.2, 0, 'cru', 1, '', 0, true, 3.9, 500, false, false],
   ['jambon', 'Jambon blanc découenné', 'proteine', 110, 20, 1, 3, 0, 'pret', 1, 'tranche', 40, false, 2.6, 160, false, false],
-  ['lentilles', 'Lentilles cuites', 'proteine', 115, 9, 17, 0.5, 5, 'egoutte', 1, '', 0, true, 1.6, 400, true, false],
-  ['pois_chiches', 'Pois chiches', 'proteine', 140, 7.5, 20, 2.5, 6, 'egoutte', 1, '', 0, true, 1.5, 400, true, false],
-  ['haricots_rouges', 'Haricots rouges', 'proteine', 120, 8, 17, 0.6, 6.5, 'egoutte', 1, '', 0, true, 1.4, 400, true, false],
   ['proteine_poudre', 'Protéine en poudre (à personnaliser)', 'proteine', 380, 78, 6, 5, 0, 'pret', 1, 'dose', 30, true, 29.9, 1000, false, false],
+
+  // ------------------------------------------------------------- légumineuses
+  ['lentilles', 'Lentilles cuites', 'legumineuse', 115, 9, 17, 0.5, 5, 'egoutte', 1, '', 0, true, 1.6, 400, true, false],
+  ['pois_chiches', 'Pois chiches', 'legumineuse', 140, 7.5, 20, 2.5, 6, 'egoutte', 1, '', 0, true, 1.5, 400, true, false],
+  ['haricots_rouges', 'Haricots rouges', 'legumineuse', 120, 8, 17, 0.6, 6.5, 'egoutte', 1, '', 0, true, 1.4, 400, true, false],
 
   // --------------------------------------------------------------- féculents
   ['pates_completes', 'Pâtes complètes', 'feculent', 340, 13, 62, 2.5, 8, 'cru', 2.4, '', 0, true, 1.9, 500, true, true],

@@ -16,6 +16,7 @@ js/config.js              ← les 2 clés Supabase à renseigner
 js/app.js                 coquille : navigation, rendu de la vue active, cycle de sync
 js/core/util.js           formatage, helpers
 js/core/nutrition.js      MOTEUR : macros, conversions cru/cuit, ajustement automatique
+js/core/meal-volume.js    analyse du volume d'un repas — couche informative, séparée du moteur
 js/core/seed-foods.js     banque alimentaire initiale (~95 aliments génériques)
 js/core/store.js          état applicatif, localStorage, export/import
 js/core/derive.js         batch cooking, liste de courses, budget, suggestions
@@ -24,6 +25,7 @@ js/core/sync.js           Supabase : auth + envoi/récupération atomiques
 js/views/*.js             une vue par écran + l'éditeur de repas partagé
 supabase/schema.sql       schéma PostgreSQL + RLS par compte + fonction transactionnelle
 tests/engine.test.mjs     moteur nutritionnel, batch, courses (aucune dépendance)
+tests/volume.test.mjs     analyse du volume d'un repas (aucune dépendance)
 tests/sync.test.mjs       schéma + transaction + RLS, sur un PostgreSQL local
 tests/autosync.test.mjs   synchronisation automatique (client Supabase simulé)
 tests/ui.test.mjs         parcours complet de l'interface (jsdom)
@@ -78,28 +80,51 @@ différents ne sont jamais supposés équivalents.
 (coefficient `cookedFactor`, ex. pâtes 100 g crus → 240 g cuits), puis multipliés par les valeurs
 pour 100 g. La cuisson change le poids, jamais les macros.
 
-**Ajustement continu.** À chaque ajout, suppression, changement de quantité, d'état ou de verrou,
-`adjustQuantities()` est relancé pour chaque personne. C'est une descente par coordonnées sur un
-coût quadratique convexe :
+**Ajustement continu — architecture C (V1.4).** À chaque ajout, suppression, changement de
+quantité, d'état ou de verrou, `adjustQuantities()` est relancé pour chaque personne. Il n'y a plus
+d'ancrage sur la quantité de départ (mécanisme `anchor` de V1.3, supprimé : il créait un point fixe
+mathématique où un légume fortement ancré ne bougeait quasiment jamais). Chaque aliment déverrouillé
+a désormais une **référence de portion**, un point de départ pour des proportions réalistes —
+**jamais une cible nutritionnelle** :
 
 ```
-coût = Σ_macro  w · ((valeur − cible) / cible)²        w : kcal 0,35 · P 1,4 · C 1 · L 1
+réf = clamp( √(réf_cat × E_cat × 100 / densité) , réf_cat/3 , réf_cat×3 )
 ```
 
-Trois garde-fous encadrent ce calcul :
+`réf_cat` est la portion type de la catégorie (`def` dans `CATEGORY_PROFILE`, déjà existante),
+`E_cat` l'énergie type d'une portion de cette catégorie (nouveau), `densité` les kcal pour 100 g de
+l'aliment dans son état de référence. C'est la moyenne géométrique entre une référence en masse
+(chaque aliment de la catégorie : même poids) et une référence iso-énergétique (chaque aliment :
+même apport calorique) — elle seule distingue correctement un aliment dense (avocat) d'un aliment
+peu dense (courgette) de la même catégorie, sans traiter aucune catégorie comme un cas particulier.
+Le clamp ne borne que les densités extrêmes (whey, huile).
 
-1. **Les kcal sont faiblement pondérées** : elles sont largement redondantes avec P/C/L
-   (≈ 4P + 4C + 9L). Au même poids que les macros, elles poussaient l'algorithme à gonfler
-   protéines et glucides pour compenser des calories manquantes.
-2. **Pondération robuste (Huber/IRLS)** : au-delà de 15 % d'écart, l'influence d'une macro cesse
-   de croître. Une macro structurellement inatteignable (aucune matière grasse dans le repas) ne
-   déforme donc plus les autres : elle est simplement signalée.
-3. **Ancrage relatif** propre à la catégorie : l'optimum est d'abord **borné**, puis mélangé à la
-   quantité actuelle. Borner avant le mélange est indispensable, sinon un optimum théorique absurde
-   (3,5 kg de haricots verts pour atteindre 1050 kcal) tire quand même la quantité vers le haut.
+Le coût minimisé, par personne :
+
+```
+coût = Σ_macro  W · ρ_C( (valeur − cible) / cible )  +  β · [ Σᵢ (uᵢ − ū)²  +  γ · n · ū² ]
+
+  W : kcal 0,35 · P 1,4 · C 1 · L 1
+  ρ_C(d) = C · (1 − exp(−d²/2C))     perte bornée (Welsch), C = 0,08
+  uᵢ = ln(qᵢ / réfᵢ)                 β = 0,006 · γ = 3
+```
+
+Le premier terme rapproche les 4 macros de leurs cibles avec une perte **bornée** : au-delà d'un
+certain écart, elle « accepte » de manquer la cible plutôt que de produire une composition absurde
+(essayé avec une perte de Huber : elle envoie une macro structurellement inatteignable à sa borne
+maximale, car son gradient ne décroît jamais). Le second terme est une **pénalité de disproportion**,
+fondée sur des variations relatives aux références (jamais des grammes bruts) : elle pénalise un
+aliment qui s'écarte des autres (dispersion) et un repas globalement gonflé ou rétréci (échelle) —
+jamais une interdiction absolue.
+
+**Minimisation.** Descente par coordonnées en espace logarithmique ; chaque coordonnée est résolue
+par une grille de 48 points puis une recherche en section dorée autour de chaque vallée détectée (le
+coût 1D n'est pas garanti unimodal — mesuré). Multi-départ (quantité actuelle, référence, quantité
+mise à l'échelle du besoin calorique) : le résultat de coût le plus bas est retenu.
 
 La quantité finale est arrondie : pas de la catégorie pour les aliments fractionnables, unités
-entières pour les autres (jamais 1,37 œuf).
+entières pour les autres (jamais 1,37 œuf). Aucune logique de pas par aliment dans l'optimiseur —
+`roundQuantity()` s'en charge seul, après coup.
 
 **Unités.** Pour tout aliment non fractionnable possédant un poids par unité, la quantité stockée
 est toujours un multiple entier de ce poids — que tu saisisses en unités (3 tranches) ou en grammes
@@ -109,25 +134,59 @@ planning, petits-déjeuners, collations, ajustement automatique, batch, courses.
 restent en grammes dans les deux cas. Les boutons + et − du champ utilisent le poids d'une unité
 comme pas (13 → 26 → 39 → 52 pour une tranche de 13 g), jamais 1 g.
 
-| Catégorie | Bornes | Ancrage | Comportement |
+| Catégorie | Bornes | réf_cat (`def`) | E_cat |
 |---|---|---|---|
-| Protéine | 50–250 g | 0,15 | variable principale |
-| Féculent | 20–400 g | 0,05 | variable principale |
-| Matière grasse | 2–45 g | 0,12 | variable d'appoint |
-| Produit laitier | 40–500 g | 0,15 | variable |
-| Oléagineux | 5–80 g | 1,2 | bouge peu |
-| Fruit | 30–260 g | 15 | quasi figé |
-| Légume | 60–320 g | 40 | **jamais utilisé pour remplir les calories** |
-| Autre | 5–300 g | 2,5 | bouge peu |
+| Protéine | 50–250 g | 150 | 164 |
+| Féculent | 20–400 g | 90 | 266 |
+| Légumineuse | 40–300 g | 150 | 207 |
+| Légume | 60–320 g | 200 | 65 |
+| Fruit | 30–260 g | 120 | 78 |
+| Produit laitier | 40–500 g | 150 | 112 |
+| Matière grasse | 2–45 g | 10 | 90 |
+| Noix & graines (id `oleagineux`) | 5–80 g | 20 | 148 |
+| Autre | 5–300 g | 60 | 100 |
+
+Les catégories ne sont ni une classification nutritionnelle ni une taxonomie : elles ne donnent
+qu'un ordre de grandeur de proportion réaliste dans un repas.
 
 Garanties de l'algorithme :
 - une quantité 🔒 verrouillée n'est **jamais** modifiée ;
 - une quantité que tu viens de saisir est traitée comme fixe pendant le recalcul (« épinglée ») ;
 - aucun aliment n'est jamais ajouté ni supprimé automatiquement ;
+- aucun plafond de masse spécifique à une catégorie (la référence en joue déjà le rôle, en plus
+  souple, car négociable contre la nutrition au lieu de l'interdire) ;
 - si la cible est inatteignable, le repas est conservé tel quel, les écarts sont affichés et une
   piste est proposée (« manque protéine maigre… ») — rien n'est déformé pour atteindre les chiffres.
 
+Le bouton **« Ajuster maintenant »** force un ajustement explicite même quand le réglage
+« Ajustement automatique » est décoché — seul l'ajustement déclenché automatiquement (ajout,
+saisie, duplication…) reste soumis à ce réglage.
+
 **Tolérance.** ±5 % par défaut (modifiable). Vert = dans la cible, orange = proche, rouge = éloigné.
+
+**Volume du repas (V1.4).** Un repas peut atteindre ses objectifs nutritionnels tout en
+représentant une quantité de nourriture très importante à consommer en une seule fois. C'est un
+problème **distinct** du problème nutritionnel : `js/core/meal-volume.js` est une couche
+strictement séparée de l'optimiseur — purement informative, elle ne modifie jamais une quantité, une
+macro, ni l'optimiseur, et ne bloque jamais la validation d'un repas. La supprimer (avec son import
+dans l'éditeur) laisse le moteur nutritionnel strictement identique.
+
+La masse d'assiette est la somme des ingrédients dans l'état **réellement présent dans l'assiette**
+(pas la somme brute des quantités saisies, qui n'est pas une grandeur physique quand les états
+diffèrent) : un ingrédient pesé cru contribue `quantité × cookedFactor`, un ingrédient déjà pesé
+cuit / égoutté / prêt contribue sa quantité telle quelle. Un ingrédient pesé cru sans `cookedFactor`
+renseigné n'invente aucun facteur : il est exclu du total, qui est alors signalé comme une
+estimation partielle.
+
+```
+≤ 600 g              aucun avertissement
+> 600 g et ≤ 750 g    « Repas volumineux »
+> 750 g et ≤ 900 g    « Repas très volumineux »
+> 900 g               « Repas extrêmement volumineux »
+```
+
+Ces seuils sont des constantes internes (pas de réglage utilisateur en V1.4). L'avertissement
+n'apparaît que dans l'éditeur de repas, jamais dans le planning.
 
 ## 4. Écrans
 
@@ -274,6 +333,7 @@ possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
 
 ```bash
 node tests/engine.test.mjs    # moteur, batch, courses, unités, cru/cuit — sans dépendance
+node tests/volume.test.mjs    # analyse du volume d'un repas — sans dépendance
 npm i jsdom && node tests/ui.test.mjs   # parcours réel de l'interface
 ```
 
@@ -294,7 +354,7 @@ planning, catalogues, paramètres). **Importer un JSON** le restaure intégralem
 ## 10. Données livrées
 
 La banque initiale contient des aliments courants avec des valeurs **génériques** : protéines,
-féculents, légumes, fruits, produits laitiers, matières grasses, oléagineux, pains et wraps.
+féculents, légumineuses, légumes, fruits, produits laitiers, matières grasses, noix & graines, pains et wraps.
 Elles ne prétendent correspondre à aucune marque. Pour un produit précis (whey, pain croustillant,
 fromage tartinable, skyr d'une marque donnée…), crée l'aliment et recopie les valeurs de
 l'emballage. Les prix et conditionnements sont eux aussi indicatifs et modifiables.
