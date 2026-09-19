@@ -478,16 +478,108 @@ function solveFromStart(vars, fixed, t, startOf, iterations) {
     if (move < 0.05) break;
   }
 
+  return { q, cost: costOf(vars, fixed, t, q) };
+}
+
+/** Coût total (même formule que `solveFromStart`) pour un vecteur de quantités déjà fixé. */
+function costOf(vars, fixed, t, q) {
+  const n = vars.length;
+  const sum = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+  for (let i = 0; i < n; i++) for (const k of MACRO_ORDER) sum[k] += vars[i].per1[k] * q[i];
   let macroCost = 0;
   for (const k of MACRO_ORDER) {
     const d = (sum[k] + fixed[k] - t[k]) / t[k];
     macroCost += WEIGHTS[k] * welschLoss(d);
   }
+  const u = q.map((qi, i) => Math.log(qi / vars[i].ref));
   const meanU = n ? u.reduce((s, x) => s + x, 0) / n : 0;
   const dispersion = u.reduce((s, x) => s + (x - meanU) ** 2, 0);
-  const cost = macroCost + BETA * (dispersion + GAMMA * n * meanU * meanU);
+  return macroCost + BETA * (dispersion + GAMMA * n * meanU * meanU);
+}
 
-  return { q, cost };
+/**
+ * Ramène le résultat continu à des quantités réellement accessibles.
+ *
+ * Un aliment non fractionnable (`isWholeUnitFood`) ne peut exister qu'en
+ * multiples entiers de son poids par unité. `roundQuantity()` le fait déjà,
+ * mais SEULE, indépendamment par variable, elle ne redonne jamais la main
+ * aux autres variables : l'écart introduit par le palier n'est alors jamais
+ * compensé, et un repas peut sortir de la tolérance macro alors qu'une
+ * composition tout aussi proche des bornes et des pas existants l'aurait
+ * respectée (cause identifiée : régression V1.4, cf. Test J).
+ *
+ * Principe : pour chaque aliment non fractionnable, le palier le plus proche
+ * de l'optimum continu est UN candidat ; son palier voisin immédiat — celui
+ * que l'arrondi au plus proche écarte de justesse — en est un second. Pour
+ * chaque combinaison candidate, les aliments non fractionnables sont figés à
+ * leur palier (même mécanisme que le verrouillage : contribution fixe), puis
+ * les variables FRACTIONNABLES restantes sont réoptimisées avec le même
+ * `solveFromStart`, le même coût, le même multi-départ — rien de nouveau
+ * n'est introduit, aucun terme spécifique à un aliment. La combinaison
+ * retenue est celle de coût total le plus bas.
+ *
+ * Bornée explicitement à 1 + k candidats (k = nombre d'aliments non
+ * fractionnables déverrouillés) : la combinaison « tous au palier le plus
+ * proche », puis un seul palier voisin exploré À LA FOIS pour chacun — jamais
+ * le produit cartésien 2^k. Si aucun aliment non fractionnable n'est présent,
+ * c'est un no-op strict : comportement identique à avant cette fonction.
+ */
+function roundForFinalQuantities(vars, fixed, t, best, starts, iterations) {
+  const wholeIdx = [];
+  for (let i = 0; i < vars.length; i++) if (isWholeUnitFood(vars[i].food)) wholeIdx.push(i);
+
+  if (!wholeIdx.length) {
+    return vars.map((v, i) => roundQuantity(v.food, clamp(best.q[i], v.min, v.max), v.min, v.max));
+  }
+
+  // pour chaque aliment non fractionnable : palier le plus proche + palier voisin écarté de justesse
+  const nearest = {};
+  const alt = {};
+  for (const i of wholeIdx) {
+    const v = vars[i];
+    const g = Number(v.food.gramsPerUnit);
+    const q = clamp(best.q[i], v.min, v.max);
+    const kMin = Math.max(1, Math.ceil(v.min / g));
+    const kMax = Math.max(kMin, Math.floor(v.max / g));
+    const kNearest = clamp(Math.round(q / g), kMin, kMax);
+    const kFloor = clamp(Math.floor(q / g), kMin, kMax);
+    const kCeil = clamp(Math.ceil(q / g), kMin, kMax);
+    const kAlt = kNearest === kFloor ? kCeil : kFloor;
+    nearest[i] = kNearest * g;
+    alt[i] = kAlt !== kNearest ? kAlt * g : null; // pas de second palier distinct (borne atteinte)
+  }
+
+  const others = vars.filter((_, i) => !wholeIdx.includes(i));
+
+  /** Fige les aliments non fractionnables aux quantités données, réoptimise le reste. */
+  function evaluate(wholeQty) {
+    const fixed2 = { ...fixed };
+    for (const i of wholeIdx) for (const k of MACRO_ORDER) fixed2[k] += vars[i].per1[k] * wholeQty[i];
+    let localBest = null;
+    for (const startOf of starts) {
+      const r = solveFromStart(others, fixed2, t, startOf, iterations);
+      if (!localBest || r.cost < localBest.cost - 1e-9) localBest = r;
+    }
+    const roundedOthers = others.map((v, i) => roundQuantity(v.food, clamp(localBest.q[i], v.min, v.max), v.min, v.max));
+    const full = new Array(vars.length);
+    let oi = 0;
+    for (let i = 0; i < vars.length; i++) full[i] = wholeIdx.includes(i) ? wholeQty[i] : roundedOthers[oi++];
+    return { full, cost: costOf(vars, fixed, t, full) };
+  }
+
+  const baseline = {};
+  for (const i of wholeIdx) baseline[i] = nearest[i];
+  let bestCandidate = evaluate(baseline);
+
+  // un seul palier voisin exploré À LA FOIS (jamais le produit cartésien) :
+  // borné à k candidats supplémentaires, k = nombre d'aliments non fractionnables.
+  for (const i of wholeIdx) {
+    if (alt[i] === null) continue;
+    const evaluated = evaluate({ ...baseline, [i]: alt[i] });
+    if (evaluated.cost < bestCandidate.cost - 1e-9) bestCandidate = evaluated;
+  }
+
+  return bestCandidate.full;
 }
 
 /**
@@ -514,6 +606,12 @@ function solveFromStart(vars, fixed, t, startOf, iterations) {
  * pas garanti unimodal). Multi-départ (quantité actuelle, référence, quantité
  * mise à l'échelle du besoin calorique) : on retient le résultat de coût le
  * plus bas, pour éviter de rester bloqué dans un minimum local médiocre.
+ *
+ * Arrondi final (`roundForFinalQuantities`) : pour un aliment non
+ * fractionnable, le palier le plus proche de l'optimum continu et son palier
+ * voisin sont chacun essayés, les variables fractionnables étant à chaque
+ * fois réoptimisées autour — sinon l'écart introduit par le palier n'est
+ * jamais compensé par le reste du repas.
  *
  * Garanties :
  *  - aucun ingrédient n'est ajouté ni supprimé ;
@@ -593,12 +691,12 @@ export function adjustQuantities(items, foodsById, target, person, options = {})
     if (!best || r.cost < best.cost - 1e-9) best = r;
   }
 
+  const rounded = roundForFinalQuantities(vars, fixed, t, best, starts, iterations);
+
   let changed = false;
   for (let i = 0; i < vars.length; i++) {
-    const v = vars[i];
-    const rounded = roundQuantity(v.food, clamp(best.q[i], v.min, v.max), v.min, v.max);
-    result[v.id] = rounded;
-    if (Math.abs(rounded - v.q0) > 0.001) changed = true;
+    result[vars[i].id] = rounded[i];
+    if (Math.abs(rounded[i] - vars[i].q0) > 0.001) changed = true;
   }
   return { quantities: result, changed };
 }

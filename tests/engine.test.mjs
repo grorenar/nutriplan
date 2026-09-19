@@ -369,6 +369,65 @@ test('V1.4 — les bornes ne sont pas le mécanisme porteur (scénario normal)',
   }).join(' | '));
 });
 
+/* ============================================== V1.4.1 — QUANTIFICATION DISCRÈTE */
+/*
+ * Correction : l'optimisation continue reste inchangée, mais un aliment non
+ * fractionnable n'est plus arrondi isolément en toute fin de calcul — les
+ * variables fractionnables restantes sont réoptimisées autour du palier
+ * retenu (cf. régression identifiée sur le Test J). Générique par
+ * construction : aucun de ces tests ne cite "wrap" dans le moteur.
+ */
+
+test('V1.4.1 — aliment non fractionnable différent du wrap (œuf) : la tolérance macro redevient atteignable', () => {
+  const target = { thomas: { kcal: 650, protein: 650 * 0.052, carbs: 650 * 0.114, fat: 650 * 0.033 } };
+  const items = [item(F('Blanc de poulet')), item(F('Riz basmati')), item(F('Huile d’olive')), item(F('Œuf entier'), 120)];
+  for (let i = 0; i < 3; i++) autoAdjust(items, byId, target);
+  show(items, target);
+  const egg = F('Œuf entier');
+  check('œuf = multiple entier de 60 g', items[3].qty.thomas % egg.gramsPerUnit === 0, `${items[3].qty.thomas} g`);
+  const m = mealMacros(items, byId, 'thomas');
+  check('thomas : kcal dans ±5 %', Math.abs(dev(m.kcal, target.thomas.kcal)) <= 0.05, `${m.kcal.toFixed(1)}`);
+});
+
+test('V1.4.1 — deux aliments non fractionnables simultanés (wrap + œuf) : pas de recherche combinatoire, une solution cohérente', () => {
+  const target = { thomas: { kcal: 850, protein: 850 * 0.052, carbs: 850 * 0.114, fat: 850 * 0.033 } };
+  const items = [item(F('Wrap'), 124), item(F('Œuf entier'), 120), item(F('Blanc de poulet')), item(F('Huile d’olive'))];
+  for (let i = 0; i < 3; i++) autoAdjust(items, byId, target);
+  show(items, target);
+  check('wrap = multiple entier de 62 g', items[0].qty.thomas % 62 === 0, `${items[0].qty.thomas} g`);
+  check('œuf = multiple entier de 60 g', items[1].qty.thomas % 60 === 0, `${items[1].qty.thomas} g`);
+  const m = mealMacros(items, byId, 'thomas');
+  check('thomas : kcal dans ±5 % avec deux aliments à l’unité en même temps', Math.abs(dev(m.kcal, target.thomas.kcal)) <= 0.05, `${m.kcal.toFixed(1)}`);
+});
+
+test('V1.4.1 — idempotence et absence d’oscillation avec un aliment non fractionnable', () => {
+  const target = { thomas: { kcal: 650, protein: 650 * 0.052, carbs: 650 * 0.114, fat: 650 * 0.033 } };
+  const items = [item(F('Blanc de poulet')), item(F('Riz basmati')), item(F('Huile d’olive')), item(F('Œuf entier'), 120)];
+  for (let i = 0; i < 3; i++) autoAdjust(items, byId, target); // convergence
+  const history = [items.map((it) => it.qty.thomas)];
+  for (let i = 0; i < 5; i++) {
+    autoAdjust(items, byId, target);
+    history.push(items.map((it) => it.qty.thomas));
+  }
+  info(history.map((h) => h.join('/')).join(' | '));
+  check('0 g de déplacement dès le 1er passage supplémentaire',
+    history.every((h) => JSON.stringify(h) === JSON.stringify(history[0])));
+  check('aucune oscillation entre deux états sur 5 applications de plus',
+    new Set(history.map((h) => JSON.stringify(h))).size === 1);
+});
+
+test('V1.4.1 — non-régression : sans aliment non fractionnable, comportement strictement inchangé', () => {
+  // scénario historique du Test D, sans aucun aliment à l'unité : doit retomber
+  // exactement sur les quantités connues d'avant cette correction.
+  const items = [item(F('Blanc de poulet')), item(F('Pâtes complètes')), item(F('Haricots verts'), 200)];
+  autoAdjust(items, byId, LUNCH);
+  items.push(item(F('Huile d’olive')));
+  autoAdjust(items, byId, LUNCH);
+  const q = items.map((it) => it.qty.thomas);
+  check('quantités identiques à la référence pré-correction (125, 185, 130, 27)',
+    q[0] === 125 && q[1] === 185 && q[2] === 130 && q[3] === 27, q.join(','));
+});
+
 /* ================================================================ UNITÉS */
 
 test('Unités — aliments non fractionnables et unités pratiques', () => {
