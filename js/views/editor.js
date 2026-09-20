@@ -296,22 +296,32 @@ function stockLabel(prep, disponibleGrams) {
 }
 
 /**
- * Composition détaillée d'une recette/préparation `portion` pour N portions —
+ * Composition détaillée d'une recette/préparation pour une échelle donnée —
  * dérivée de `recipe.items`/`recipeSnapshot.items` à l'affichage, jamais
- * stockée : "6 Wasa · 60 g St Môret · 160 g poulet" pour 2 portions.
+ * stockée. `scale` multiplie chaque `ci.qty` (la quantité de référence de
+ * l'ingrédient dans la composition) :
+ *  - `portion` : `scale` = nombre ENTIER de portions (ex. 2 → "6 Wasa · 60 g
+ *    St Môret · 160 g poulet") ;
+ *  - `weight`  : `scale` = quantité demandée ÷ somme des quantités de
+ *    référence (`portionGramsOf`), un ratio CONTINU (ex. 428 g demandés pour
+ *    une composition de référence de 200 g → scale = 2,14, "321 g Skyr ·
+ *    107 g flocons d'avoine") — même formule, seule l'échelle diffère.
  * Un aliment non fractionnable s'affiche dans SON unité (réutilise
- * `isWholeUnitFood`/`toUnits`/`unitLabel`) ; un aliment fractionnable en grammes.
+ * `isWholeUnitFood`/`toUnits`/`unitLabel`) ; un aliment fractionnable en
+ * grammes, avec `decimals` décimales (0 pour une portion, 1 pour un poids —
+ * `num()` élague déjà les décimales nulles, donc 428 g/200 g × 150 g = 321 g
+ * s'affiche sans décimale superflue, et 214 g/200 g × 150 g = "160,5 g").
  */
-function compositionLine(compositionItems, byId, portions) {
-  if (!portions || !compositionItems?.length) return '';
+function compositionLine(compositionItems, byId, scale, decimals = 0) {
+  if (!scale || !compositionItems?.length) return '';
   return compositionItems
     .map((ci) => {
       const food = byId[ci.foodId];
       if (!food) return null;
-      const scaled = (Number(ci.qty) || 0) * portions;
+      const scaled = (Number(ci.qty) || 0) * scale;
       return isWholeUnitFood(food)
         ? `${num(toUnits(food, scaled), 0)} ${unitLabel(food, toUnits(food, scaled))} ${esc(food.name)}`
-        : `${num(scaled, 0)} g ${esc(food.name)}`;
+        : `${num(scaled, decimals)} g ${esc(food.name)}`;
     })
     .filter(Boolean)
     .join(' · ');
@@ -345,6 +355,13 @@ function renderRecipeOrPreparationRow(it, byId, recipesMap, preparationsMap) {
   const virtualFood = isPrep ? preparationAsVirtualFood(prep, byId) : recipeAsVirtualFood(recipe, byId);
   const isPortion = (isPrep ? prep.recipeSnapshot?.kind : recipe.kind) === 'portion';
   const compositionItems = isPrep ? prep.recipeSnapshot?.items : recipe.items;
+  // somme des quantités de référence de la composition — la SEULE échelle
+  // pertinente pour déployer une recette `weight` proportionnellement
+  // (portionGramsOf est générique : elle ne dépend pas de `kind`). Jamais
+  // `baseGrams` ici : `baseGrams` est la référence de L'OPTIMISEUR (peut
+  // différer, ex. poids après cuisson), alors que la composition affichée
+  // doit toujours sommer EXACTEMENT à la quantité demandée.
+  const referenceTotal = portionGramsOf({ items: compositionItems });
   const step = quantityStep(virtualFood, { inUnits: isPortion });
 
   const qtyBoxes = PERSONS.map((person) => {
@@ -352,6 +369,10 @@ function renderRecipeOrPreparationRow(it, byId, recipesMap, preparationsMap) {
     const locked = !!it.locked[person];
     const portions = isPortion ? toUnits(virtualFood, qty) : 0;
     const shown = isPortion ? num(portions, 0) : num(qty, 1);
+    // portion : échelle entière (nombre de portions) ; weight : ratio continu
+    // quantité demandée ÷ composition de référence (ex. 428 g / 200 g = 2,14).
+    const scale = isPortion ? Math.round(portions) : qty / referenceTotal;
+    const composition = qty > 0 ? compositionLine(compositionItems, byId, scale, isPortion ? 0 : 1) : '';
     return `<div class="qty-box">
       <span class="person-name person-name--${person}">${PERSON_LABEL[person]}</span>
       <div class="qty-box__row">
@@ -362,7 +383,7 @@ function renderRecipeOrPreparationRow(it, byId, recipesMap, preparationsMap) {
         <button class="lock" data-lock="${it.id}" data-person="${person}" aria-pressed="${locked}"
                 title="${locked ? 'Quantité verrouillée' : 'Quantité ajustable'}">${locked ? '🔒' : '🔓'}</button>
       </div>
-      ${isPortion && qty > 0 ? `<small>${esc(compositionLine(compositionItems, byId, Math.round(portions)))}</small>` : ''}
+      ${composition ? `<small>${esc(composition)}</small>` : ''}
     </div>`;
   }).join('');
   return `<div class="item">

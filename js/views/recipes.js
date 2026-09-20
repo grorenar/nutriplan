@@ -9,6 +9,7 @@ import { getState, update, newRecipe, newRecipeItem } from '../core/store.js';
 import {
   CATEGORIES, STATES, recipeMacrosPer100g, canAddIngredientToRecipe,
   isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep, snapQuantity, initialQuantity,
+  portionGramsOf,
 } from '../core/nutrition.js';
 import { unitLabel, unitHint } from './editor.js';
 import { esc, num, normalize, toast, deepCopy } from '../core/util.js';
@@ -48,7 +49,7 @@ export function render(root) {
 function rowOf(r, s, byId) {
   const per100 = recipeMacrosPer100g(r, byId);
   const usedByPreparations = s.preparations.some((p) => p.recipeId === r.id);
-  const portionBase = r.items.reduce((sum, it) => sum + (Number(it.qty) || 0), 0);
+  const portionBase = portionGramsOf(r);
   return `<tr>
     <td><strong>${esc(r.name || '(sans nom)')}</strong></td>
     <td>${r.kind === 'weight' ? 'Au poids' : 'Portion'}</td>
@@ -91,7 +92,7 @@ function formPanel(s, byId) {
   const r = currentDraft(s);
   if (!r) return '';
   const per100 = recipeMacrosPer100g(r, byId);
-  const portionBase = r.items.reduce((sum, it) => sum + (Number(it.qty) || 0), 0);
+  const portionBase = portionGramsOf(r);
 
   const ingredientRows = r.items.length
     ? r.items.map((it, idx) => {
@@ -153,7 +154,7 @@ function formPanel(s, byId) {
             r.kind === 'weight'
               ? `<label class="field">Poids de référence (g)
                    <input type="number" min="1" step="1" data-r="baseGrams" value="${num(r.baseGrams, 0)}"></label>
-                 <small style="grid-column:1/-1">Poids RÉELLEMENT obtenu après cuisson pour cette composition — sert de référence à l'optimiseur, jamais une contrainte.</small>`
+                 <small style="grid-column:1/-1">Calculé automatiquement depuis la composition (${num(portionBase, 0)} g) — modifie-le uniquement si le poids RÉELLEMENT obtenu après cuisson diffère (perte/gain à la cuisson). Sert de référence à l'optimiseur, jamais une contrainte.</small>`
               : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). Utilisée dans un repas, la recette se sélectionne en nombre entier de portions.</small>`
           }
         </div>
@@ -175,6 +176,23 @@ function formPanel(s, byId) {
       </div>
     </div>
   </div>`;
+}
+
+/**
+ * Auto-dérivation de `baseGrams` pour une recette `weight` : tant que la
+ * valeur n'a pas été personnalisée par l'utilisateur (elle vaut 0/absente,
+ * ou elle correspond encore exactement à la somme calculée AVANT la
+ * modification en cours), elle suit automatiquement la somme des
+ * ingrédients — évite d'obliger une saisie manuelle pour le cas simple
+ * (150 g + 50 g = 200 g). Dès que l'utilisateur tape une valeur différente
+ * (ex. poids réellement obtenu après cuisson), elle n'est plus jamais
+ * recalculée automatiquement : aucune donnée saisie n'est écrasée.
+ */
+function syncAutoBaseGrams(draft, previousSum) {
+  if (draft.kind !== 'weight') return;
+  if (!draft.baseGrams || draft.baseGrams === previousSum) {
+    draft.baseGrams = portionGramsOf(draft);
+  }
 }
 
 function resetForm() {
@@ -217,7 +235,9 @@ function wire(root, s) {
           }
         }
         draft.kind = newKind;
-        if (draft.kind === 'weight' && !draft.baseGrams) draft.baseGrams = 0;
+        // en basculant vers "weight", la référence part de la composition
+        // actuelle (au lieu de forcer une saisie manuelle à 0).
+        if (draft.kind === 'weight' && !draft.baseGrams) draft.baseGrams = portionGramsOf(draft);
       } else draft.name = e.target.value;
       render(root);
     });
@@ -241,7 +261,9 @@ function wire(root, s) {
       if (!check.ok) { toast(check.reason, 'error'); return; }
       // quantité initiale cohérente avec l'aliment (comme dans l'éditeur de
       // repas) : 1 unité pour un non fractionnable, la référence de catégorie sinon.
+      const previousSum = portionGramsOf(draft);
       draft.items.push(newRecipeItem(foodId, initialQuantity(food), food.referenceState));
+      syncAutoBaseGrams(draft, previousSum);
       render(root);
     });
   });
@@ -274,7 +296,9 @@ function wire(root, s) {
       const grams = inUnits && food ? fromUnits(food, raw) : raw;
       // contrainte absolue : multiple entier de gramsPerUnit si non fractionnable
       // (même garantie que dans l'éditeur de repas — jamais 37 g de Wasa).
+      const previousSum = portionGramsOf(draft);
       item.qty = snapQuantity(food, grams);
+      syncAutoBaseGrams(draft, previousSum);
       render(root);
     });
   });
@@ -292,7 +316,9 @@ function wire(root, s) {
     btn.addEventListener('click', (e) => {
       const idx = Number(e.target.dataset.ingDel);
       const draft = currentDraft(getState());
+      const previousSum = portionGramsOf(draft);
       draft.items.splice(idx, 1);
+      syncAutoBaseGrams(draft, previousSum);
       render(root);
     });
   });

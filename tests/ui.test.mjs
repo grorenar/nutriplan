@@ -718,16 +718,110 @@ change(portionQtyInput(), '2.5');
 await wait();
 check('2,5 portions saisies manuellement → arrondi à un nombre ENTIER de portions (correction du bug de saisie manuelle non snappée)',
   portionQtyInput().value === '3', portionQtyInput().value);
+check('à 3 portions, l’unité affichée reste "portion" — jamais "3 g"',
+  /portion/.test(portionRow().querySelector('.item__unit').textContent) && !/^g$/.test(portionRow().querySelector('.item__unit').textContent.trim()));
 const savedItemGrams = store.getState().meals.flatMap((m) => m.items).find((it) =>
   store.getState().recipes.find((r) => r.id === it.recipeId)?.name === 'Toast poulet St Môret')?.qty.thomas;
 check('grammes réellement stockés = 3 × 143 g = 429 g (multiple exact du poids d’une portion)',
   savedItemGrams === 429, `${savedItemGrams} g`);
+check('composition déployée pour 3 portions : 9 tranches Wasa', /9 tranche/.test(portionRow().textContent), portionRow().textContent.replace(/\s+/g, ' '));
 
 // on restaure le réglage global pour la suite de la suite
 const autoBoxEnd = $('#drawer [data-auto]');
 if (autoBoxEnd && !autoBoxEnd.checked) { autoBoxEnd.checked = true; autoBoxEnd.dispatchEvent(new window.Event('change', { bubbles: true })); }
 await wait();
 
+click($('#drawer [data-close]'));
+await wait();
+
+console.log('\n— Écran Recettes : poids de référence (baseGrams) calculé automatiquement depuis la composition');
+click($('[data-view="recipes"]'));
+await wait();
+click($('[data-new]'));
+await wait();
+change($('[data-r="name"]'), 'Skyr avoine');
+change($('[data-r="kind"]'), 'weight');
+await wait();
+type($('[data-ing-search]'), 'skyr nature');
+click($$('[data-ing-add]').find((b) => /Skyr nature/i.test(b.textContent)));
+await wait();
+change($('[data-ing-qty="0"]'), '150');
+await wait();
+type($('[data-ing-search]'), 'flocons d');
+click($$('[data-ing-add]').find((b) => /Flocons/i.test(b.textContent)));
+await wait();
+change($('[data-ing-qty="1"]'), '50');
+await wait();
+check('baseGrams calculé automatiquement (150 + 50 = 200 g), sans saisie manuelle',
+  $('[data-r="baseGrams"]').value === '200', $('[data-r="baseGrams"]').value);
+
+// personnalisation manuelle (ex. perte à la cuisson) : plus jamais écrasée automatiquement ensuite
+change($('[data-r="baseGrams"]'), '180');
+await wait();
+change($('[data-ing-qty="0"]'), '160');
+await wait();
+check('baseGrams personnalisé (180 g) conservé après modification d’un ingrédient — jamais réécrasé automatiquement',
+  $('[data-r="baseGrams"]').value === '180', $('[data-r="baseGrams"]').value);
+// on repropre le scénario pour la suite : composition 150 + 50 = 200, baseGrams = 200
+change($('[data-ing-qty="0"]'), '150');
+await wait();
+change($('[data-r="baseGrams"]'), '200');
+await wait();
+
+click($('[data-save]'));
+await wait();
+check('recette weight "Skyr avoine" enregistrée', /Recette enregistrée/.test(document.getElementById('toasts')?.textContent || ''));
+const skyrRecipeSaved = store.getState().recipes.find((r) => r.name === 'Skyr avoine');
+check('composition de référence stockée : 150 g Skyr + 50 g flocons',
+  skyrRecipeSaved?.items.map((it) => it.qty).join(',') === '150,50', skyrRecipeSaved?.items.map((it) => it.qty).join(','));
+check('baseGrams = 200 g', skyrRecipeSaved?.baseGrams === 200, skyrRecipeSaved?.baseGrams);
+
+console.log('\n— Éditeur de repas : recette « weight » déployée proportionnellement (composition dérivée, jamais stockée)');
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[7]); // dernier créneau encore vide
+await wait();
+const autoBoxW = $('#drawer [data-auto]');
+if (autoBoxW.checked) { autoBoxW.checked = false; autoBoxW.dispatchEvent(new window.Event('change', { bubbles: true })); }
+await wait();
+const addSkyrBtn = () => $$('#drawer [data-add-recipe]').find((b) => b.closest('.item').textContent.includes('Skyr avoine'));
+check('la recette "Skyr avoine" apparaît dans le panneau "Recettes & préparations"', !!addSkyrBtn());
+click(addSkyrBtn());
+await wait();
+const skyrRow = () => $$('#drawer .item').find((el) => /Skyr avoine/.test(el.textContent) && /recette/.test(el.textContent));
+const skyrQtyInputs = () => skyrRow().querySelectorAll('[data-qty]');
+check('quantité initiale = poids de référence (200 g), affichée en grammes (jamais "portion")',
+  skyrQtyInputs()[0].value === '200' && skyrRow().querySelectorAll('.item__unit')[0].textContent.trim() === 'g',
+  `${skyrQtyInputs()[0].value} ${skyrRow().querySelectorAll('.item__unit')[0].textContent.trim()}`);
+
+change(skyrQtyInputs()[0], '428');
+await wait();
+let skyrText = skyrRow().textContent.replace(/\s+/g, ' ');
+check('428 g demandés (Thomas) — composition déployée : 321 g Skyr (428 × 150 / 200)', /321 g Skyr/.test(skyrText), skyrText);
+check('428 g demandés (Thomas) — composition déployée : 107 g flocons (428 × 50 / 200)', /107 g Flocons/.test(skyrText), skyrText);
+
+change(skyrQtyInputs()[1], '214');
+await wait();
+skyrText = skyrRow().textContent.replace(/\s+/g, ' ');
+check('214 g demandés (Julie) — composition déployée : 160,5 g Skyr (214 × 150 / 200)', /160,5 g Skyr/.test(skyrText), skyrText);
+check('214 g demandés (Julie) — composition déployée : 53,5 g flocons (214 × 50 / 200)', /53,5 g Flocons/.test(skyrText), skyrText);
+
+change(skyrQtyInputs()[0], '100');
+await wait();
+skyrText = skyrRow().textContent.replace(/\s+/g, ' ');
+check('conservation des proportions à une autre échelle (100 g, Thomas) : 75 g Skyr + 25 g flocons',
+  /75 g Skyr/.test(skyrText) && /25 g Flocons/.test(skyrText), skyrText);
+
+const skyrMeal = store.getState().meals.find((m) => m.items.some((it) =>
+  store.getState().recipes.find((r) => r.id === it.recipeId)?.name === 'Skyr avoine'));
+check('aucun nouvel item stocké dans le repas : la composition déployée est dérivée, jamais persistée',
+  skyrMeal.items.length === 1, skyrMeal.items.length);
+check('la quantité totale réellement stockée = 100 g (celle saisie, pas une somme déployée)',
+  skyrMeal.items[0].qty.thomas === 100, skyrMeal.items[0].qty.thomas);
+
+const autoBoxWEnd = $('#drawer [data-auto]');
+if (autoBoxWEnd && !autoBoxWEnd.checked) { autoBoxWEnd.checked = true; autoBoxWEnd.dispatchEvent(new window.Event('change', { bubbles: true })); }
+await wait();
 click($('#drawer [data-close]'));
 await wait();
 
