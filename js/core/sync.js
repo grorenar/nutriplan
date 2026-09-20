@@ -153,19 +153,29 @@ const foodFromRow = (r) => ({
   lastUsed: r.last_used ? new Date(r.last_used).toISOString() : null,
 });
 
-/** Un ingrédient = une ligne par personne (schéma demandé). */
+/**
+ * Un ingrédient = une ligne par personne (schéma demandé).
+ * `recipeId`/`preparationId`/`section`/`zeroWaste` inclus depuis l'étape
+ * recettes/préparations : un item peut référencer une recette (mode "molle")
+ * ou une préparation (utilisation ferme) au lieu d'un aliment — ces trois
+ * champs sont mutuellement exclusifs avec `foodId`/`free`, jamais recalculés.
+ */
 function itemRows(item, parentKey, parentId) {
   return PERSONS.map((person) => ({
     id: `${item.id}:${person}`,
     item_id: item.id,
     [parentKey]: parentId,
     food_id: item.foodId,
+    recipe_id: item.recipeId || null,
+    preparation_id: item.preparationId || null,
+    section: item.section || null,
     free_ingredient_name: item.free?.name || null,
     free_ingredient_quantity: item.free?.quantity || null,
     person,
     quantity_g: item.qty?.[person] || 0,
     locked: !!item.locked?.[person],
     reference_state: item.state,
+    zero_waste: item.zeroWaste === true,
   }));
 }
 
@@ -175,11 +185,17 @@ function itemsFromRows(rows, parentKey, parentId) {
     if (!byItem.has(r.item_id)) {
       byItem.set(r.item_id, {
         id: r.item_id,
+        // NULL/absent = ancien item ou aliment direct : convention déjà
+        // établie côté local (store.js) — 'plat' à la LECTURE, jamais réécrit.
+        section: r.section || undefined,
         foodId: r.food_id,
+        recipeId: r.recipe_id || null,
+        preparationId: r.preparation_id || null,
         free: r.free_ingredient_name ? { name: r.free_ingredient_name, quantity: r.free_ingredient_quantity } : null,
         state: r.reference_state,
         qty: { thomas: 0, julie: 0 },
         locked: { thomas: false, julie: false },
+        zeroWaste: r.zero_waste === true,
       });
     }
     const it = byItem.get(r.item_id);
@@ -188,6 +204,81 @@ function itemsFromRows(rows, parentKey, parentId) {
   }
   return [...byItem.values()];
 }
+
+/**
+ * Recettes/préparations (catalogue) — table par table, mêmes conventions que
+ * `foodRow`/`foodFromRow`. Les macros ne sont jamais stockées : seule la
+ * composition (`recipe_items`) l'est, recalculée à la lecture (nutrition.js).
+ */
+const recipeRow = (r) => ({
+  id: r.id,
+  name: r.name,
+  kind: r.kind,
+  base_grams: r.baseGrams === null || r.baseGrams === undefined ? null : r.baseGrams,
+  batch_allowed: r.batchAllowed === true,
+  shelf_life_days: r.shelfLifeDays ?? null,
+  cooking_method: r.cookingMethod || null,
+  cooking_temp: r.cookingTemp ?? null,
+  cooking_time: r.cookingTime ?? null,
+  prep_time: r.prepTime ?? null,
+  equipment: r.equipment || null,
+  instructions: r.instructions || null,
+});
+
+const recipeFromRow = (row) => ({
+  id: row.id,
+  name: row.name,
+  kind: row.kind,
+  baseGrams: row.base_grams === null || row.base_grams === undefined ? null : Number(row.base_grams),
+  items: [], // rempli séparément depuis recipe_items (recipeItemsFromRows)
+  batchAllowed: row.batch_allowed === true,
+  shelfLifeDays: row.shelf_life_days === null || row.shelf_life_days === undefined ? null : Number(row.shelf_life_days),
+  cookingMethod: row.cooking_method || '',
+  cookingTemp: row.cooking_temp ?? null,
+  cookingTime: row.cooking_time ?? null,
+  prepTime: row.prep_time ?? null,
+  equipment: row.equipment || '',
+  instructions: row.instructions || '',
+});
+
+const recipeItemRow = (ri, recipeId) => ({
+  id: ri.id,
+  recipe_id: recipeId,
+  food_id: ri.foodId,
+  quantity: ri.qty,
+  reference_state: ri.state,
+});
+
+function recipeItemsFromRows(rows, recipeId) {
+  return rows
+    .filter((r) => r.recipe_id === recipeId)
+    .map((r) => ({ id: r.id, foodId: r.food_id, qty: Number(r.quantity) || 0, state: r.reference_state }));
+}
+
+/**
+ * Une préparation est un événement réel figé : `recipe_snapshot` est stocké
+ * tel quel en JSONB (copie profonde de `{ kind, baseGrams, items }` au
+ * moment de la création côté client, cf. `newPreparation()`), jamais
+ * recalculé depuis la recette source — passthrough direct, aucune
+ * transformation de champ ici.
+ */
+const preparationRow = (p) => ({
+  id: p.id,
+  recipe_id: p.recipeId,
+  label: p.label || null,
+  prepared_quantity: p.preparedQuantity,
+  created_at: p.createdAt,
+  recipe_snapshot: p.recipeSnapshot,
+});
+
+const preparationFromRow = (row) => ({
+  id: row.id,
+  recipeId: row.recipe_id,
+  label: row.label || '',
+  preparedQuantity: Number(row.prepared_quantity) || 0,
+  createdAt: row.created_at,
+  recipeSnapshot: row.recipe_snapshot,
+});
 
 export function stateToTables(s) {
   const settings = {
@@ -253,8 +344,15 @@ export function stateToTables(s) {
     return { id: `batch:${key}`, preparation_session: Number(session), food_id: foodId, preparation_quantity: grams };
   });
 
+  const recipes = s.recipes.map(recipeRow);
+  const recipe_items = s.recipes.flatMap((r) => r.items.map((ri) => recipeItemRow(ri, r.id)));
+  const preparations = s.preparations.map(preparationRow);
+
   return {
     foods: s.foods.map(foodRow),
+    recipes,
+    recipe_items,
+    preparations,
     targets,
     settings: [settings],
     meals,
@@ -271,6 +369,13 @@ export function stateToTables(s) {
 export function tablesToState(t) {
   const s = defaultState();
   if (t.foods?.length) s.foods = t.foods.map(foodFromRow);
+
+  s.recipes = (t.recipes || []).map((row) => {
+    const recipe = recipeFromRow(row);
+    recipe.items = recipeItemsFromRows(t.recipe_items || [], row.id);
+    return recipe;
+  });
+  s.preparations = (t.preparations || []).map(preparationFromRow);
 
   const cfg = t.settings?.[0];
   if (cfg) {
@@ -328,6 +433,9 @@ export function tablesToState(t) {
 
 export const TABLES = [
   'foods',
+  'recipes',
+  'recipe_items',
+  'preparations',
   'targets',
   'settings',
   'meals',

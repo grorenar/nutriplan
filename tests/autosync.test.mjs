@@ -14,7 +14,10 @@ import {
   __setTestClient, syncNow, pull, push, planSync, shouldCheckRemote, fetchRemoteStamp, sameStamp,
   stateToTables, isConfigured,
 } from '../js/core/sync.js';
-import { getState, replaceState, update, defaultState, subscribe } from '../js/core/store.js';
+import {
+  getState, replaceState, update, defaultState, subscribe, ensureCycleMeals,
+  newRecipe, newRecipeItem, newPreparation, newRecipeMealItem, newPreparationItem,
+} from '../js/core/store.js';
 
 // stockage local minimal : node n'en fournit pas, et l'application en dépend
 if (typeof globalThis.localStorage === 'undefined') {
@@ -360,6 +363,78 @@ await test('Horodatage : formats PostgreSQL et JavaScript comparés par instant'
   const after = await syncNow();
   check('aucune récupération inutile après un envoi', after.action === 'up-to-date', after.reason);
   check('aucune table retéléchargée', remote.calls.select === selectsBefore);
+});
+
+await test('Recettes/préparations : envoyées et récupérées correctement (bug réel corrigé — TABLES ne les listait pas)', async () => {
+  const local = defaultState();
+  ensureCycleMeals(local);
+  const wasa = local.foods.find((f) => /Pain croustillant/i.test(f.name));
+  const stmoret = local.foods.find((f) => /Fromage frais tartinable/i.test(f.name));
+  const riz = local.foods.find((f) => /Riz basmati/i.test(f.name)) || local.foods[0];
+
+  const weightRecipe = newRecipe('Riz simple', 'weight');
+  weightRecipe.items = [newRecipeItem(riz.id, 300, 'cru')];
+  weightRecipe.baseGrams = 300;
+
+  const portionRecipe = newRecipe('Wasa fromage frais', 'portion');
+  portionRecipe.items = [newRecipeItem(wasa.id, 33, 'pret'), newRecipeItem(stmoret.id, 20, 'pret')];
+
+  local.recipes.push(weightRecipe, portionRecipe);
+  const prep = newPreparation(weightRecipe, 900, 'Riz simple #1');
+  local.preparations.push(prep);
+
+  // un item de repas référence directement la recette (mode "molle", pas
+  // encore préparée) : vérifie que recipeId/section/zeroWaste survivent eux
+  // aussi (itemRows()/itemsFromRows() les ignoraient totalement avant ce correctif).
+  const meal = local.meals[0];
+  const recipeItem = newRecipeMealItem(portionRecipe.id, 53);
+  recipeItem.section = 'dessert';
+  meal.items.push(recipeItem);
+  const prepItem = newPreparationItem(prep.id, 200);
+  prepItem.zeroWaste = true;
+  meal.items.push(prepItem);
+
+  setLocal(local, { dirty: true, remoteStamp: null });
+  const remote = useRemote({ tables: { settings: [] } }); // base distante vide au départ
+
+  const pushed = await syncNow();
+  check('envoi effectué', pushed.action === 'push', pushed.reason);
+
+  check('le payload envoyé contient la recette au poids', remote.tables.recipes.some((r) => r.name === 'Riz simple'));
+  check('le payload envoyé contient la recette portion', remote.tables.recipes.some((r) => r.name === 'Wasa fromage frais'));
+  check('recipe_items envoyés pour les deux recettes (1 + 2 = 3 lignes)',
+    remote.tables.recipe_items.length === 3, remote.tables.recipe_items.length);
+  check('preparations envoyée avec son recipe_snapshot figé',
+    remote.tables.preparations.length === 1 && remote.tables.preparations[0].recipe_snapshot?.kind === 'weight');
+  check('recipe_id de l’item de repas envoyé (pas perdu)',
+    remote.tables.meal_items.some((r) => r.recipe_id === portionRecipe.id));
+  check('section de l’item de repas envoyée (pas perdue)',
+    remote.tables.meal_items.some((r) => r.recipe_id === portionRecipe.id && r.section === 'dessert'));
+  check('preparation_id + zero_waste de l’item de repas envoyés (pas perdus)',
+    remote.tables.meal_items.some((r) => r.preparation_id === prep.id && r.zero_waste === true));
+
+  // un AUTRE appareil, vierge, récupère cette même base : round-trip complet
+  setLocal(defaultState(), { dirty: false, remoteStamp: null });
+  const pulled = await syncNow();
+  check('récupération effectuée sur le second appareil', pulled.action === 'pull', pulled.reason);
+
+  const gotWeight = getState().recipes.find((r) => r.name === 'Riz simple');
+  const gotPortion = getState().recipes.find((r) => r.name === 'Wasa fromage frais');
+  check('recette au poids récupérée avec sa composition et son baseGrams',
+    !!gotWeight && gotWeight.kind === 'weight' && gotWeight.baseGrams === 300 && gotWeight.items.length === 1);
+  check('recette portion récupérée avec ses 2 ingrédients',
+    !!gotPortion && gotPortion.kind === 'portion' && gotPortion.items.length === 2);
+  const gotPrep = getState().preparations.find((p) => p.label === 'Riz simple #1');
+  check('préparation récupérée avec sa quantité et son snapshot figé',
+    !!gotPrep && gotPrep.preparedQuantity === 900 && gotPrep.recipeSnapshot?.items?.length === 1);
+
+  const gotMeal = getState().meals.find((m) => m.dayIndex === meal.dayIndex && m.mealType === meal.mealType);
+  const gotRecipeItem = gotMeal?.items.find((it) => it.recipeId === gotPortion.id);
+  check('item de repas référençant la recette récupéré (recipeId préservé)', !!gotRecipeItem);
+  check('sa section est préservée ("dessert", pas retombée sur "plat")', gotRecipeItem?.section === 'dessert');
+  const gotPrepItem = gotMeal?.items.find((it) => it.preparationId === gotPrep.id);
+  check('item de repas référençant la préparation récupéré (preparationId préservé)', !!gotPrepItem);
+  check('son mode zéro reste est préservé', gotPrepItem?.zeroWaste === true);
 });
 
 await test('Horodatage distant : requête minimale', async () => {
