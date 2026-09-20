@@ -477,15 +477,39 @@ export function evaluate(macros, target, tolerance = 0.05) {
 /* Ajustement automatique                                              */
 /* ------------------------------------------------------------------ */
 
-/** Poids relatifs des macros dans la fonction de coût. */
 /**
- * Les kcal sont une grandeur LARGEMENT REDONDANTE avec P/C/L (≈ 4P + 4C + 9L).
- * Leur donner le même poids que les macros pousse l'algorithme à gonfler les protéines
- * et les glucides pour compenser des calories manquantes (typiquement quand aucune
- * matière grasse n'est présente). On les pondère donc faiblement : les macros pilotent,
- * les calories suivent, et l'écart calorique restant est signalé à l'utilisateur.
+ * Coût asymétrique par macro (décision verrouillée, calibration validée) :
+ * kcal et lipides sont des PLAFONDS (dépasser la cible est fortement pénalisé,
+ * être en dessous est acceptable) ; les protéines sont un PLANCHER SOUPLE
+ * (être en dessous est pénalisé, dépasser est largement toléré mais jamais
+ * gratuit) ; les glucides restent un objectif SOUPLE et SYMÉTRIQUE, nettement
+ * secondaire (ils ne doivent jamais prendre le dessus sur kcal/lipides/protéines).
+ *
+ * Priorité résultante : kcal > lipides > protéines > glucides.
+ *
+ * Chaque macro a un poids "côté indolore" (W_SOFT) et un poids "côté pénalisé"
+ * (W_HARD) selon le SIGNE de l'écart (cf. macroCost()) — une simple pondération
+ * symétrique (l'ancien WEIGHTS) ne peut pas exprimer cette asymétrie, puisque
+ * welschLoss(d) ne dépend que de d². Le côté pénalisé utilise en plus une
+ * constante de saturation (C_HARD) plus large que celle du côté indolore
+ * (C_SOFT = l'ancien WELSCH_C) : le "coude" où la perte de Welsch cesse de
+ * réagir à l'écart recule, pour que la pression de retour reste sensible sur
+ * une plage de dépassement plus large — sans jamais devenir un coût non borné
+ * (on conserve la philosophie Welsch : jamais de composition absurde pour une
+ * cible structurellement inatteignable).
+ *
+ * Rappel historique conservé : les kcal restent, par construction, largement
+ * redondantes avec P/C/L (≈ 4P + 4C + 9L) — ce n'est plus géré en sous-pondérant
+ * kcal en permanence (ancien WEIGHTS.kcal = 0.35), mais en acceptant sans frais
+ * un léger déficit calorique (W_SOFT.kcal) : la même intention (ne pas gonfler
+ * les macros pour combler un manque de kcal), exprimée par le signe plutôt que
+ * par une pondération globale.
  */
-const WEIGHTS = { kcal: 0.35, protein: 1.4, carbs: 1.0, fat: 1.0 };
+const MACRO_ROLE = { kcal: 'ceiling', fat: 'ceiling', protein: 'floor', carbs: 'soft' };
+/** Poids côté indolore (sous la cible pour un plafond, au-dessus pour un plancher). */
+const W_SOFT = { kcal: 0.12, fat: 0.20, protein: 0.12, carbs: 0.60 };
+/** Poids côté pénalisé (dépassement d'un plafond, déficit d'un plancher). */
+const W_HARD = { kcal: 3.20, fat: 2.00, protein: 1.00, carbs: 0.60 };
 
 /** Arrondi final tenant compte des unités non fractionnables. */
 /** Un aliment est-il saisi par unités entières ? (générique : tout aliment non fractionnable) */
@@ -578,14 +602,33 @@ export function initialQuantity(food) {
  * `C` fixe l'échelle à laquelle la perte « accepte » de manquer la cible
  * plutôt que de produire une composition absurde.
  */
-const WELSCH_C = 0.08;
+const C_SOFT = 0.08; // côté indolore (= ancien WELSCH_C, inchangé)
+/** Côté pénalisé (dépassement d'un plafond, déficit d'un plancher) : le coude
+ * de saturation recule, pour que la pression de retour reste sensible sur une
+ * plage de dépassement plus large — toujours borné, jamais un coût infini. */
+const C_HARD = 0.30;
 
 /** Poids de la pénalité de disproportion (dispersion + échelle globale). */
 const BETA = 0.006;
 /** Poids du terme d'échelle globale à l'intérieur de la pénalité. */
 const GAMMA = 3;
 
-const welschLoss = (d) => WELSCH_C * (1 - Math.exp(-(d * d) / (2 * WELSCH_C)));
+const welschLoss = (d, C = C_SOFT) => C * (1 - Math.exp(-(d * d) / (2 * C)));
+
+/**
+ * Coût d'une macro pour un écart relatif signé `d = (valeur - cible) / cible`.
+ * Point d'entrée UNIQUE de l'asymétrie plafond/plancher/souple (cf. commentaire
+ * de MACRO_ROLE/W_SOFT/W_HARD ci-dessus) — utilisé identiquement par `costOf()`
+ * et par `costAt()` dans `solveFromStart()`, pour qu'ils ne puissent jamais diverger.
+ */
+export function macroCost(k, d) {
+  const role = MACRO_ROLE[k];
+  if (role === 'soft') return W_HARD[k] * welschLoss(d, C_SOFT); // glucides : symétrique
+  const bad = role === 'ceiling' ? d > 0 : d < 0;
+  const w = bad ? W_HARD[k] : W_SOFT[k];
+  const C = bad ? C_HARD : C_SOFT;
+  return w * welschLoss(d, C);
+}
 
 const GOLDEN = (Math.sqrt(5) - 1) / 2;
 
@@ -670,18 +713,18 @@ function solveFromStart(vars, fixed, t, startOf, iterations) {
 
       const costAt = (x) => {
         const qi = Math.exp(x);
-        let macroCost = 0;
+        let mCost = 0;
         for (const k of MACRO_ORDER) {
           const val = sumOthers[k] + v.per1[k] * qi;
           const d = (val + fixed[k] - t[k]) / t[k];
-          macroCost += WEIGHTS[k] * welschLoss(d);
+          mCost += macroCost(k, d);
         }
         const ui = x - refLn[i];
         const s1 = sumU + ui;
         const s2 = sumU2 + ui * ui;
         const dispersion = s2 - (s1 * s1) / n;
         const scaleTerm = (GAMMA * s1 * s1) / n;
-        return macroCost + BETA * (dispersion + scaleTerm);
+        return mCost + BETA * (dispersion + scaleTerm);
       };
 
       const { x } = minimize1D(costAt, Math.log(v.min), Math.log(v.max));
@@ -702,15 +745,15 @@ function costOf(vars, fixed, t, q) {
   const n = vars.length;
   const sum = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   for (let i = 0; i < n; i++) for (const k of MACRO_ORDER) sum[k] += vars[i].per1[k] * q[i];
-  let macroCost = 0;
+  let mCost = 0;
   for (const k of MACRO_ORDER) {
     const d = (sum[k] + fixed[k] - t[k]) / t[k];
-    macroCost += WEIGHTS[k] * welschLoss(d);
+    mCost += macroCost(k, d);
   }
   const u = q.map((qi, i) => Math.log(qi / vars[i].ref));
   const meanU = n ? u.reduce((s, x) => s + x, 0) / n : 0;
   const dispersion = u.reduce((s, x) => s + (x - meanU) ** 2, 0);
-  return macroCost + BETA * (dispersion + GAMMA * n * meanU * meanU);
+  return mCost + BETA * (dispersion + GAMMA * n * meanU * meanU);
 }
 
 /**
@@ -803,10 +846,11 @@ function roundForFinalQuantities(vars, fixed, t, best, starts, iterations) {
  * pour rapprocher simultanément kcal / P / G / L des objectifs — architecture C.
  *
  * Coût minimisé, par personne :
- *   Σ_macro  W · ρ_C( (valeur - cible) / cible )
+ *   Σ_macro  macroCost( macro, (valeur - cible) / cible )
  *     + β · [ Σᵢ (uᵢ - ū)²  +  γ · n · ū² ]
  *   avec  uᵢ = ln(qᵢ / réfᵢ)  (réfᵢ = referenceFor(food), architecture C)
- *         ρ_C(d) = perte bornée de Welsch (WELSCH_C)
+ *         macroCost(k, d) = perte bornée de Welsch, ASYMÉTRIQUE selon le rôle
+ *         de la macro (plafond/plancher/souple — cf. MACRO_ROLE/W_SOFT/W_HARD)
  *
  * Le premier terme rapproche les 4 macros de leurs cibles avec une perte qui
  * « accepte » de manquer une cible structurellement inatteignable plutôt que
@@ -975,7 +1019,7 @@ export function adjustQuantities(items, foodsById, target, person, options = {})
  * concerné est réoptimisé NORMALEMENT — même `solveFromStart`/`costOf`/
  * `roundForFinalQuantities` que partout ailleurs, via `buildVarsAndFixed`
  * avec l'item de la préparation imposé (`forced`) — aucune nouvelle
- * mécanique numérique, aucune modification de WEIGHTS/BETA/GAMMA/welschLoss.
+ * mécanique numérique, aucune modification de macroCost/BETA/GAMMA/welschLoss.
  *
  * `slots[i] = { items, itemId, target, person }` : `items` est la liste
  * COMPLÈTE des items du repas concerné (l'item `itemId`, qui référence la

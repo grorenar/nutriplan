@@ -79,8 +79,18 @@ const macros = $$('#drawer .macro').slice(0, 4).map((m) => m.textContent.replace
 console.log(`        ${macros.join(' | ')}`);
 check('macros affichées sans clic supplémentaire', macros.length === 4);
 check('glucides affichés "G" et non "C"', macros.some((m) => / G$/.test(m)) && !macros.some((m) => / C$/.test(m)), macros.join(' | '));
-check('les 4 macros de Thomas sont dans la cible',
-  $$('#drawer .macro').slice(0, 4).every((m) => m.classList.contains('is-ok')));
+// calibration asymétrique du coût nutritionnel (kcal/lipides = plafond,
+// décision verrouillée) : rester sous la cible lipidique est désormais
+// volontairement préféré à la risquer de la dépasser — ici ~-12 %, donc
+// "warn" (badge honnête, evaluate()/statusFor() restent inchangés et
+// purement descriptifs) plutôt que "ok". kcal/protéines/glucides, eux,
+// atteignent toujours la cible exacte dans ce scénario (assez de degrés
+// de liberté) : pas de changement de comportement à vérifier pour eux.
+const macroBadges = $$('#drawer .macro').slice(0, 4);
+check('kcal / protéines / glucides de Thomas dans la cible',
+  [macroBadges[0], macroBadges[1], macroBadges[2]].every((m) => m.classList.contains('is-ok')));
+check('lipides de Thomas signalés proches mais pas atteints (jamais dépassés)',
+  macroBadges[3].classList.contains('is-warn'), macroBadges[3].className);
 
 console.log('\n— État pesé dans le repas');
 const pastaRow = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));

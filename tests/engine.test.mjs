@@ -12,7 +12,7 @@ import {
   snapQuantity, toUnits, fromUnits, isWholeUnitFood, MACRO_KEYS, computeYield, quantityStep,
   canConvert, conversionInfo, stateLabel, STATES, referenceFor, CATEGORY_PROFILE, CATEGORIES,
   recipeMacrosPer100g, canAddIngredientToRecipe, recipeAsVirtualFood, preparationAsVirtualFood,
-  resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf,
+  resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf, macroCost,
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
@@ -96,6 +96,23 @@ const within = (items, targets, person, tol = 0.05) => {
   const m = mealMacros(items, byId, person);
   return evaluate(m, targets[person], tol).rows.every((r) => r.status === 'ok');
 };
+/**
+ * "Dans la cible" après la calibration asymétrique (décision verrouillée) :
+ * kcal/lipides sont des PLAFONDS — en dessous de la cible est toujours accepté,
+ * seul un dépassement > tol est un échec ; protéines = PLANCHER — au-dessus de
+ * la cible est toujours accepté, seul un déficit > tol est un échec ; glucides
+ * restent symétriques (objectif souple, inchangé). N'utilise PAS evaluate()/
+ * statusFor() (rôle purement descriptif, volontairement inchangés) : exprime
+ * directement le nouveau contrat de l'optimiseur.
+ */
+const withinAsym = (items, targets, person, tol = 0.05) => {
+  const m = mealMacros(items, byId, person);
+  const t = targets[person];
+  const ceilingOk = (v, g) => !g || v <= g * (1 + tol);
+  const floorOk = (v, g) => !g || v >= g * (1 - tol);
+  const softOk = (v, g) => Math.abs(dev(v, g)) <= tol;
+  return ceilingOk(m.kcal, t.kcal) && ceilingOk(m.fat, t.fat) && floorOk(m.protein, t.protein) && softOk(m.carbs, t.carbs);
+};
 function show(items, targets, person = 'thomas') {
   const m = mealMacros(items, byId, person);
   const t = targets[person];
@@ -133,9 +150,13 @@ test('B — protéine + féculent : protéines et glucides rapprochés de la cib
   autoAdjust(items, byId, LUNCH);
   show(items, LUNCH);
   show(items, LUNCH, 'julie');
+  // protéines = PLANCHER SOUPLE (calibration asymétrique validée) : le déficit
+  // reste borné à ±5 %, mais un léger dépassement (ex. julie 42.9 g / 40 g,
+  // +7 %) est désormais accepté sans coût significatif — plus de vérification
+  // symétrique. Glucides restent un objectif souple SYMÉTRIQUE, inchangé.
   for (const p of ['thomas', 'julie']) {
     const m = mealMacros(items, byId, p);
-    check(`${p} : protéines dans ±5 %`, Math.abs(dev(m.protein, LUNCH[p].protein)) <= 0.05, `${m.protein.toFixed(1)} g`);
+    check(`${p} : protéines au moins la cible (-5 % max)`, dev(m.protein, LUNCH[p].protein) >= -0.05, `${m.protein.toFixed(1)} g`);
     check(`${p} : glucides dans ±5 %`, Math.abs(dev(m.carbs, LUNCH[p].carbs)) <= 0.05, `${m.carbs.toFixed(1)} g`);
   }
   check('les lipides restent signalés hors cible (aucune source)', !within(items, LUNCH, 'thomas'));
@@ -167,12 +188,19 @@ test('D — ajout d’huile : les lipides sont corrigés sans casser le reste', 
   autoAdjust(items, byId, LUNCH);
   show(items, LUNCH);
   show(items, LUNCH, 'julie');
+  // lipides = PLAFOND (calibration asymétrique validée) : rester sous la cible
+  // est désormais volontairement acceptable (ici thomas -11,9 %, julie -7,8 %),
+  // seul un DÉPASSEMENT > 5 % serait un échec. kcal/protéines/glucides
+  // continuent d'atteindre la cible exacte ici (assez de degrés de liberté :
+  // pas de changement de comportement à vérifier pour ces trois-là).
   for (const p of ['thomas', 'julie']) {
     const m = mealMacros(items, byId, p);
-    for (const [key, label] of [['kcal', 'kcal'], ['protein', 'P'], ['carbs', 'C'], ['fat', 'L']]) {
+    for (const [key, label] of [['kcal', 'kcal'], ['protein', 'P'], ['carbs', 'C']]) {
       check(`${p} : ${label} dans ±5 %`, Math.abs(dev(m[key], LUNCH[p][key])) <= 0.05,
         `${m[key].toFixed(1)} / ${LUNCH[p][key]}`);
     }
+    check(`${p} : lipides jamais au-dessus de la cible (+5 % max)`, dev(m.fat, LUNCH[p].fat) <= 0.05,
+      `${m.fat.toFixed(1)} / ${LUNCH[p].fat}`);
   }
   const oil = items[3].qty.thomas;
   check('quantité d’huile plausible (≤ 45 g)', oil <= 45, `${oil} g`);
@@ -263,8 +291,12 @@ test('I — Thomas et Julie optimisés indépendamment, même composition', () =
   show(items, LUNCH, 'julie');
   check('même liste d’aliments pour les deux', items.every((it) => it.qty.thomas > 0 && it.qty.julie > 0));
   check('quantités différentes', items.some((it) => it.qty.thomas !== it.qty.julie));
+  // calibration asymétrique validée : kcal/lipides (plafonds) peuvent rester
+  // sous la cible (ici thomas -6,4 % kcal / -12,7 % L, julie -6,5 % L) — ce
+  // n'est plus un échec, `within()` (symétrique) ne reflète plus le contrat
+  // de l'optimiseur ; `withinAsym()` l'exprime (protéines/glucides inchangés).
   for (const p of ['thomas', 'julie']) {
-    check(`${p} : les 4 macros dans ±5 %`, within(items, LUNCH, p));
+    check(`${p} : les 4 macros respectent la hiérarchie (kcal/L ≤ cible, P ≥ cible, G proche)`, withinAsym(items, LUNCH, p));
   }
 });
 
@@ -285,9 +317,11 @@ test('J — composition différente : un aliment absent (0 g) est ignoré', () =
   check('cabillaud présent pour Julie', items[4].qty.julie === 0 && items[3].qty.julie > 0);
   check('wrap reste à 0 g pour Julie', items[4].qty.julie === 0);
   check('wrap présent pour Thomas', items[4].qty.thomas > 0, `${items[4].qty.thomas} g`);
+  // kcal = PLAFOND (calibration asymétrique validée) : rester sous la cible
+  // (ici thomas -5,6 %) est désormais accepté, seul un dépassement > 5 % est un échec.
   for (const p of ['thomas', 'julie']) {
     const m = mealMacros(items, byId, p);
-    check(`${p} : kcal dans ±5 %`, Math.abs(dev(m.kcal, LUNCH[p].kcal)) <= 0.05, `${m.kcal.toFixed(0)}`);
+    check(`${p} : kcal jamais au-dessus de la cible (+5 % max)`, dev(m.kcal, LUNCH[p].kcal) <= 0.05, `${m.kcal.toFixed(0)}`);
   }
 });
 
@@ -434,13 +468,19 @@ test('V1.4.1 — non-régression : sans aliment non fractionnable, comportement 
   // exactement sur les quantités connues (référence recalculée après le passage
   // à la résolution 1 g — roundQuantity() n'impose plus les anciens paliers de
   // catégorie de 5 g ; l'optimum CONTINU sous-jacent, lui, n'a pas changé).
+  //
+  // Référence mise à jour par la calibration asymétrique (validée) : ancien
+  // optimum symétrique (124, 184, 128, 27), nouveau (124, 183, 134, 24) — les
+  // lipides (plafond) reculent légèrement (27 g → 24 g) au profit des haricots
+  // (128 g → 134 g), cohérent avec "dépasser les lipides est fortement
+  // pénalisé, en rester en dessous est acceptable".
   const items = [item(F('Blanc de poulet')), item(F('Pâtes complètes')), item(F('Haricots verts'), 200)];
   autoAdjust(items, byId, LUNCH);
   items.push(item(F('Huile d’olive')));
   autoAdjust(items, byId, LUNCH);
   const q = items.map((it) => it.qty.thomas);
-  check('quantités identiques à la référence (résolution 1 g) (124, 184, 128, 27)',
-    q[0] === 124 && q[1] === 184 && q[2] === 128 && q[3] === 27, q.join(','));
+  check('quantités identiques à la référence (résolution 1 g) (124, 183, 134, 24)',
+    q[0] === 124 && q[1] === 183 && q[2] === 134 && q[3] === 24, q.join(','));
 });
 
 /* ================================================================ UNITÉS */
@@ -589,6 +629,54 @@ test('Macros — les glucides s’affichent "G"', () => {
   check('libellés P / G / L', labels.join('') === 'kcalPGL', labels.join(' '));
   const ev = evaluate({ kcal: 100, protein: 10, carbs: 10, fat: 5 }, LUNCH.thomas);
   check('aucun libellé "C" résiduel', !ev.rows.some((r) => r.label === 'C'));
+});
+
+/* ============================================== CALIBRATION ASYMÉTRIQUE (v1.5.0.7) */
+/*
+ * kcal/lipides = plafond (dépasser fortement pénalisé, être en dessous
+ * indolore) ; protéines = plancher souple (déficit pénalisé, surplus
+ * largement toléré mais jamais gratuit) ; glucides = objectif souple
+ * symétrique, nettement secondaire. Décision verrouillée, calibration
+ * validée : MACRO_ROLE/W_SOFT/W_HARD/C_SOFT/C_HARD dans nutrition.js.
+ * `macroCost(k, d)` est le point d'entrée UNIQUE de cette asymétrie,
+ * partagé par costOf() et costAt() — testé ici directement (exporté pour
+ * la testabilité, fonction pure, aucun effet de bord).
+ */
+
+test('Calibration asymétrique — macroCost() respecte la hiérarchie kcal > lipides > protéines > glucides', () => {
+  check('kcal +10 % coûte plus cher que kcal -10 %',
+    macroCost('kcal', 0.10) > macroCost('kcal', -0.10),
+    `+10%=${macroCost('kcal', 0.10).toFixed(5)} vs -10%=${macroCost('kcal', -0.10).toFixed(5)}`);
+  check('lipides +10 % coûte plus cher que lipides -10 %',
+    macroCost('fat', 0.10) > macroCost('fat', -0.10),
+    `+10%=${macroCost('fat', 0.10).toFixed(5)} vs -10%=${macroCost('fat', -0.10).toFixed(5)}`);
+  check('protéines -10 % coûte plus cher que protéines +10 %',
+    macroCost('protein', -0.10) > macroCost('protein', 0.10),
+    `-10%=${macroCost('protein', -0.10).toFixed(5)} vs +10%=${macroCost('protein', 0.10).toFixed(5)}`);
+  check('glucides restent symétriques (±10 % et ±20 %)',
+    Math.abs(macroCost('carbs', 0.10) - macroCost('carbs', -0.10)) < 1e-9 &&
+    Math.abs(macroCost('carbs', 0.20) - macroCost('carbs', -0.20)) < 1e-9);
+
+  // dépassement kcal/lipides suffisamment pénalisé par rapport à un surplus protéique équivalent
+  const kcalOver = macroCost('kcal', 0.15);
+  const fatOver = macroCost('fat', 0.15);
+  const proteinOver = macroCost('protein', 0.15);
+  check('un dépassement kcal (+15 %) coûte nettement plus qu’un surplus protéique équivalent',
+    kcalOver > proteinOver * 3, `kcal=${kcalOver.toFixed(5)} vs protéines=${proteinOver.toFixed(5)}`);
+  check('un dépassement lipides (+15 %) coûte nettement plus qu’un surplus protéique équivalent',
+    fatOver > proteinOver * 3, `lipides=${fatOver.toFixed(5)} vs protéines=${proteinOver.toFixed(5)}`);
+
+  // hiérarchie complète, côté pénalisé, écart identique (+10 % / -10 %)
+  check('kcal (plafond dépassé) coûte plus cher que lipides (plafond dépassé) — priorité n°1',
+    macroCost('kcal', 0.10) > macroCost('fat', 0.10));
+  check('lipides (plafond dépassé) coûte plus cher que protéines (plancher manqué) — priorité n°2 > n°3',
+    macroCost('fat', 0.10) > macroCost('protein', -0.10));
+  check('protéines (plancher manqué) coûte plus cher que glucides (écart équivalent) — priorité n°3 > n°4',
+    macroCost('protein', -0.10) > macroCost('carbs', -0.10));
+
+  // le surplus protéique n'est jamais totalement gratuit
+  check('un surplus protéique reste coûteux comparé à protéines pile sur la cible',
+    macroCost('protein', 0.30) > macroCost('protein', 0));
 });
 
 /* ================================================================ CRU / CUIT */
@@ -1261,7 +1349,10 @@ test('Stabilité — idempotence et absence de dérive', () => {
   info(snap1.map((q, i) => `${byId[items[i].foodId].name} ${q.thomas}→${snap3[i].thomas}`).join(' | '));
   check('2e passage proche du 1er', snap1.every((q, i) => Math.abs(q.thomas - snap2[i].thomas) <= 10));
   check('stable après 10 passages', snap2.every((q, i) => Math.abs(q.thomas - snap3[i].thomas) <= 10));
-  check('toujours dans la cible après 10 passages', within(items, LUNCH, 'thomas'));
+  // même composition que le Test I : kcal/lipides (plafonds) restent sous la
+  // cible par design après la calibration asymétrique — `withinAsym()` reflète
+  // ce contrat (cf. Test I).
+  check('toujours dans la cible après 10 passages', withinAsym(items, LUNCH, 'thomas'));
 });
 
 /* ================================================================ VERROU TOTAL */
@@ -2036,14 +2127,25 @@ test('Mode normal — Σ affecté ≤ disponible : l’optimiseur ne force JAMAI
   // reproduit exactement l'exemple de la spécification : 1000 g préparés, deux
   // repas, la cible naturelle de chacun voudrait plus que ce qui reste au second.
   const meal1 = [newPreparationItem(prep.id, 700)]; // déjà 700 g affectés ailleurs dans le cycle
-  const availabilityForMeal2 = { [prep.id]: 1000 - 700 }; // disponible = 300 g, EXCLUT la contribution du meal2 lui-même
   const meal2 = [newPreparationItem(prep.id, 250)]; // le meal qu'on ajuste ; sa propre contribution s'ajoute au disponible fourni
+  // disponible EXCLUANT la contribution de meal2 lui-même (contrat de
+  // buildVarsAndFixed, cf. preparationAvailable()/preparationUsed() en
+  // production : la somme "déjà utilisé" porte sur TOUT le cycle, meal2 y
+  // compris) = 1000 préparés − 700 (meal1) − 250 (meal2 lui-même) = 50 g.
+  // Erreur de fixture pré-existante, non liée à la calibration : la valeur
+  // ici était 1000 − 700 = 300 (sans soustraire les 250 g de meal2), ce qui
+  // gonflait à tort le plafond réel à 300+250 = 550 g au lieu de 50+250 = 300 g.
+  // Restée invisible tant que l'optimum choisi par l'ancienne pondération
+  // symétrique ne s'approchait jamais de ce plafond — révélée par la
+  // calibration asymétrique (poussée kcal/protéines plus forte), qui,
+  // légitimement, explore désormais tout le domaine autorisé par les bornes.
+  const availabilityForMeal2 = { [prep.id]: 1000 - 700 - 250 };
 
   autoAdjust(meal2, byId, LUNCH, { preparationsById, preparationAvailability: availabilityForMeal2 });
   const q2 = meal2[0].qty.thomas;
-  info(`meal2 ajusté : ${q2} g (disponible fourni 300 g + contribution propre 250 g = plafond 550 g)`);
-  check('la contribution de meal2 ne dépasse jamais son plafond réel (300 + sa propre contribution de départ)',
-    q2 <= 300 + 250);
+  info(`meal2 ajusté : ${q2} g (disponible fourni 50 g + contribution propre 250 g = plafond réel 300 g)`);
+  check('la contribution de meal2 ne dépasse jamais son plafond réel (50 + sa propre contribution de départ)',
+    q2 <= 50 + 250);
   check('total réel (700 déjà ailleurs + meal2) ne dépasse jamais 1000 g de préparé',
     700 + q2 <= 1000, `700 + ${q2} = ${700 + q2}`);
 });
@@ -2258,6 +2360,68 @@ test('Sections — liste fixe (décision §7)', () => {
   check('7 sections, dans cet ordre exact',
     JSON.stringify(SECTIONS) === JSON.stringify(['entree', 'plat', 'accompagnement', 'fromage', 'dessert', 'collation', 'autre']));
   check('DEFAULT_SECTION = "plat"', DEFAULT_SECTION === 'plat');
+});
+
+/* ============================================== SCÉNARIO RÉEL — SKYR AVOINE + WASA (v1.5.0.7) */
+
+test('Calibration asymétrique — scénario réel Skyr Avoine + Wasa fromage frais poulet', () => {
+  // recette weight réelle (référence directe, sans préparation) : 150 g Skyr +
+  // 50 g flocons d'avoine, baseGrams = 200 g.
+  const skyrAvoine = newRecipe('Skyr Avoine', 'weight');
+  skyrAvoine.items = [newRecipeItem(F('Skyr').id, 150, 'pret'), newRecipeItem(F('Flocons d’avoine').id, 50, 'pret')];
+  skyrAvoine.baseGrams = 200;
+
+  // recette portion réelle (fixture reprise de "Recettes portion — recipeAsVirtualFood()") :
+  // 1 tranche de Wasa + 20 g fromage frais tartinable + 35 g poulet en tranches.
+  const wasaFood = F('Pain croustillant');
+  const wasaRecipe = newRecipe('Wasa fromage frais poulet', 'portion');
+  wasaRecipe.items = [
+    newRecipeItem(wasaFood.id, wasaFood.gramsPerUnit, 'pret'),
+    newRecipeItem(F('Fromage frais tartinable').id, 20, 'pret'),
+    newRecipeItem(F('Blanc de poulet en tranches').id, 35, 'pret'),
+  ];
+  const portionGrams = wasaFood.gramsPerUnit + 20 + 35;
+  const recipesById = { [skyrAvoine.id]: skyrAvoine, [wasaRecipe.id]: wasaRecipe };
+
+  const targets = {
+    thomas: { kcal: 850, protein: 40, carbs: 100, fat: 30 },
+    julie: { kcal: 550, protein: 30, carbs: 60, fat: 18 },
+  };
+  const items = [
+    recipeItemInMeal(skyrAvoine.id, 288, { thomas: 288, julie: 140 }),
+    recipeItemInMeal(wasaRecipe.id, portionGrams, { thomas: portionGrams, julie: portionGrams * 2 }),
+  ];
+
+  autoAdjust(items, byId, targets, { recipesById });
+
+  for (const p of ['thomas', 'julie']) {
+    const m = mealMacros(items, byId, p, recipesById, {});
+    const t = targets[p];
+    info(`${p} : Skyr Avoine ${items[0].qty[p].toFixed(0)} g | Wasa ×${(items[1].qty[p] / portionGrams).toFixed(2)} ` +
+      `→ ${m.kcal.toFixed(0)}/${t.kcal} kcal (${(dev(m.kcal, t.kcal) * 100).toFixed(1)}%) · ` +
+      `${m.protein.toFixed(1)}/${t.protein} P (${(dev(m.protein, t.protein) * 100).toFixed(1)}%) · ` +
+      `${m.carbs.toFixed(1)}/${t.carbs} G (${(dev(m.carbs, t.carbs) * 100).toFixed(1)}%) · ` +
+      `${m.fat.toFixed(1)}/${t.fat} L (${(dev(m.fat, t.fat) * 100).toFixed(1)}%)`);
+
+    // avec seulement 2 variables ajustables, les 4 cibles restent structurellement
+    // inatteignables simultanément (degrés de liberté insuffisants — diagnostic
+    // antérieur, non lié à la calibration). Le comportement attendu n'est donc
+    // PAS "tout dans la cible", mais le respect strict de la hiérarchie :
+    check(`${p} : kcal jamais au-dessus de la cible (+5 % max)`, dev(m.kcal, t.kcal) <= 0.05, `${m.kcal.toFixed(0)} / ${t.kcal}`);
+    check(`${p} : lipides jamais au-dessus de la cible (+5 % max)`, dev(m.fat, t.fat) <= 0.05, `${m.fat.toFixed(1)} / ${t.fat}`);
+    check(`${p} : protéines jamais en dessous de la cible`, dev(m.protein, t.protein) >= 0, `${m.protein.toFixed(1)} / ${t.protein}`);
+    // la recette-portion reste un multiple entier (indivisible), inchangé par la calibration
+    check(`${p} : Wasa reste un multiple entier de portion (${portionGrams} g)`,
+      items[1].qty[p] % portionGrams === 0, `${items[1].qty[p]} g`);
+  }
+
+  // kcal se rapproche nettement de la cible par rapport à l'ancienne formule
+  // symétrique (mesuré séparément, hors dépôt : thomas -38,7 % → julie ~0 %/thomas
+  // très amélioré) — ici, on vérifie concrètement que julie atteint le kcal
+  // quasiment pile (marge large pour ne pas figer un optimum de second ordre).
+  const mJulie = mealMacros(items, byId, 'julie', recipesById, {});
+  check('julie : kcal nettement rapproché de la cible (±10 %, contre -14,6 % avant calibration)',
+    Math.abs(dev(mJulie.kcal, targets.julie.kcal)) <= 0.10, `${mJulie.kcal.toFixed(0)} / ${targets.julie.kcal}`);
 });
 
 /* ---------------------------------------------------------------- bilan */
