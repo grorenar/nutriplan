@@ -6,7 +6,11 @@
  */
 
 import { getState, update, newRecipe, newRecipeItem } from '../core/store.js';
-import { CATEGORIES, STATES, recipeMacrosPer100g, canAddIngredientToRecipe, isWholeUnitFood } from '../core/nutrition.js';
+import {
+  CATEGORIES, STATES, recipeMacrosPer100g, canAddIngredientToRecipe,
+  isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep, snapQuantity, initialQuantity,
+} from '../core/nutrition.js';
+import { unitLabel, unitHint } from './editor.js';
 import { esc, num, normalize, toast, deepCopy } from '../core/util.js';
 
 let editing = null; // id de recette, ou 'new'
@@ -92,15 +96,30 @@ function formPanel(s, byId) {
   const ingredientRows = r.items.length
     ? r.items.map((it, idx) => {
         const food = byId[it.foodId];
+        if (!food) {
+          return `<div class="item">
+            <div class="item__main"><div class="item__name">Aliment supprimé</div></div>
+            <div class="item__tools"><button class="btn btn--sm btn--danger" data-ing-del="${idx}">Retirer</button></div>
+          </div>`;
+        }
+        // saisie unit-aware — réutilise EXACTEMENT le mécanisme de l'éditeur
+        // de repas (`food.unitEntry`, `toUnits`/`fromUnits`, `unitLabel`) :
+        // un aliment non fractionnable se saisit dans son unité naturelle.
+        const unitMode = isUnitFood(food) && food.unitEntry;
+        const step = quantityStep(food, { inUnits: unitMode });
+        const shown = unitMode ? num(toUnits(food, it.qty), isWholeUnitFood(food) ? 0 : 1) : num(it.qty, 0);
         return `<div class="item">
           <div class="item__main">
-            <div class="item__name">${food ? esc(food.name) : 'Aliment supprimé'}</div>
+            <div class="item__name">${esc(food.name)}</div>
+            ${isUnitFood(food) ? `<button type="button" class="btn btn--sm" data-ing-unit-toggle="${idx}" style="margin-top:4px">Saisie : ${food.unitEntry ? esc(unitLabel(food, 1)) : 'grammes'}</button>` : ''}
             <div class="item__qty" style="margin-top:6px">
               <div class="qty-box">
                 <div class="qty-box__row">
-                  <input type="number" min="0" step="1" data-ing-qty="${idx}" value="${num(it.qty, 0)}" aria-label="Quantité">
-                  <span class="item__unit">g</span>
+                  <input type="number" min="0" step="${step}" data-ing-qty="${idx}" data-unitmode="${unitMode ? '1' : '0'}"
+                         value="${String(shown).replace(',', '.')}" aria-label="Quantité">
+                  <span class="item__unit">${unitMode ? esc(unitLabel(food, toUnits(food, it.qty))) : 'g'}</span>
                 </div>
+                ${unitHint(food, it.qty) ? `<small>${unitHint(food, it.qty)}</small>` : ''}
               </div>
               <div class="qty-box">
                 <select data-ing-state="${idx}">
@@ -135,7 +154,7 @@ function formPanel(s, byId) {
               ? `<label class="field">Poids de référence (g)
                    <input type="number" min="1" step="1" data-r="baseGrams" value="${num(r.baseGrams, 0)}"></label>
                  <small style="grid-column:1/-1">Poids RÉELLEMENT obtenu après cuisson pour cette composition — sert de référence à l'optimiseur, jamais une contrainte.</small>`
-              : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). L'intégration à l'optimiseur (nombre entier de portions) arrive à une étape ultérieure.</small>`
+              : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). Utilisée dans un repas, la recette se sélectionne en nombre entier de portions.</small>`
           }
         </div>
 
@@ -181,10 +200,24 @@ function wire(root, s) {
       const draft = currentDraft(getState());
       if (key === 'baseGrams') draft.baseGrams = Math.max(0, Number(e.target.value) || 0);
       else if (key === 'kind') {
-        draft.kind = e.target.value;
+        const newKind = e.target.value;
+        if (newKind === 'weight') {
+          // même règle qu'à l'ajout d'un ingrédient (décision verrouillée) :
+          // une recette au poids ne peut jamais contenir de non fractionnable.
+          const byId = foodsMapOf(getState());
+          const invalid = draft.items.find((it) => isWholeUnitFood(byId[it.foodId]));
+          if (invalid) {
+            toast(
+              `Impossible de basculer en recette « au poids » : « ${byId[invalid.foodId]?.name || 'un ingrédient'} » ` +
+              `est non fractionnable. Retire-le d'abord, ou garde cette recette en type « portion ».`,
+              'error'
+            );
+            render(root); // réaffiche le select sur sa valeur réelle (draft.kind inchangé)
+            return;
+          }
+        }
+        draft.kind = newKind;
         if (draft.kind === 'weight' && !draft.baseGrams) draft.baseGrams = 0;
-        // basculer en "portion" retire toute contrainte de fractionnabilité :
-        // aucun ingrédient n'est supprimé, la règle ne s'applique qu'à l'ajout.
       } else draft.name = e.target.value;
       render(root);
     });
@@ -206,7 +239,25 @@ function wire(root, s) {
       const draft = currentDraft(getState());
       const check = canAddIngredientToRecipe(draft, food);
       if (!check.ok) { toast(check.reason, 'error'); return; }
-      draft.items.push(newRecipeItem(foodId, 100, food.referenceState));
+      // quantité initiale cohérente avec l'aliment (comme dans l'éditeur de
+      // repas) : 1 unité pour un non fractionnable, la référence de catégorie sinon.
+      draft.items.push(newRecipeItem(foodId, initialQuantity(food), food.referenceState));
+      render(root);
+    });
+  });
+
+  root.querySelectorAll('[data-ing-unit-toggle]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const idx = Number(e.currentTarget.dataset.ingUnitToggle);
+      const draft = currentDraft(getState());
+      const foodId = draft.items[idx]?.foodId;
+      if (!foodId) return;
+      // `food.unitEntry` est partagé avec l'éditeur de repas (même aliment,
+      // même bascule grammes/unités partout dans l'application).
+      update((st) => {
+        const f = st.foods.find((x) => x.id === foodId);
+        if (f) f.unitEntry = !f.unitEntry;
+      });
       render(root);
     });
   });
@@ -214,8 +265,16 @@ function wire(root, s) {
   root.querySelectorAll('[data-ing-qty]').forEach((input) => {
     input.addEventListener('change', (e) => {
       const idx = Number(e.target.dataset.ingQty);
+      const inUnits = e.target.dataset.unitmode === '1';
+      const raw = Math.max(0, Number(String(e.target.value).replace(',', '.')) || 0);
       const draft = currentDraft(getState());
-      if (draft.items[idx]) draft.items[idx].qty = Math.max(0, Number(e.target.value) || 0);
+      const item = draft.items[idx];
+      if (!item) return;
+      const food = getState().foods.find((f) => f.id === item.foodId);
+      const grams = inUnits && food ? fromUnits(food, raw) : raw;
+      // contrainte absolue : multiple entier de gramsPerUnit si non fractionnable
+      // (même garantie que dans l'éditeur de repas — jamais 37 g de Wasa).
+      item.qty = snapQuantity(food, grams);
       render(root);
     });
   });
@@ -244,6 +303,21 @@ function wire(root, s) {
     if (!draft.items.length) { toast('Ajoute au moins un ingrédient', 'error'); return; }
     if (draft.kind === 'weight' && !(Number(draft.baseGrams) > 0)) {
       toast('Indique le poids de référence (g)', 'error'); return;
+    }
+    // filet de sécurité : une recette au poids ne doit jamais être enregistrée
+    // avec un ingrédient non fractionnable, quel que soit le chemin emprunté
+    // pour y arriver (l'ajout et le changement de type le bloquent déjà).
+    if (draft.kind === 'weight') {
+      const byId = foodsMapOf(getState());
+      const invalid = draft.items.find((it) => isWholeUnitFood(byId[it.foodId]));
+      if (invalid) {
+        toast(
+          `« ${byId[invalid.foodId]?.name || 'cet ingrédient'} » est non fractionnable : impossible ` +
+          `d'enregistrer une recette au poids avec cet ingrédient.`,
+          'error'
+        );
+        return;
+      }
     }
     update((st) => {
       const idx = st.recipes.findIndex((x) => x.id === draft.id);

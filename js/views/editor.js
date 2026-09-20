@@ -12,7 +12,8 @@ import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
   mealMacros, macrosFor, evaluate, autoAdjust, initialQuantity, diagnose,
   snapQuantity, isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep,
-  conversionInfo, stateLabel, recipeAsVirtualFood, resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf,
+  conversionInfo, stateLabel, recipeAsVirtualFood, preparationAsVirtualFood, resolveItemFood,
+  resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf,
 } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid } from '../core/util.js';
 import { analyzeMealVolume } from '../core/meal-volume.js';
@@ -231,15 +232,20 @@ function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, prepa
   return `<div class="card">${blocks}${notice}</div>`;
 }
 
-/** Libellé d'unité au pluriel simple ("2 tranches", "2 c. à soupe"). */
-function unitLabel(food, count) {
+/**
+ * Libellé d'unité au pluriel simple ("2 tranches", "2 c. à soupe").
+ * Exportée : réutilisée telle quelle par l'écran Recettes (`recipes.js`),
+ * pour que la même unité s'affiche de la même façon partout — jamais une
+ * seconde mécanique parallèle.
+ */
+export function unitLabel(food, count) {
   const name = food.unitName || 'unité';
   const plural = Math.abs(count) >= 2 && !/^c\./.test(name) ? 's' : '';
   return `${name}${plural}`;
 }
 
 /** Équivalence affichée sous le champ de saisie. */
-function unitHint(food, qty) {
+export function unitHint(food, qty) {
   if (!isUnitFood(food)) return '';
   const u = toUnits(food, qty);
   if (food.unitEntry) return `= ${num(qty, 0)} g`;
@@ -289,8 +295,37 @@ function stockLabel(prep, disponibleGrams) {
   return `Disponible : ${num(disponibleGrams, 0)} g / ${num(prep.preparedQuantity, 0)} g préparés`;
 }
 
-/** Ligne d'un item référençant une recette (molle) ou une préparation (ferme) : affichage simplifié. */
-function renderRecipeOrPreparationRow(it, recipesMap, preparationsMap) {
+/**
+ * Composition détaillée d'une recette/préparation `portion` pour N portions —
+ * dérivée de `recipe.items`/`recipeSnapshot.items` à l'affichage, jamais
+ * stockée : "6 Wasa · 60 g St Môret · 160 g poulet" pour 2 portions.
+ * Un aliment non fractionnable s'affiche dans SON unité (réutilise
+ * `isWholeUnitFood`/`toUnits`/`unitLabel`) ; un aliment fractionnable en grammes.
+ */
+function compositionLine(compositionItems, byId, portions) {
+  if (!portions || !compositionItems?.length) return '';
+  return compositionItems
+    .map((ci) => {
+      const food = byId[ci.foodId];
+      if (!food) return null;
+      const scaled = (Number(ci.qty) || 0) * portions;
+      return isWholeUnitFood(food)
+        ? `${num(toUnits(food, scaled), 0)} ${unitLabel(food, toUnits(food, scaled))} ${esc(food.name)}`
+        : `${num(scaled, 0)} g ${esc(food.name)}`;
+    })
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * Ligne d'un item référençant une recette (molle) ou une préparation (ferme).
+ * Résolue vers son aliment virtuel (`recipeAsVirtualFood`/`preparationAsVirtualFood`,
+ * exactement ce que l'optimiseur utilise déjà) : une recette/préparation
+ * `portion` se comporte alors comme n'importe quel aliment non fractionnable
+ * (§4 de la demande) — saisie en NOMBRE DE PORTIONS, jamais en grammes.
+ * `weight` reste en grammes, inchangé.
+ */
+function renderRecipeOrPreparationRow(it, byId, recipesMap, preparationsMap) {
   const isPrep = Boolean(it.preparationId);
   const recipe = isPrep ? null : recipesMap[it.recipeId];
   const prep = isPrep ? preparationsMap[it.preparationId] : null;
@@ -307,19 +342,27 @@ function renderRecipeOrPreparationRow(it, recipesMap, preparationsMap) {
   const name = isPrep ? prep.label : recipe.name;
   const badge = isPrep ? '<span class="pill">préparation</span>' : '<span class="pill">recette</span>';
   const disponible = isPrep ? preparationAvailable(getState(), prep) : null;
+  const virtualFood = isPrep ? preparationAsVirtualFood(prep, byId) : recipeAsVirtualFood(recipe, byId);
+  const isPortion = (isPrep ? prep.recipeSnapshot?.kind : recipe.kind) === 'portion';
+  const compositionItems = isPrep ? prep.recipeSnapshot?.items : recipe.items;
+  const step = quantityStep(virtualFood, { inUnits: isPortion });
+
   const qtyBoxes = PERSONS.map((person) => {
     const qty = it.qty[person] || 0;
     const locked = !!it.locked[person];
+    const portions = isPortion ? toUnits(virtualFood, qty) : 0;
+    const shown = isPortion ? num(portions, 0) : num(qty, 1);
     return `<div class="qty-box">
       <span class="person-name person-name--${person}">${PERSON_LABEL[person]}</span>
       <div class="qty-box__row">
-        <input type="number" min="0" step="1" inputmode="decimal" value="${qty}"
-               data-qty="${it.id}" data-person="${person}" data-unitmode="0"
+        <input type="number" min="0" step="${step}" inputmode="decimal" value="${String(shown).replace(',', '.')}"
+               data-qty="${it.id}" data-person="${person}" data-unitmode="${isPortion ? '1' : '0'}"
                aria-label="Quantité ${PERSON_LABEL[person]}">
-        <span class="item__unit">g</span>
+        <span class="item__unit">${isPortion ? esc(unitLabel(virtualFood, portions)) : 'g'}</span>
         <button class="lock" data-lock="${it.id}" data-person="${person}" aria-pressed="${locked}"
                 title="${locked ? 'Quantité verrouillée' : 'Quantité ajustable'}">${locked ? '🔒' : '🔓'}</button>
       </div>
+      ${isPortion && qty > 0 ? `<small>${esc(compositionLine(compositionItems, byId, Math.round(portions)))}</small>` : ''}
     </div>`;
   }).join('');
   return `<div class="item">
@@ -344,7 +387,7 @@ function renderRecipeOrPreparationRow(it, recipesMap, preparationsMap) {
 }
 
 function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
-  if (it.recipeId || it.preparationId) return renderRecipeOrPreparationRow(it, recipesMap, preparationsMap);
+  if (it.recipeId || it.preparationId) return renderRecipeOrPreparationRow(it, byId, recipesMap, preparationsMap);
   const food = it.foodId ? byId[it.foodId] : null;
       if (!food && it.foodId) {
         return `<div class="item"><div class="item__main"><div class="item__name">Aliment supprimé</div>
@@ -522,10 +565,7 @@ function renderPicker(state, entity, recipesMap, preparationsMap) {
   ${renderRecipesPanel(state, recipesMap, preparationsMap)}`;
 }
 
-/**
- * Recettes/préparations — recettes `kind:'weight'` uniquement pour l'instant
- * (les recettes `kind:'portion'` seront intégrées à l'étape 9).
- */
+/** Recettes/préparations — `kind:'weight'` et `kind:'portion'` toutes deux disponibles. */
 function renderRecipesPanel(state, recipesMap, preparationsMap) {
   const recipes = Object.values(recipesMap);
   if (!recipes.length) {
@@ -651,7 +691,10 @@ function wire(root, entity) {
       mutate((en, st) => {
         const it = en.items.find((i) => i.id === id);
         if (!it) return;
-        const food = st.foods.find((f) => f.id === it.foodId);
+        // aliment réel (foodId) OU virtuel (recipeId/preparationId) — même
+        // résolution que l'optimiseur (nutrition.js), pour qu'une recette
+        // `portion` snap EXACTEMENT comme un aliment non fractionnable.
+        const food = resolveItemFood(it, foodsByIdFrom(st), recipesByIdFrom(st), preparationsByIdFrom(st));
         const grams = inUnits && food ? fromUnits(food, raw) : raw;
         // contrainte absolue : multiple entier de gramsPerUnit si non fractionnable
         it.qty[person] = snapQuantity(food, grams);

@@ -610,6 +610,127 @@ check('toast de confirmation', /Recette enregistrée/.test(document.getElementBy
 check('la recette apparaît dans la liste', /Riz aux légumes/.test($('#view').textContent));
 check('type et référence affichés', /Au poids/.test($('#view').textContent) && /800 g/.test($('#view').textContent));
 
+console.log('\n— Écran Recettes : recette « portion », ingrédient non fractionnable en unité naturelle');
+click($('[data-new]'));
+await wait();
+change($('[data-r="name"]'), 'Toast poulet St Môret');
+change($('[data-r="kind"]'), 'portion');
+await wait();
+
+// Wasa (non fractionnable, 11 g/tranche) : autorisé dans une recette portion
+type($('[data-ing-search]'), 'pain croustillant');
+click($$('[data-ing-add]').find((b) => /Pain croustillant de seigle/i.test(b.textContent)));
+await wait();
+check('Wasa (non fractionnable) accepté dans une recette portion', /Pain croustillant/.test($('.drawer__body').textContent));
+
+// bascule "grammes / tranche(s)" — réutilise EXACTEMENT le toggle de l'éditeur de repas (food.unitEntry)
+let wasaToggle = $('[data-ing-unit-toggle="0"]');
+check('bouton de bascule grammes/unité proposé (aliment non fractionnable)', !!wasaToggle);
+if (!/tranche/i.test(wasaToggle.textContent)) { click(wasaToggle); await wait(); wasaToggle = $('[data-ing-unit-toggle="0"]'); }
+check('bascule "Saisie : tranche" activée', /tranche/i.test(wasaToggle.textContent), wasaToggle.textContent);
+check('unité affichée à côté du champ de saisie', /tranche/i.test($('[data-ing-qty="0"]').closest('.qty-box').textContent));
+
+// saisie naturelle : "3" (tranches), jamais un calcul manuel en grammes
+change($('[data-ing-qty="0"]'), '3');
+await wait();
+check('saisie "3" (unité naturelle) acceptée', $('[data-ing-qty="0"]').value === '3');
+
+// impossibilité de saisir une fraction d'unité (§ demande) : 2,4 tranche(s) -> snappé à 2
+change($('[data-ing-qty="0"]'), '2.4');
+await wait();
+check('2,4 tranche(s) saisies → arrondi à un nombre ENTIER de tranches (jamais de fraction d’unité)',
+  $('[data-ing-qty="0"]').value === '2', $('[data-ing-qty="0"]').value);
+
+// impossibilité de saisir arbitrairement 37 g de Wasa : bascule en grammes, 37 -> snappé au multiple de 11 g le plus proche (33 g = 3 tranches)
+click($('[data-ing-unit-toggle="0"]'));
+await wait();
+change($('[data-ing-qty="0"]'), '37');
+await wait();
+check('37 g saisis pour un aliment non fractionnable (11 g/tranche) → arrondi au multiple de 11 g le plus proche (jamais 37 g)',
+  $('[data-ing-qty="0"]').value === '33', $('[data-ing-qty="0"]').value);
+// on repasse en unités et on refixe proprement à 3 tranches (33 g), pour la suite du scénario
+click($('[data-ing-unit-toggle="0"]'));
+await wait();
+check('de retour en mode unité, 33 g s’affichent bien comme 3 tranches', $('[data-ing-qty="0"]').value === '3', $('[data-ing-qty="0"]').value);
+
+// aliments fractionnables : St Môret (30 g) et poulet (80 g), saisie grammes normale, inchangée
+type($('[data-ing-search]'), 'fromage frais tartinable');
+click($$('[data-ing-add]').find((b) => /Fromage frais tartinable/i.test(b.textContent)));
+await wait();
+change($('[data-ing-qty="1"]'), '30');
+type($('[data-ing-search]'), 'blanc de poulet');
+click($$('[data-ing-add]').find((b) => /Blanc de poulet/i.test(b.textContent)));
+await wait();
+change($('[data-ing-qty="2"]'), '80');
+await wait();
+check('3 ingrédients dans la composition (3 tranches Wasa, 30 g St Môret, 80 g poulet)', $$('.drawer__body .items .item').length === 3);
+
+// garde-fou : bascule portion -> weight refusée tant qu'un ingrédient non fractionnable est présent
+change($('[data-r="kind"]'), 'weight');
+await wait();
+check('bascule "portion -> weight" refusée avec message explicite (Wasa non fractionnable présent)',
+  /non fractionnable/.test(document.getElementById('toasts')?.textContent || ''));
+check('le type reste "portion" après le refus', $('[data-r="kind"]').value === 'portion');
+
+click($('[data-save]'));
+await wait();
+check('recette portion enregistrée', /Recette enregistrée/.test(document.getElementById('toasts')?.textContent || ''));
+const savedPortionRecipe = store.getState().recipes.find((r) => r.name === 'Toast poulet St Môret');
+check('grammes réellement stockés : 33 g Wasa (3 × 11 g), 30 g St Môret, 80 g poulet — issus de la saisie naturelle, sans calcul manuel',
+  savedPortionRecipe?.items.map((it) => it.qty).join(',') === '33,30,80',
+  savedPortionRecipe?.items.map((it) => it.qty).join(','));
+
+console.log('\n— Éditeur de repas : recette « portion » utilisée en NOMBRE DE PORTIONS (jamais en grammes)');
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[6]); // créneau encore vide
+await wait();
+// ajustement auto désactivé le temps de ce scénario : on vérifie la quantité
+// TELLE QUE SAISIE/AJOUTÉE, sans interférence de l'optimiseur (qui pourrait
+// légitimement proposer un autre nombre entier de portions selon la cible).
+const autoBox = $('#drawer [data-auto]');
+if (autoBox.checked) { autoBox.checked = false; autoBox.dispatchEvent(new window.Event('change', { bubbles: true })); }
+await wait();
+const addPortionRecipeBtn = () => $$('#drawer [data-add-recipe]').find((b) =>
+  b.closest('.item').textContent.includes('Toast poulet St Môret'));
+check('la recette portion apparaît dans le panneau "Recettes & préparations"', !!addPortionRecipeBtn());
+click(addPortionRecipeBtn());
+await wait();
+const portionRow = () => $$('#drawer .item').find((el) => /Toast poulet St Môret/.test(el.textContent) && /recette/.test(el.textContent));
+const portionQtyInput = () => portionRow().querySelectorAll('[data-qty]')[0];
+check('quantité initiale = 1 portion (jamais 143 g)', portionQtyInput().value === '1', portionQtyInput().value);
+check('unité affichée = "portion", jamais "g"', /portion/.test(portionRow().querySelector('.item__unit').textContent));
+check('pas de saisie = 1 (increment par portion entière)', portionQtyInput().step === '1', portionQtyInput().step);
+
+console.log('\n— Composition déployée pour N portions (dérivée, sans duplication de state)');
+change(portionQtyInput(), '2');
+await wait();
+check('2 portions acceptées', portionQtyInput().value === '2');
+const compositionText = portionRow().textContent.replace(/\s+/g, ' ');
+check('composition déployée pour 2 portions : 6 tranches (aliment non fractionnable, unité naturelle)',
+  /6 tranche/.test(compositionText), compositionText);
+check('composition déployée pour 2 portions : 60 g St Môret (aliment fractionnable, grammes)',
+  /60 g Fromage frais tartinable/.test(compositionText), compositionText);
+check('composition déployée pour 2 portions : 160 g poulet', /160 g Blanc de poulet/.test(compositionText), compositionText);
+
+console.log('\n— Édition manuelle d’une quantité de recette-portion : jamais de portion fractionnaire');
+change(portionQtyInput(), '2.5');
+await wait();
+check('2,5 portions saisies manuellement → arrondi à un nombre ENTIER de portions (correction du bug de saisie manuelle non snappée)',
+  portionQtyInput().value === '3', portionQtyInput().value);
+const savedItemGrams = store.getState().meals.flatMap((m) => m.items).find((it) =>
+  store.getState().recipes.find((r) => r.id === it.recipeId)?.name === 'Toast poulet St Môret')?.qty.thomas;
+check('grammes réellement stockés = 3 × 143 g = 429 g (multiple exact du poids d’une portion)',
+  savedItemGrams === 429, `${savedItemGrams} g`);
+
+// on restaure le réglage global pour la suite de la suite
+const autoBoxEnd = $('#drawer [data-auto]');
+if (autoBoxEnd && !autoBoxEnd.checked) { autoBoxEnd.checked = true; autoBoxEnd.dispatchEvent(new window.Event('change', { bubbles: true })); }
+await wait();
+
+click($('#drawer [data-close]'));
+await wait();
+
 console.log('\n— Courses et batch');
 click($('[data-view="shopping"]'));
 const line = $$('.list-row').map((l) => l.textContent.replace(/\s+/g, ' ').trim()).find((t) => /poulet/i.test(t));

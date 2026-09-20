@@ -409,9 +409,12 @@ export function preparationAsVirtualFood(preparation, foodsById) {
  * traités identiquement du point de vue de cette résolution, la différence
  * vit entièrement dans `recipeAsVirtualFood()`/`preparationAsVirtualFood()`.
  * Factorisée pour que `mealMacros()` et `adjustQuantities()` résolvent un
- * item exactement de la même façon.
+ * item exactement de la même façon. Exportée pour que l'éditeur de repas
+ * (`editor.js`) résolve, lui aussi, l'aliment réel OU virtuel d'un item
+ * avant de lire ses propriétés d'unité (`isWholeUnitFood`, `gramsPerUnit`…) —
+ * même résolution, aucune logique dupliquée.
  */
-function resolveItemFood(it, foodsById, recipesById, preparationsById = {}) {
+export function resolveItemFood(it, foodsById, recipesById, preparationsById = {}) {
   if (it.foodId) return foodsById[it.foodId] || null;
   if (it.recipeId) {
     const recipe = recipesById[it.recipeId];
