@@ -49,7 +49,8 @@ function sessionCard(sess, startWeekday) {
     </div>
     ${covered}
     ${conservationBlock(sess)}
-    ${componentsBlock(sess)}
+    ${componentsBlock(sess, startWeekday)}
+    ${recipesToPrepareBlock(sess, startWeekday)}
     ${sameDayBlock('cook', sess.cookSameDay, startWeekday)}
     ${sameDayBlock('assemble', sess.assembleSameDay, startWeekday)}
     ${gamellesBlock(sess, startWeekday)}
@@ -70,7 +71,35 @@ function conservationBlock(sess) {
 
 /* ---------------------------------------------------- A — à préparer en batch */
 
-function componentsBlock(sess) {
+/**
+ * Conservation plus courte que la session (P0.3) : au lieu d'une simple
+ * alerte, le calendrier concret de reprise — une ligne par sous-préparation,
+ * avec sa propre plage de jours et sa propre saisie "je prépare" (clé
+ * distincte de la ligne principale, cf. `computeSubBatches()` / derive.js).
+ */
+function subBatchRows(subBatches, startWeekday) {
+  if (!subBatches?.length) return '';
+  return `<table style="margin-top:6px">
+    <thead><tr><th>Reprise</th><th class="nums">Besoin</th><th>Je prépare</th></tr></thead>
+    <tbody>
+      ${subBatches
+        .map((b) => {
+          const range = b.startDay === b.endDay
+            ? dayName(startWeekday, b.startDay)
+            : `${dayName(startWeekday, b.startDay)} → ${dayName(startWeekday, b.endDay)}`;
+          return `<tr>
+            <td>${esc(range)}</td>
+            <td class="nums">${grams(b.requiredRaw)}</td>
+            <td><input type="number" step="10" min="0" value="${num(b.preparedRaw, 0).replace(',', '.')}"
+                   data-prep="${b.key}" style="width:104px" aria-label="Quantité préparée"> g</td>
+          </tr>`;
+        })
+        .join('')}
+    </tbody>
+  </table>`;
+}
+
+function componentsBlock(sess, startWeekday) {
   if (!sess.components.length) {
     return `<h3>${BATCH_CATEGORY_LABEL.batch}</h3><p class="muted">Aucun composant batchable sur cette session.</p>`;
   }
@@ -95,6 +124,7 @@ function componentsBlock(sess) {
               ? `<div class="tag${c.shelfLifeShort ? ' sync-error' : ''}">conservation ${num(c.shelfLifeDays, 0)} j / ${num(c.coveredDays, 0)} j couverts</div>`
               : ''
           }
+          ${subBatchRows(c.subBatches, startWeekday)}
         </td>
         <td class="nums">
           ${c.needsCooking ? `${grams(c.requiredRaw)} crus` : grams(c.requiredRaw)}
@@ -115,6 +145,48 @@ function componentsBlock(sess) {
         <th>Composant et méthode</th><th>À sortir</th><th>Quantité cuite nécessaire</th>
         <th>Je prépare</th><th>Cuit attendu</th><th>Surplus</th>
       </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+/* ---------------------------------------------- A' — recettes à préparer en batch (P0.2) */
+
+function recipesToPrepareBlock(sess, startWeekday) {
+  if (!sess.recipesToPrepare?.length) return '';
+  const rows = sess.recipesToPrepare
+    .map((c) => {
+      const surplus = c.preparedRaw - c.requiredRaw;
+      const coverage = c.requiredRaw > 0 ? (c.preparedRaw / c.requiredRaw) * 100 : 100;
+      const method = [
+        c.method ? `méthode : ${esc(c.method)}` : null,
+        c.temperature ? `${num(c.temperature, 0)} °C` : null,
+        c.duration ? `${num(c.duration, 0)} min` : null,
+        c.prepTime ? `préparation ${num(c.prepTime, 0)} min` : null,
+        c.equipment ? esc(c.equipment) : null,
+      ].filter(Boolean).join(' · ');
+      return `<tr>
+        <td>
+          <strong>${esc(c.recipe.name)}</strong> <span class="tag">recette</span>
+          ${method ? `<div class="tag">${method}</div>` : '<div class="tag muted">aucune consigne de cuisson définie dans la fiche recette</div>'}
+          ${c.note ? `<div class="tag">${esc(c.note)}</div>` : ''}
+          ${
+            c.shelfLifeDays !== null
+              ? `<div class="tag${c.shelfLifeShort ? ' sync-error' : ''}">conservation ${num(c.shelfLifeDays, 0)} j / ${num(c.coveredDays, 0)} j couverts</div>`
+              : ''
+          }
+          ${subBatchRows(c.subBatches, startWeekday)}
+        </td>
+        <td class="nums">${grams(c.requiredRaw)}</td>
+        <td><input type="number" step="10" min="0" value="${num(c.preparedRaw, 0).replace(',', '.')}"
+               data-prep="${c.key}" style="width:104px" aria-label="Quantité préparée"> g</td>
+        <td class="nums">${surplus >= 0 ? `+ ${grams(surplus)}` : `manque ${grams(-surplus)}`}<div class="tag">${num(coverage, 0)} %</div></td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<h3>Recettes à préparer en batch</h3>
+    <table>
+      <thead><tr><th>Recette et méthode</th><th>Quantité nette nécessaire</th><th>Je prépare</th><th>Surplus</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }

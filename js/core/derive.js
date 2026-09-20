@@ -178,19 +178,23 @@ export function zeroWasteSlotsFor(state, preparationId) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Besoin total BRUT d'une recette, agrégé sur tout le cycle et les deux
- * personnes : somme des items qui la référencent SANS préparation encore
- * matérialisée (mode "molle" — la recette n'est pas encore cuisinée). Un item
- * déjà lié à une préparation (`preparationId` renseigné) n'est pas un besoin
- * non couvert : son suivi passe par `preparationUsed()`, pas par cette fonction.
- * Ne tient PAS compte du disponible d'une préparation existante de cette
- * recette — c'est `recipeNeededNet()` qui fait cette soustraction ; cette
- * fonction reste le besoin brut, purement additif, comme `aggregateNeeds()`
- * pour les aliments.
+ * Besoin total BRUT d'une recette, agrégé sur une liste de sources (mêmes
+ * conventions que `aggregateNeeds()` : `source.items` + `source.factors`,
+ * un repas ayant toujours un facteur de 1) et les deux personnes : somme des
+ * items qui la référencent SANS préparation encore matérialisée (mode
+ * "molle" — la recette n'est pas encore cuisinée). Un item déjà lié à une
+ * préparation (`preparationId` renseigné) n'est pas un besoin non couvert :
+ * son suivi passe par `preparationUsed()`, pas par cette fonction. Ne tient
+ * PAS compte du disponible d'une préparation existante de cette recette —
+ * c'est `recipeNeededNet()` qui fait cette soustraction ; cette fonction
+ * reste le besoin brut, purement additif, comme `aggregateNeeds()` pour les
+ * aliments. `sources` peut être `cycleSources(state)` (cycle entier) OU une
+ * liste de repas déjà filtrée par session (batch cooking, étape P0.2/P0.3) —
+ * chemin additif, aucun appelant existant n'est affecté.
  */
-export function recipeNeeded(state, recipeId) {
+export function recipeNeededFrom(sources, recipeId) {
   let needed = 0;
-  for (const source of cycleSources(state)) {
+  for (const source of sources) {
     const factors = source.factors || { thomas: source.factor ?? 1, julie: source.factor ?? 1 };
     for (const it of source.items) {
       if (it.recipeId !== recipeId || it.preparationId) continue;
@@ -198,6 +202,11 @@ export function recipeNeeded(state, recipeId) {
     }
   }
   return needed;
+}
+
+/** Besoin brut d'une recette sur le CYCLE ENTIER — voir `recipeNeededFrom()`. */
+export function recipeNeeded(state, recipeId) {
+  return recipeNeededFrom(cycleSources(state), recipeId);
 }
 
 /**
@@ -360,8 +369,48 @@ function servedGrams(food, qty, itemState) {
 }
 
 /**
- * Plan de batch cooking : composants agrégés par session (pas de recettes),
- * plan opératoire de préparation, et détail des gamelles à remplir.
+ * Découpe [startDay, endDay] en tranches consécutives d'au plus `chunkDays`
+ * jours (la dernière peut être plus courte). `chunkDays <= 0` → une seule
+ * tranche couvrant toute la plage (pas de scission).
+ */
+function splitDayRange(startDay, endDay, chunkDays) {
+  if (!(chunkDays > 0)) return [{ startDay, endDay }];
+  const chunks = [];
+  for (let d = startDay; d <= endDay; d += chunkDays) {
+    chunks.push({ startDay: d, endDay: Math.min(endDay, d + chunkDays - 1) });
+  }
+  return chunks;
+}
+
+/**
+ * Sous-préparations d'un composant (aliment OU recette) dont la conservation
+ * (`shelfLifeDays`) est plus courte que la session (P0.3) : au lieu d'une
+ * simple alerte, la session est effectivement scindée en tranches de
+ * `shelfLifeDays` jours, chacune avec son propre besoin (recalculé via
+ * `computeRaw`, restreint aux repas de la tranche — même mécanisme
+ * d'agrégation que le reste, aucune nouvelle formule). Besoin BRUT par
+ * tranche (comme les composants aliments, qui n'ont jamais eu de notion de
+ * stock déjà disponible) : la soustraction du disponible existant (recettes
+ * uniquement, cf. `recipeAvailableFromPreparations`) reste au niveau de la
+ * session entière, pas réparties entre tranches — on ignore SI le stock
+ * existant a été consommé plutôt en début ou en fin de session, information
+ * que le modèle actuel ne représente pas.
+ */
+function computeSubBatches(shelfLifeDays, coveredDays, sessionIndex, startDay, endDay, keyPart, meals, computeRaw, overrides) {
+  if (!(Number.isFinite(Number(shelfLifeDays)) && Number(shelfLifeDays) < coveredDays)) return null;
+  const chunkDays = Math.max(1, Math.floor(Number(shelfLifeDays)));
+  return splitDayRange(startDay, endDay, chunkDays).map((c) => {
+    const chunkMeals = meals.filter((m) => m.dayIndex >= c.startDay && m.dayIndex <= c.endDay);
+    const requiredRaw = computeRaw(chunkMeals);
+    const key = `${sessionIndex}:${c.startDay}-${c.endDay}:${keyPart}`;
+    const preparedRaw = overrides[key] ?? requiredRaw;
+    return { key, startDay: c.startDay, endDay: c.endDay, requiredRaw, preparedRaw };
+  });
+}
+
+/**
+ * Plan de batch cooking : composants aliments ET recettes agrégés par
+ * session, plan opératoire de préparation, et détail des gamelles à remplir.
  * Cette fonction ne modifie jamais le planning : elle le lit.
  */
 export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsById = {}) {
@@ -372,7 +421,7 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
     const meals = state.meals.filter((m) => m.dayIndex >= s.startDay && m.dayIndex <= s.endDay);
     const needs = aggregateNeeds(meals, foodsById, recipesById, preparationsById);
 
-    // ---- A. à préparer en batch
+    // ---- A. aliments à préparer en batch
     const components = [];
     for (const entry of Object.values(needs)) {
       const { food, refGrams } = entry;
@@ -408,14 +457,71 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
           Number.isFinite(Number(food.shelfLifeDays)) && food.shelfLifeDays !== null
             ? Number(food.shelfLifeDays) < coveredDays
             : false,
+        subBatches: computeSubBatches(
+          food.shelfLifeDays, coveredDays, s.index, s.startDay, s.endDay, food.id, meals,
+          (chunkMeals) => aggregateNeeds(chunkMeals, foodsById, recipesById, preparationsById)[food.id]?.refGrams || 0,
+          state.batch.overrides
+        ),
       });
     }
     components.sort((a, b) => b.requiredRaw - a.requiredRaw);
+
+    // ---- A'. recettes à préparer en batch (P0.2 — chemin réel, plus un simple
+    // affichage : une recette référencée directement (recipeId, sans
+    // préparation — "molle", pas encore cuisinée) et marquée batchAllowed sur
+    // SA PROPRE fiche devient ici un composant à part entière, au lieu de
+    // disparaître (déployée en ingrédients bruts) ou d'être traitée comme
+    // "déjà assemblée" plus bas. Net du disponible déjà préparé pour cette
+    // recette — réutilise recipeAvailableFromPreparations() telle quelle,
+    // donc une recette déjà (ou partiellement) préparée n'est jamais recomptée.
+    const recipeIdsHere = new Set();
+    for (const meal of meals) {
+      for (const it of meal.items) if (it.recipeId && !it.preparationId) recipeIdsHere.add(it.recipeId);
+    }
+    const recipesToPrepare = [...recipeIdsHere]
+      .map((recipeId) => recipesById[recipeId])
+      .filter((r) => r && r.batchAllowed)
+      .map((recipe) => {
+        const neededSession = recipeNeededFrom(meals, recipe.id);
+        const available = recipeAvailableFromPreparations(state, recipe.id);
+        const requiredRaw = Math.max(0, neededSession - available);
+        const key = `${s.index}:recipe:${recipe.id}`;
+        const prepared = state.batch.overrides[key];
+        const preparedRaw = prepared ?? requiredRaw;
+        return {
+          key,
+          recipe,
+          requiredRaw,
+          preparedRaw,
+          method: recipe.cookingMethod || '',
+          temperature: recipe.cookingTemp ?? null,
+          duration: recipe.cookingTime ?? null,
+          prepTime: recipe.prepTime ?? null,
+          equipment: recipe.equipment || '',
+          note: recipe.instructions ? String(recipe.instructions) : null,
+          shelfLifeDays: recipe.shelfLifeDays ?? null,
+          coveredDays,
+          shelfLifeShort:
+            Number.isFinite(Number(recipe.shelfLifeDays)) && recipe.shelfLifeDays !== null
+              ? Number(recipe.shelfLifeDays) < coveredDays
+              : false,
+          subBatches: computeSubBatches(
+            recipe.shelfLifeDays, coveredDays, s.index, s.startDay, s.endDay, `recipe:${recipe.id}`, meals,
+            (chunkMeals) => recipeNeededFrom(chunkMeals, recipe.id), state.batch.overrides
+          ),
+        };
+      })
+      .filter((c) => c.requiredRaw > 0 || c.preparedRaw > 0);
+    recipesToPrepare.sort((a, b) => b.requiredRaw - a.requiredRaw);
 
     // ---- B et C : par repas concerné (une recette/préparation n'est jamais
     // dépliée ici — contrairement à aggregateNeeds/buildShoppingList — une
     // gamelle affiche "Chili con carne 300 g", jamais ses ingrédients séparés ;
     // elle est déjà considérée "prête à assembler", comme un plat déjà cuit).
+    // Une recette désormais listée dans `recipesToPrepare` (ci-dessus) reste
+    // AUSSI ici : ce sont deux vues complémentaires (ce qu'il faut cuisiner
+    // vs. dans quelle gamelle ça atterrit), jamais une redondance de calcul —
+    // ni l'une ni l'autre ne déplient les ingrédients.
     const cookSameDay = [];
     const assembleSameDay = [];
     for (const meal of meals) {
@@ -486,20 +592,27 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
       ),
     }));
 
-    // alertes : préparation dont la conservation ne couvre pas la session.
+    // alertes : composant (aliment ou recette) dont la conservation ne couvre
+    // pas la session. `subBatches` (calculé ci-dessus) donne déjà le calendrier
+    // concret de reprise ; l'alerte reste un résumé visible en tête de session.
     // Purement informatif : rien n'est supprimé, le planning n'est pas modifié.
-    const conservationAlerts = components
+    const conservationAlerts = [...components, ...recipesToPrepare]
       .filter((c) => c.shelfLifeShort)
       .map((c) => ({
         food: c.food,
+        recipe: c.recipe,
         shelfLifeDays: Number(c.shelfLifeDays),
         coveredDays,
+        subBatchCount: c.subBatches?.length ?? null,
         message:
-          `${c.food.name} se conserve ${c.shelfLifeDays} jour(s) après préparation, ` +
-          `mais cette session couvre ${coveredDays} jour(s).`,
+          `${c.food ? c.food.name : c.recipe.name} se conserve ${c.shelfLifeDays} jour(s) après préparation, ` +
+          `mais cette session couvre ${coveredDays} jour(s) : ${c.subBatches?.length ?? 0} préparations nécessaires.`,
       }));
 
-    return { ...s, coveredDays, components, cookSameDay, assembleSameDay, gamelles, conservationAlerts, mealCount: meals.length };
+    return {
+      ...s, coveredDays, components, recipesToPrepare, cookSameDay, assembleSameDay, gamelles,
+      conservationAlerts, mealCount: meals.length,
+    };
   });
 }
 

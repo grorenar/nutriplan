@@ -12,7 +12,7 @@
 
 import {
   __setTestClient, syncNow, pull, push, planSync, shouldCheckRemote, fetchRemoteStamp, sameStamp,
-  stateToTables, isConfigured,
+  stateToTables, tablesToState, isConfigured,
 } from '../js/core/sync.js';
 import {
   getState, replaceState, update, defaultState, subscribe, ensureCycleMeals,
@@ -76,7 +76,14 @@ function makeClient(remote) {
   remote.calls = { rpc: 0, select: 0, stamp: 0 };
   return {
     auth: {
-      getUser: async () => ({ data: { user: remote.signedIn === false ? null : { id: 'u1', email: 'foyer@example.org' } } }),
+      // `remote.authError` simule une réponse de Supabase où `auth.getUser()`
+      // NE LÈVE PAS d'exception mais renvoie {data:{user:null}, error} — le
+      // cas réel d'une base injoignable (P0.4). `remote.signedIn === false`
+      // reste le cas distinct d'un utilisateur vraiment non authentifié.
+      getUser: async () => {
+        if (remote.authError) return { data: { user: null }, error: remote.authError };
+        return { data: { user: remote.signedIn === false ? null : { id: 'u1', email: 'foyer@example.org' } } };
+      },
     },
     from(table) {
       return {
@@ -494,6 +501,133 @@ await test('pull() en cours : une recette créée PENDANT la récupération n’
     remote.tables.recipes?.some((r) => r.name === 'Recette créée pendant un pull en cours') === true);
   check('l’état est marqué synchronisé APRÈS un envoi réel, pas après une perte silencieuse',
     getState().meta.dirty === false && remote.calls.rpc === 1);
+});
+
+await test('P0.3 — clé de sous-préparation batch avec ":" imbriqués : round-trip Supabase sans perte (bug réel corrigé)', async () => {
+  // avant correction : `key.split(':')` détruisait tout ce qui suit le 2e ':'.
+  const s = defaultState();
+  s.batch.overrides = {
+    '0:f_riz': 200, // ancien format (session:foodId), doit continuer de fonctionner
+    '0:0-1:f_boeuf': 400, // sous-préparation aliment (session:jourDébut-jourFin:foodId)
+    '1:recipe:recipe_abc123': 600, // recette (session:recipe:recipeId)
+    '2:2-3:recipe:recipe_xyz789': 350, // sous-préparation recette (session:jourDébut-jourFin:recipe:recipeId)
+  };
+  const tables = stateToTables(s);
+  check('4 lignes batch_items produites (aucune fusion/collision de clé)', tables.batch_items.length === 4);
+  const restored = tablesToState(tables);
+  check('les 4 clés sont restaurées EXACTEMENT à l’identique après un aller-retour',
+    JSON.stringify(Object.entries(restored.batch.overrides).sort()) === JSON.stringify(Object.entries(s.batch.overrides).sort()),
+    JSON.stringify(restored.batch.overrides));
+});
+
+/* ================================================================ P0.4 — STATUT RÉEL DE SYNCHRONISATION */
+/*
+ * Cause exacte du bug : `currentUser()` lisait `{ data }` sans jamais
+ * regarder `error` — or `auth.getUser()` de Supabase NE LÈVE PAS d'exception
+ * quand la base est injoignable, elle renvoie `{data:{user:null}, error}`.
+ * `syncNow()` traitait donc une coupure réseau exactement comme "non
+ * authentifié" (`if (!ctx.authenticated) return planSync(ctx)`), une branche
+ * qui ne touchait JAMAIS `meta.syncError` — l'interface retombait alors sur
+ * "Synchronisé" par défaut, alors que la base n'avait jamais été jointe.
+ * Corrigé : `currentUser()` propage l'erreur ; `syncNow()` la classe
+ * (`classifySyncError`) en 'network' (déconnecté) ou 'server' (vraie erreur
+ * de synchronisation) et pose `meta.syncing` pendant l'exécution.
+ */
+
+await test('P0.4.1 — connecté et synchronisé : syncing/syncError/syncErrorKind retombent tous à un état propre', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  setLocal(defaultState(), { dirty: false, remoteStamp: stampOf(remote) });
+  const result = await syncNow();
+  check('action up-to-date', result.action === 'up-to-date');
+  check('syncing = false après la synchronisation', getState().meta.syncing === false);
+  check('aucune erreur', getState().meta.syncError === null && getState().meta.syncErrorKind === null);
+});
+
+await test('P0.4.2 — synchronisation en cours : meta.syncing passe à true PENDANT l’appel réseau', async () => {
+  function makeDelayedClient(remote) {
+    remote.calls = { rpc: 0, select: 0, stamp: 0 };
+    return {
+      auth: { getUser: async () => ({ data: { user: { id: 'u1', email: 'foyer@example.org' } } }) },
+      from(table) {
+        return {
+          select(columns) {
+            const rows = remote.tables[table] || [];
+            const data = columns === 'updated_at' ? rows.map((r) => ({ updated_at: asPostgresStamp(r.updated_at) })) : rows;
+            const p = (async () => { await new Promise((r) => setTimeout(r, 15)); remote.calls.stamp += 1; return { data, error: null }; })();
+            p.limit = async () => { await new Promise((r) => setTimeout(r, 15)); return { data: data.slice(0, 1), error: null }; };
+            return p;
+          },
+        };
+      },
+      async rpc() { return { data: {}, error: null }; },
+    };
+  }
+  const remote = { tables: remoteFrom(defaultState()) };
+  __setTestClient(makeDelayedClient(remote));
+  setLocal(defaultState(), { dirty: false, remoteStamp: stampOf({ tables: remote.tables }) });
+
+  check('syncing = false avant l’appel', getState().meta.syncing === false);
+  const p = syncNow();
+  await new Promise((r) => setTimeout(r, 5)); // laisse syncNow() atteindre son appel réseau différé
+  check('syncing = true PENDANT la synchronisation', getState().meta.syncing === true);
+  await p;
+  check('syncing = false une fois terminée', getState().meta.syncing === false);
+});
+
+await test('P0.4.3 — déconnecté de la BDD : une base injoignable (erreur SANS code serveur) est classée "network", jamais confondue avec "Synchronisé"', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  remote.authError = new TypeError('Failed to fetch'); // signature réelle d’un échec réseau navigateur
+  setLocal(defaultState(), { dirty: false, remoteStamp: null });
+
+  const result = await syncNow();
+  check('action = error (jamais confondue avec "à jour")', result.action === 'error');
+  check('meta.syncError renseignée (avant le correctif : restait null)', typeof getState().meta.syncError === 'string' && getState().meta.syncError.length > 0);
+  check('classée "network", pas "server"', getState().meta.syncErrorKind === 'network');
+  check('syncing retombe à false même en cas d’échec', getState().meta.syncing === false);
+
+  delete remote.authError;
+});
+
+await test('P0.4.4 — erreur de synchronisation réelle (base jointe, erreur SERVEUR) : classée distinctement de "déconnecté"', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  remote.authError = { message: 'invalid JWT', code: '401', status: 401 }; // réponse RÉELLE du serveur, pas une coupure réseau
+  setLocal(defaultState(), { dirty: false, remoteStamp: null });
+
+  const result = await syncNow();
+  check('action = error', result.action === 'error');
+  check('classée "server", pas "network"', getState().meta.syncErrorKind === 'server');
+
+  delete remote.authError;
+});
+
+await test('P0.4.5 — dernière synchronisation réussie mais connexion actuellement indisponible : syncedAt reste renseigné pendant que syncErrorKind passe à "network"', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  const local = defaultState();
+  local.foods.push({ ...local.foods[0], id: 'f_avant_coupure', name: 'Envoyé avant la coupure' });
+  setLocal(local, { dirty: true, remoteStamp: stampOf(remote) });
+  await syncNow(); // envoi réussi : syncedAt posé
+  const syncedAtBefore = getState().meta.syncedAt;
+  check('syncedAt bien posé après un succès', !!syncedAtBefore);
+
+  // puis la base devient injoignable (ex. coupure réseau après un succès)
+  remote.authError = new TypeError('Failed to fetch');
+  await syncNow();
+  check('syncErrorKind = network après la coupure', getState().meta.syncErrorKind === 'network');
+  check('syncedAt (dernière réussite) n’est PAS effacé par un échec ultérieur — permet à l’interface de dire "dernière synchronisation réussie"',
+    getState().meta.syncedAt === syncedAtBefore);
+
+  delete remote.authError;
+});
+
+await test('P0.4.6 — modification locale en attente : dirty reste vrai tant que rien n’a été envoyé', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  const local = defaultState();
+  local.foods.push({ ...local.foods[0], id: 'f_attente', name: 'Modification en attente' });
+  setLocal(local, { dirty: true, remoteStamp: stampOf(remote) });
+  check('dirty = true avant toute tentative de synchronisation', getState().meta.dirty === true);
+  const result = await syncNow();
+  check('l’envoi part en priorité (jamais une récupération qui l’écraserait)', result.action === 'push');
+  check('dirty retombe à false une fois envoyé avec succès', getState().meta.dirty === false);
 });
 
 await test('Horodatage distant : requête minimale', async () => {

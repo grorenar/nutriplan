@@ -51,7 +51,17 @@ export function defaultState() {
     shopping: { purchased: {} }, // foodId -> bool
     coverage: { forced: {} },    // écarts de couverture assumés par l'utilisateur
     batch: { overrides: {} }, // `${session}:${foodId}` -> grammes préparés
-    meta: { updatedAt: new Date().toISOString(), dirty: false, syncedAt: null, syncError: null },
+    // syncing : indicateur d'exécution, jamais une donnée à synchroniser —
+    // toujours remis à false au chargement (cf. migrate()), une synchronisation
+    // en cours ne survit jamais à un rechargement de page.
+    // syncErrorKind : 'network' (connexion/authentification injoignable) vs
+    // 'server' (la base a été jointe mais a renvoyé une erreur réelle) — sert
+    // à distinguer « déconnecté de la BDD » d'une véritable erreur de
+    // synchronisation dans l'interface (P0.4).
+    meta: {
+      updatedAt: new Date().toISOString(), dirty: false, syncedAt: null,
+      syncError: null, syncErrorKind: null, syncing: false,
+    },
   };
 }
 
@@ -196,6 +206,10 @@ function migrate(s) {
   merged.shopping = { purchased: {}, ...(s.shopping || {}) };
   merged.batch = { overrides: {}, ...(s.batch || {}) };
   merged.meta = { ...base.meta, ...(s.meta || {}) };
+  // une synchronisation en cours ne survit jamais à un rechargement de page
+  // (le code qui la pilotait n'existe plus) : jamais figée à `true` par une
+  // persistance survenue pendant qu'elle tournait.
+  merged.meta.syncing = false;
   if (!Array.isArray(merged.foods) || !merged.foods.length) merged.foods = seedFoods();
   merged.foods = merged.foods.map(normalizeFood);
   merged.recipes = (Array.isArray(merged.recipes) ? merged.recipes : []).map(normalizeRecipe);

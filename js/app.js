@@ -56,6 +56,13 @@ function renderView() {
   def.render(root);
 }
 
+/**
+ * Source de vérité du statut affiché (P0.4 — décision verrouillée) : reflète
+ * l'état RÉEL du client, jamais un optimisme par défaut. En particulier,
+ * "Synchronisé" n'est plus le repli silencieux d'un état non vérifié —
+ * chaque branche correspond à un fait constaté (`meta.syncing`/`syncError`/
+ * `syncErrorKind`/`dirty`/`syncedAt`), jamais à une absence d'information.
+ */
 function renderStatus() {
   const s = getState();
   const box = document.getElementById('status');
@@ -64,10 +71,26 @@ function renderStatus() {
   let cls = '';
   let label = 'Mode local';
   if (configured) {
-    if (!navigator.onLine) { cls = 'is-dirty'; label = 'Hors ligne — modifications conservées'; }
-    else if (s.meta.syncError) { cls = 'is-error'; label = 'Échec de synchronisation — données locales intactes'; }
-    else if (s.meta.dirty) { cls = 'is-dirty'; label = 'Modifications à synchroniser'; }
-    else { cls = 'is-sync'; label = 'Synchronisé'; }
+    if (!navigator.onLine) {
+      cls = 'is-dirty'; label = 'Hors ligne — modifications conservées';
+    } else if (s.meta.syncing) {
+      cls = 'is-dirty'; label = 'Synchronisation en cours…';
+    } else if (s.meta.syncError) {
+      cls = 'is-error';
+      if (s.meta.syncErrorKind === 'network') {
+        // Supabase injoignable maintenant : distinct d'une vraie erreur de
+        // synchronisation (RPC/vérification) — cf. classifySyncError() dans sync.js.
+        label = s.meta.syncedAt
+          ? 'Déconnecté de la BDD — dernière synchronisation réussie'
+          : 'Déconnecté de la BDD';
+      } else {
+        label = 'Échec de synchronisation — données locales intactes';
+      }
+    } else if (s.meta.dirty) {
+      cls = 'is-dirty'; label = 'Modifications à synchroniser';
+    } else {
+      cls = 'is-sync'; label = 'Synchronisé';
+    }
   }
   box.innerHTML = `<span class="dot ${cls}"></span>${label}`;
   box.title = s.meta.syncError || label;

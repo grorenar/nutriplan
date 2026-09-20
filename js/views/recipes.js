@@ -169,6 +169,29 @@ function formPanel(s, byId) {
         }
         ${ingredientPicker(s)}
 
+        <h3 style="margin:16px 0 6px">Batch cooking</h3>
+        <label class="check"><input type="checkbox" data-r="batchAllowed" ${r.batchAllowed ? 'checked' : ''}> Autorisée en batch cooking</label>
+        <small style="display:block;margin:4px 0 8px">Une recette autorisée en batch cooking, référencée directement dans un repas (pas encore préparée), apparaît dans l'écran Batch avec sa quantité nette à préparer.</small>
+        <div class="grid grid--3">
+          <label class="field">Durée maximale de conservation après préparation (jours)
+            <input type="number" step="1" min="0" data-r="shelfLifeDays" value="${num(r.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
+        </div>
+        <small style="display:block;margin:4px 0 8px">Si la conservation est plus courte que la durée d'une session de batch, le plan indique automatiquement les préparations supplémentaires nécessaires en cours de session.</small>
+        <div class="grid grid--3">
+          <label class="field">Méthode de cuisson
+            <input type="text" data-r="cookingMethod" value="${esc(r.cookingMethod || '')}" placeholder="Four, mijoteuse, poêle…"></label>
+          <label class="field">Température (°C)
+            <input type="number" step="5" data-r="cookingTemp" value="${num(r.cookingTemp)}"></label>
+          <label class="field">Durée de cuisson (min)
+            <input type="number" step="1" data-r="cookingTime" value="${num(r.cookingTime)}"></label>
+          <label class="field">Temps de préparation (min)
+            <input type="number" step="1" data-r="prepTime" value="${num(r.prepTime)}"></label>
+          <label class="field">Matériel
+            <input type="text" data-r="equipment" value="${esc(r.equipment || '')}" placeholder="Four, sauteuse…"></label>
+        </div>
+        <label class="field" style="margin-top:8px">Consignes libres
+          <textarea data-r="instructions" rows="3" placeholder="Ex. mijoter à couvert, remuer à mi-cuisson.">${esc(r.instructions || '')}</textarea></label>
+
         <div class="row" style="margin-top:18px">
           <button class="btn btn--primary" data-save>Enregistrer</button>
           ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${r.id}">Supprimer</button>`}
@@ -212,11 +235,16 @@ function wire(root, s) {
     if (e.target.dataset.formBackdrop !== undefined) { resetForm(); render(root); }
   });
 
+  const RECIPE_NUMERIC_FIELDS = ['shelfLifeDays', 'cookingTemp', 'cookingTime', 'prepTime'];
+  const RECIPE_TEXT_FIELDS = ['cookingMethod', 'equipment', 'instructions'];
   root.querySelectorAll('[data-r]').forEach((input) => {
     input.addEventListener('change', (e) => {
       const key = e.target.dataset.r;
       const draft = currentDraft(getState());
       if (key === 'baseGrams') draft.baseGrams = Math.max(0, Number(e.target.value) || 0);
+      else if (key === 'batchAllowed') draft.batchAllowed = e.target.checked;
+      else if (RECIPE_NUMERIC_FIELDS.includes(key)) draft[key] = e.target.value === '' ? null : Number(e.target.value);
+      else if (RECIPE_TEXT_FIELDS.includes(key)) draft[key] = e.target.value;
       else if (key === 'kind') {
         const newKind = e.target.value;
         if (newKind === 'weight') {

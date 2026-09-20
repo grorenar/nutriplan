@@ -44,10 +44,22 @@ async function getClient() {
 /* Authentification                                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * `c.auth.getUser()` ne LÈVE PAS d'exception réseau : elle renvoie
+ * `{data:{user:null}, error}` même quand Supabase est injoignable (DNS,
+ * serveur down, etc.). Ignorer `error` ici revient à confondre "vraiment non
+ * connecté" et "injoignable en ce moment" — c'est précisément ce qui faisait
+ * afficher "Synchronisé" alors que Supabase était inaccessible (P0.4, bug
+ * réel) : `syncNow()` traitait ce cas comme un simple "non authentifié" et
+ * ne déclenchait jamais son bloc catch, qui seul renseigne `meta.syncError`.
+ * On propage donc l'erreur : les appelants qui acceptent un échec silencieux
+ * (ex. js/views/settings.js) l'attrapent déjà eux-mêmes.
+ */
 export async function currentUser() {
   const c = await getClient();
   if (!c) return null;
-  const { data } = await c.auth.getUser();
+  const { data, error } = await c.auth.getUser();
+  if (error) throw error;
   return data?.user || null;
 }
 
@@ -339,8 +351,16 @@ export function stateToTables(s) {
     purchased: !!purchased,
   }));
 
+  // clé = `${session}:${foodId}` historiquement, mais aussi désormais
+  // `${session}:${jourDébut}-${jourFin}:${foodId}` ou `…:recipe:${recipeId}`
+  // (sous-préparations liées à la conservation, P0.3) : ne découper QUE sur
+  // le premier ':' — un split(':') naïf tronquait silencieusement tout ce
+  // qui suit un deuxième ':' (bug réel, corrigé avant qu'aucune donnée ne
+  // soit perdue en synchronisation).
   const batch_items = Object.entries(s.batch.overrides).map(([key, grams]) => {
-    const [session, foodId] = key.split(':');
+    const sep = key.indexOf(':');
+    const session = sep === -1 ? key : key.slice(0, sep);
+    const foodId = sep === -1 ? '' : key.slice(sep + 1);
     return { id: `batch:${key}`, preparation_session: Number(session), food_id: foodId, preparation_quantity: grams };
   });
 
@@ -486,6 +506,7 @@ export async function push() {
     dirty: false,
     syncedAt: new Date().toISOString(),
     syncError: null,
+    syncErrorKind: null,
     remoteStamp: stamp,
   });
   return counts;
@@ -527,7 +548,7 @@ export async function pull() {
   const data = {};
   for (const table of TABLES) {
     const { data: rows, error } = await c.from(table).select('*');
-    if (error) { setSyncMeta({ syncError: error.message }); throw error; }
+    if (error) { setSyncMeta({ syncError: error.message, syncErrorKind: classifySyncError(error) }); throw error; }
     data[table] = rows || [];
   }
 
@@ -561,6 +582,8 @@ export async function pull() {
     dirty: false,
     syncedAt: new Date().toISOString(),
     syncError: null,
+    syncErrorKind: null,
+    syncing: false,
     remoteStamp: data.settings?.[0]?.updated_at || null,
   };
   replaceState(next, { dirty: false });
@@ -641,6 +664,19 @@ export function shouldCheckRemote(lastCheckAt, now = Date.now(), minIntervalMs =
 }
 
 /**
+ * Classe une erreur de synchronisation : 'server' quand Supabase a
+ * effectivement répondu (code Postgres/PostgREST, statut HTTP — un problème
+ * réel côté application/données), 'network' sinon (aucun de ces signaux :
+ * très probablement une coupure de connectivité — DNS, serveur injoignable,
+ * CORS — jamais une réponse réelle de la base). Sert à distinguer "déconnecté
+ * de la BDD" d'une véritable "erreur de synchronisation" dans l'interface.
+ */
+function classifySyncError(e) {
+  const hasServerSignal = e && (e.code !== undefined || e.status !== undefined || e.statusCode !== undefined);
+  return hasServerSignal ? 'server' : 'network';
+}
+
+/**
  * Synchronisation automatique dans les deux sens.
  * Appelée au démarrage, au retour sur l'application, au retour de connexion et
  * après une modification locale. Le bouton « Récupérer du cloud » reste
@@ -658,9 +694,16 @@ export async function syncNow({ editing = false } = {}) {
   };
   if (!ctx.configured || !ctx.online) return planSync(ctx);
 
+  setSyncMeta({ syncing: true });
   try {
     ctx.authenticated = Boolean(await currentUser());
-    if (!ctx.authenticated) return planSync(ctx);
+    if (!ctx.authenticated) {
+      // non authentifié : soit vraiment déconnecté, soit `currentUser()` a
+      // laissé passer une session locale non (encore) confirmée par le
+      // serveur — dans les deux cas, la BDD n'est PAS jointe actuellement.
+      setSyncMeta({ syncError: 'Non connecté à Supabase', syncErrorKind: 'network' });
+      return planSync(ctx);
+    }
 
     if (ctx.dirty) {
       await push();
@@ -686,8 +729,10 @@ export async function syncNow({ editing = false } = {}) {
     return plan;
   } catch (e) {
     // les données locales restent la référence tant que la synchronisation n'a pas abouti
-    setSyncMeta({ syncError: e.message || String(e) });
+    setSyncMeta({ syncError: e.message || String(e), syncErrorKind: classifySyncError(e) });
     return { action: 'error', reason: e.message || String(e) };
+  } finally {
+    setSyncMeta({ syncing: false });
   }
 }
 
