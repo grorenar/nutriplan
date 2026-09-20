@@ -437,6 +437,65 @@ await test('Recettes/préparations : envoyées et récupérées correctement (bu
   check('son mode zéro reste est préservé', gotPrepItem?.zeroWaste === true);
 });
 
+await test('pull() en cours : une recette créée PENDANT la récupération n’est plus jamais écrasée (bug réel corrigé)', async () => {
+  // pull() enchaîne une requête par table (14 tables) : un aller-retour réseau
+  // RÉEL n'est jamais instantané. Le client factice habituel résout tout de
+  // suite ; celui-ci introduit un délai réaliste pour pouvoir agir PENDANT
+  // que pull() est en cours — exactement la fenêtre où le bug se produisait.
+  function makeSlowClient(remote) {
+    remote.calls = { rpc: 0, select: 0, stamp: 0 };
+    return {
+      auth: { getUser: async () => ({ data: { user: { id: 'u1', email: 'foyer@example.org' } } }) },
+      from(table) {
+        return {
+          async select() {
+            remote.calls.select += 1;
+            await new Promise((r) => setTimeout(r, 5));
+            return { data: remote.tables[table] || [], error: null };
+          },
+        };
+      },
+      async rpc(name, { payload }) {
+        if (name !== 'nutriplan_replace_all') return { data: null, error: { message: `fonction inconnue : ${name}` } };
+        remote.calls.rpc += 1;
+        remote.tables = JSON.parse(JSON.stringify(payload));
+        return { data: Object.fromEntries(Object.keys(payload).map((t) => [t, payload[t].length])), error: null };
+      },
+    };
+  }
+
+  const remoteState = defaultState();
+  ensureCycleMeals(remoteState);
+  const remote = { tables: remoteFrom(remoteState) };
+  __setTestClient(makeSlowClient(remote));
+
+  const local = defaultState();
+  ensureCycleMeals(local);
+  setLocal(local, { dirty: false, remoteStamp: null }); // état propre, pull() va démarrer
+
+  const pullPromise = pull(); // ne pas attendre : simule un pull déjà en cours
+
+  // PENDANT que pull() récupère ses 14 tables, l'utilisateur crée une
+  // recette — exactement le geste de js/views/recipes.js.
+  await new Promise((r) => setTimeout(r, 2));
+  const riz = getState().foods.find((f) => /Riz basmati/i.test(f.name)) || getState().foods[0];
+  const recipe = newRecipe('Recette créée pendant un pull en cours', 'weight');
+  recipe.items = [newRecipeItem(riz.id, 300, 'cru')];
+  recipe.baseGrams = 300;
+  update((s) => { s.recipes.push(recipe); });
+  check('la recette existe bien en local juste après création', getState().recipes.length === 1);
+
+  await pullPromise;
+
+  check('la recette créée pendant le pull n’a PAS été écrasée (survit à la fin du pull)',
+    getState().recipes.some((r) => r.name === 'Recette créée pendant un pull en cours'),
+    `${getState().recipes.length} recette(s) en local`);
+  check('elle a bien été envoyée au serveur (push déclenché au lieu d’un remplacement)',
+    remote.tables.recipes?.some((r) => r.name === 'Recette créée pendant un pull en cours') === true);
+  check('l’état est marqué synchronisé APRÈS un envoi réel, pas après une perte silencieuse',
+    getState().meta.dirty === false && remote.calls.rpc === 1);
+});
+
 await test('Horodatage distant : requête minimale', async () => {
   const remote = useRemote({ tables: remoteFrom(defaultState()) });
   const stamp = await fetchRemoteStamp();

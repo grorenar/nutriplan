@@ -537,6 +537,18 @@ export async function pull() {
     return { seeded: true };
   }
 
+  // dernière protection : une modification locale a pu survenir PENDANT les
+  // requêtes séquentielles ci-dessus (14 tables, plusieurs allers-retours
+  // réseau réels — pas instantanés). syncNow() vérifie déjà « dirty » juste
+  // AVANT d'appeler pull() (§ priorité absolue à l'envoi, décision
+  // verrouillée), mais rien ne protégeait la fenêtre PENDANT ces requêtes :
+  // un remplacement en fin de pull() écrasait alors silencieusement l'ajout
+  // local, sans erreur, sans le renvoyer jamais (bug réel reproduit).
+  if (getState().meta.dirty) {
+    await push();
+    return { seeded: false, pushedInstead: true };
+  }
+
   const next = tablesToState(data);
   if (!next.foods.length) {
     throw new Error('Données distantes incomplètes : récupération annulée, rien n\'a été remplacé en local.');
