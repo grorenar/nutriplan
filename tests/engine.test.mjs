@@ -13,6 +13,7 @@ import {
   canConvert, conversionInfo, stateLabel, STATES, referenceFor, CATEGORY_PROFILE, CATEGORIES,
   recipeMacrosPer100g, canAddIngredientToRecipe, recipeAsVirtualFood, preparationAsVirtualFood,
   resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf, macroCost,
+  statusFor, statusForKey, MACRO_ROLE,
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
@@ -139,7 +140,13 @@ test('A — protéine seule : pas de quantité absurde, manque signalé', () => 
   const d = diagnose(m, LUNCH.thomas, foods);
   check('le repas est signalé hors cible', d !== null);
   check('glucides signalés manquants', d.rows.some((r) => r.key === 'carbs' && r.delta < 0));
-  check('lipides signalés manquants', d.rows.some((r) => r.key === 'fat' && r.delta < 0));
+  // lipides = plafond (P1.1, décision verrouillée) : être sous la cible n'est
+  // JAMAIS un problème (statut "ok"), donc `diagnose()` (qui ne remonte que
+  // les lignes hors "ok") ne les signale plus comme "manquants" — c'est le
+  // comportement correct attendu, pas une régression. Avant P1.1, la même
+  // tolérance symétrique que les autres macros s'appliquait aux lipides.
+  check('lipides non signalés comme un problème (sous un plafond, "ok")',
+    !d.rows.some((r) => r.key === 'fat'));
   check('une piste est proposée', d.suggestions.length > 0, d.suggestions.join(', '));
 });
 
@@ -242,6 +249,64 @@ test('F — plusieurs aliments verrouillés', () => {
   check('courgettes toujours présentes et raisonnables', items[2].qty.thomas >= 60 && items[2].qty.thomas <= 320, `${items[2].qty.thomas} g`);
 });
 
+/* ============================================== P1.2 — VERROUILLAGE PAR PERSONNE (v1.5.2) */
+/*
+ * `js/views/editor.js` (handler data-qty) verrouille désormais AUTOMATIQUEMENT
+ * `it.locked[person]=true` dès qu'une quantité est modifiée manuellement, pour
+ * la seule personne éditée. Ce mécanisme réutilise TEL QUEL le verrouillage
+ * déjà lu par `buildVarsAndFixed()` (aucun changement moteur) — ces tests
+ * vérifient que, une fois `locked` posé par personne, l'indépendance
+ * Thomas/Julie déjà garantie par le moteur tient pour TOUS les types
+ * d'items (aliment, recette, préparation) avec des quantités distinctes.
+ */
+test('P1.2 — verrouillage indépendant par personne (aliment) : locked.thomas=true n’empêche pas Julie d’être ajustée', () => {
+  const items = [item(F('Blanc de poulet')), item(F('Pâtes complètes')), item(F('Haricots verts'), 200), item(F('Huile d’olive'))];
+  autoAdjust(items, byId, LUNCH);
+  items[0].qty.thomas = 180; // simule une saisie manuelle, Thomas uniquement
+  items[0].locked.thomas = true; // ... et donc SEULEMENT locked.thomas, comme le ferait editor.js
+  const julieBefore = items[0].qty.julie;
+  for (let i = 0; i < 3; i++) autoAdjust(items, byId, LUNCH);
+  check('Thomas (verrouillé) reste exactement à 180 g', items[0].qty.thomas === 180, `${items[0].qty.thomas}`);
+  check('Julie (non verrouillée) reste ajustable normalement', items[0].qty.julie !== 180, `${items[0].qty.julie}`);
+  check('Julie a une quantité cohérente avec sa propre cible (pas figée à l’ancienne valeur)',
+    Math.abs(items[0].qty.julie - julieBefore) >= 0 && items[0].qty.julie > 0);
+});
+
+test('P1.2 — verrouillage indépendant par personne (recette weight) : même garantie qu’un aliment classique', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+  const items = [recipeItemInMeal(recipe.id, 300)];
+  autoAdjust(items, byId, LUNCH, { recipesById });
+  items[0].qty.julie = 250; // simule une saisie manuelle, Julie uniquement
+  items[0].qty.thomas = 5; // valeur délibérément mauvaise, pour prouver que Thomas bouge réellement
+  items[0].locked = { thomas: false, julie: true };
+  for (let i = 0; i < 3; i++) autoAdjust(items, byId, LUNCH, { recipesById });
+  check('Julie (verrouillée) reste exactement à 250 g', items[0].qty.julie === 250, `${items[0].qty.julie}`);
+  check('Thomas (non verrouillé) s’éloigne réellement de sa valeur de départ mauvaise (5 g)',
+    items[0].qty.thomas > 50, `${items[0].qty.thomas} g`);
+  check('Thomas n’est jamais contraint par le verrou de Julie (aucun couplage inter-personnes)',
+    !items[0].locked.thomas);
+});
+
+test('P1.2 — verrouillage indépendant par personne (préparation) : cohérent avec le mode normal existant', () => {
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Riz simple', 'weight');
+  recipe.items = [newRecipeItem(riz.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 5000);
+  const preparationsById = { [prep.id]: prep };
+  const items = [newPreparationItem(prep.id, 200)];
+  autoAdjust(items, byId, LUNCH, { preparationsById, preparationAvailability: { [prep.id]: 5000 - 200 } });
+  items[0].qty.thomas = 300; // simule une saisie manuelle, Thomas uniquement
+  items[0].locked.thomas = true;
+  for (let i = 0; i < 3; i++) autoAdjust(items, byId, LUNCH, { preparationsById, preparationAvailability: { [prep.id]: 5000 - 300 } });
+  check('Thomas (verrouillé) reste exactement à 300 g', items[0].qty.thomas === 300, `${items[0].qty.thomas}`);
+  check('Julie (non verrouillée) reste ajustable', items[0].qty.julie > 0);
+});
+
 /* ================================================================ TEST G */
 
 test('G — aucun aliment ajouté ni supprimé automatiquement', () => {
@@ -273,7 +338,11 @@ test('H — cible impossible : écart affiché plutôt que composition absurde',
   const m = mealMacros(items, byId, 'thomas');
   const d = diagnose(m, LUNCH.thomas, foods);
   check('écart signalé', d !== null && d.rows.length >= 3);
-  check('kcal très en dessous, signalé "off"', evaluate(m, LUNCH.thomas).rows[0].status === 'off', `${m.kcal.toFixed(0)} kcal`);
+  // kcal = plafond (P1.1, décision verrouillée) : un déficit, même énorme,
+  // n'est jamais "off" (rouge) — seul un dépassement l'est. Avant P1.1, la
+  // même tolérance symétrique que les autres macros s'appliquait au kcal.
+  check('kcal très en dessous, signalé "warn" (jamais "off" par déficit calorique)',
+    evaluate(m, LUNCH.thomas).rows[0].status === 'warn', `${m.kcal.toFixed(0)} kcal`);
 
   // seconde combinaison impossible : whey seule sur un déjeuner
   const only = [item(F('Protéine en poudre'))];
@@ -677,6 +746,79 @@ test('Calibration asymétrique — macroCost() respecte la hiérarchie kcal > li
   // le surplus protéique n'est jamais totalement gratuit
   check('un surplus protéique reste coûteux comparé à protéines pile sur la cible',
     macroCost('protein', 0.30) > macroCost('protein', 0));
+});
+
+/* ============================================== P1.1 — COLORATION DES OBJECTIFS (v1.5.2) */
+/*
+ * `statusForKey()` (affichage) est DISTINCTE de `macroCost()` (coût de
+ * l'optimiseur, v1.5.0.7, non modifiée ici) : seuils propres à l'affichage,
+ * réutilisant uniquement le rôle plafond/plancher/souple de MACRO_ROLE.
+ * Tolérance par défaut t = 0.05 (state.settings.tolerance).
+ */
+
+test('P1.1 — kcal (plafond) : jamais rouge par déficit, rouge dès le moindre dépassement', () => {
+  const target = 1000;
+  check('légèrement sous la cible (-3 %) → ok', statusForKey('kcal', 970, target) === 'ok');
+  check('pile sur la cible → ok', statusForKey('kcal', 1000, target) === 'ok');
+  check('exactement à -t (-5 %) → ok (borne incluse)', statusForKey('kcal', 950, target) === 'ok');
+  check('nettement sous la cible (-10 %) → warn', statusForKey('kcal', 900, target) === 'warn');
+  check('très nettement sous la cible (-50 %) → warn (jamais off par déficit)',
+    statusForKey('kcal', 500, target) === 'warn');
+  check('le moindre dépassement (+0,1 %) → off', statusForKey('kcal', 1001, target) === 'off');
+  check('dépassement franc (+10 %) → off', statusForKey('kcal', 1100, target) === 'off');
+});
+
+test('P1.1 — lipides (plafond) : formule explicite fat<=target→ok, ]target,+5%]→warn, >+5%→off', () => {
+  const target = 30;
+  check('sous la cible → ok', statusForKey('fat', 25, target) === 'ok');
+  check('même très sous la cible (0 g) → ok (jamais un problème sous un plafond)',
+    statusForKey('fat', 0, target) === 'ok');
+  check('pile sur la cible → ok', statusForKey('fat', 30, target) === 'ok');
+  check('+5 % exactement → warn (borne incluse)', statusForKey('fat', 31.5, target) === 'warn');
+  check('+2 % → warn', statusForKey('fat', 30.6, target) === 'warn');
+  check('> +5 % → off', statusForKey('fat', 33, target) === 'off');
+});
+
+test('P1.1 — protéines (plancher) : déficit strict, excès raisonnable toléré, excès très important signalé', () => {
+  const target = 40;
+  check('< -5 % (déficit important) → off', statusForKey('protein', 36, target) === 'off');
+  check('exactement -5 % → warn (borne incluse côté warn, pas off)', statusForKey('protein', 38, target) === 'warn');
+  check('entre -5 % et 0 % (déficit léger) → warn', statusForKey('protein', 39, target) === 'warn');
+  check('pile sur la cible → ok', statusForKey('protein', 40, target) === 'ok');
+  check('surplus raisonnable (+10 %) → ok', statusForKey('protein', 44, target) === 'ok');
+  check('+15 % exactement → ok (borne incluse)', statusForKey('protein', 46, target) === 'ok');
+  check('surplus très important (+20 %) → warn (jamais off, jamais gratuit)',
+    statusForKey('protein', 48, target) === 'warn');
+  check('surplus énorme (+50 %) → warn (reste signalé, jamais ok)',
+    statusForKey('protein', 60, target) === 'warn');
+});
+
+test('P1.1 — glucides (souple) : comportement symétrique inchangé de statusFor()', () => {
+  const target = 100;
+  for (const value of [70, 80, 92, 100, 108, 120, 130]) {
+    check(`glucides ${value}/${target} : identique à statusFor() (souple, inchangé)`,
+      statusForKey('carbs', value, target) === statusFor(value, target));
+  }
+  check('déficit important (-20 %) → off', statusForKey('carbs', 80, target) === 'off');
+  check('déficit proche (-10 %) → warn', statusForKey('carbs', 90, target) === 'warn');
+  check('cible → ok', statusForKey('carbs', 100, target) === 'ok');
+  check('dépassement proche (+10 %) → warn', statusForKey('carbs', 110, target) === 'warn');
+  check('dépassement important (+20 %) → off', statusForKey('carbs', 120, target) === 'off');
+  // symétrie stricte : même statut de part et d'autre d'un écart identique
+  check('symétrie stricte -10 % / +10 %', statusForKey('carbs', 90, target) === statusForKey('carbs', 110, target));
+  check('symétrie stricte -20 % / +20 %', statusForKey('carbs', 80, target) === statusForKey('carbs', 120, target));
+});
+
+test('P1.1 — evaluate() utilise bien statusForKey() par macro (intégration, pas seulement la fonction isolée)', () => {
+  // même scénario que le tableau de seuils : kcal +1 % (off), fat 0 g (ok
+  // malgré un déficit total), protein +20 % (warn), carbs -20% (off)
+  const ev = evaluate({ kcal: 1010, protein: 48, carbs: 80, fat: 0 }, { kcal: 1000, protein: 40, carbs: 100, fat: 30 });
+  const byKey = Object.fromEntries(ev.rows.map((r) => [r.key, r.status]));
+  check('kcal off (dépassement)', byKey.kcal === 'off');
+  check('protéines warn (excès très important)', byKey.protein === 'warn');
+  check('glucides off (déficit important)', byKey.carbs === 'off');
+  check('lipides ok (0 g, sous un plafond)', byKey.fat === 'ok');
+  check('statut global = off (le pire des quatre)', ev.status === 'off');
 });
 
 /* ================================================================ CRU / CUIT */

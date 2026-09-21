@@ -452,6 +452,44 @@ export function statusFor(value, target, tolerance = 0.05) {
   return 'off';
 }
 
+/**
+ * Statut d'affichage d'UNE macro, tenant compte de son rôle (P1.1, décision
+ * verrouillée) — distinct de `macroCost()` (fonction de coût de
+ * l'optimiseur, v1.5.0.7, non modifiée) : les seuils ci-dessous sont propres
+ * à l'affichage utilisateur, réutilisent uniquement la classification
+ * plafond/plancher/souple de `MACRO_ROLE`, jamais ses poids/constantes.
+ *
+ *  kcal    (plafond) : [-t, 0]   → ok · < -t → warn · > 0 → off (jamais rouge par déficit)
+ *  fat     (plafond) : <= 0      → ok · ]0, t] → warn · > t → off
+ *  protein (plancher): < -t      → off · [-t, 0[ → warn · [0, 3t] → ok · > 3t → warn
+ *  carbs   (souple)  : identique à statusFor() (symétrique, inchangé)
+ */
+export function statusForKey(key, value, target, tolerance = 0.05) {
+  if (!target) return 'none';
+  const dev = (value - target) / target;
+  const role = MACRO_ROLE[key];
+  if (role === 'ceiling') {
+    if (key === 'fat') {
+      if (dev <= 0) return 'ok';
+      if (dev <= tolerance) return 'warn';
+      return 'off';
+    }
+    // kcal
+    if (dev > 0) return 'off';
+    if (dev >= -tolerance) return 'ok';
+    return 'warn';
+  }
+  if (role === 'floor') {
+    // protein
+    if (dev < -tolerance) return 'off';
+    if (dev < 0) return 'warn';
+    if (dev <= tolerance * 3) return 'ok';
+    return 'warn';
+  }
+  // 'soft' (carbs) et tout cas non couvert : comportement symétrique existant, inchangé
+  return statusFor(value, target, tolerance);
+}
+
 /** Évaluation complète d'un repas pour une personne. */
 export function evaluate(macros, target, tolerance = 0.05) {
   const rows = MACRO_KEYS.map(({ key, label }) => {
@@ -463,7 +501,7 @@ export function evaluate(macros, target, tolerance = 0.05) {
       value,
       target: goal,
       delta: value - goal,
-      status: statusFor(value, goal, tolerance),
+      status: statusForKey(key, value, goal, tolerance),
     };
   });
   const worst = rows.reduce(
@@ -505,7 +543,7 @@ export function evaluate(macros, target, tolerance = 0.05) {
  * les macros pour combler un manque de kcal), exprimée par le signe plutôt que
  * par une pondération globale.
  */
-const MACRO_ROLE = { kcal: 'ceiling', fat: 'ceiling', protein: 'floor', carbs: 'soft' };
+export const MACRO_ROLE = { kcal: 'ceiling', fat: 'ceiling', protein: 'floor', carbs: 'soft' };
 /** Poids côté indolore (sous la cible pour un plafond, au-dessus pour un plancher). */
 const W_SOFT = { kcal: 0.12, fat: 0.20, protein: 0.12, carbs: 0.60 };
 /** Poids côté pénalisé (dépassement d'un plafond, déficit d'un plancher). */

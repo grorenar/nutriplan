@@ -719,6 +719,16 @@ function wire(root, entity) {
         const grams = inUnits && food ? fromUnits(food, raw) : raw;
         // contrainte absolue : multiple entier de gramsPerUnit si non fractionnable
         it.qty[person] = snapQuantity(food, grams);
+        // P1.2 (décision verrouillée) : toute saisie manuelle verrouille
+        // immédiatement et durablement cette quantité, pour cette personne
+        // uniquement — jusqu'ici seul `pinned` (local à cet appel de
+        // mutate()) protégeait l'item pendant CET ajustement ; rien ne le
+        // protégeait des ajustements suivants (bug réel : une modification
+        // manuelle pouvait être défaite par un ajustement ultérieur sur un
+        // AUTRE aliment). `pinned` reste en place : il protège l'item
+        // pendant l'ajustement immédiat déclenché plus bas, avant même que
+        // ce nouveau `locked` n'ait besoin d'être relu.
+        it.locked[person] = true;
       }, { pinned: [id] });
     });
   });

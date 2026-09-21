@@ -79,18 +79,19 @@ const macros = $$('#drawer .macro').slice(0, 4).map((m) => m.textContent.replace
 console.log(`        ${macros.join(' | ')}`);
 check('macros affichées sans clic supplémentaire', macros.length === 4);
 check('glucides affichés "G" et non "C"', macros.some((m) => / G$/.test(m)) && !macros.some((m) => / C$/.test(m)), macros.join(' | '));
-// calibration asymétrique du coût nutritionnel (kcal/lipides = plafond,
-// décision verrouillée) : rester sous la cible lipidique est désormais
-// volontairement préféré à la risquer de la dépasser — ici ~-12 %, donc
-// "warn" (badge honnête, evaluate()/statusFor() restent inchangés et
-// purement descriptifs) plutôt que "ok". kcal/protéines/glucides, eux,
-// atteignent toujours la cible exacte dans ce scénario (assez de degrés
-// de liberté) : pas de changement de comportement à vérifier pour eux.
+// coloration par rôle (P1.1, décision verrouillée — evaluate()/statusFor()
+// restent purement descriptifs, la fonction de coût n'est pas concernée) :
+// 1015/1050 kcal (-3,3 %, plafond) → ok ; 54,7/55 P (-0,5 %, plancher : tout
+// déficit, même minime, est au mieux "warn", jamais "ok") → warn ;
+// 118,2/120 G (-1,5 %, souple ±5 %) → ok ; 30,8/35 L (-12 %, plafond :
+// toujours "ok" sous la cible, quelle que soit la marge) → ok.
 const macroBadges = $$('#drawer .macro').slice(0, 4);
-check('kcal / protéines / glucides de Thomas dans la cible',
-  [macroBadges[0], macroBadges[1], macroBadges[2]].every((m) => m.classList.contains('is-ok')));
-check('lipides de Thomas signalés proches mais pas atteints (jamais dépassés)',
-  macroBadges[3].classList.contains('is-warn'), macroBadges[3].className);
+check('kcal de Thomas dans la cible (plafond, léger déficit)', macroBadges[0].classList.contains('is-ok'), macroBadges[0].className);
+check('protéines de Thomas signalées en léger déficit (plancher, jamais "ok" sous la cible)',
+  macroBadges[1].classList.contains('is-warn'), macroBadges[1].className);
+check('glucides de Thomas dans la cible (souple, ±5 %)', macroBadges[2].classList.contains('is-ok'), macroBadges[2].className);
+check('lipides de Thomas dans la cible (plafond, sous la cible = toujours "ok")',
+  macroBadges[3].classList.contains('is-ok'), macroBadges[3].className);
 
 console.log('\n— État pesé dans le repas');
 const pastaRow = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
@@ -124,15 +125,35 @@ check('le total remonte une fois un état convertible choisi', totalBack > total
 check('plus aucun avertissement de conversion',
   !/Conversion impossible/.test($('#drawer .drawer__body').textContent));
 
-console.log('\n— Verrouillage');
+console.log('\n— Verrouillage automatique après modification manuelle (P1.2)');
 const qty = () => $$('#drawer [data-qty]').map((i) => i.value);
-change($$('#drawer [data-qty]')[0], '180');
-click($$('#drawer [data-lock]')[0]);
-const lockedValue = qty()[0];
-check('poulet à 180 g après verrouillage', lockedValue === '180', lockedValue);
-change($$('#drawer [data-qty]')[2], '150');
-check('poulet inchangé après modification des pâtes', qty()[0] === '180');
+const lockPressed = () => $$('#drawer [data-lock]').map((b) => b.getAttribute('aria-pressed'));
+// ordre du DOM : [poulet-thomas, poulet-julie, pâtes-thomas, pâtes-julie, …]
+change($$('#drawer [data-qty]')[0], '180'); // poulet, Thomas — AUCUN clic sur le cadenas
+await wait();
+check('la quantité modifiée manuellement est verrouillée immédiatement, sans clic sur le cadenas',
+  lockPressed()[0] === 'true', lockPressed().join(','));
+check('poulet à 180 g après la saisie manuelle', qty()[0] === '180', qty()[0]);
+check('Thomas/Julie indépendants : la quantité de Julie pour ce même aliment n’est PAS verrouillée',
+  lockPressed()[1] === 'false', lockPressed().join(','));
+
+change($$('#drawer [data-qty]')[2], '150'); // pâtes, Thomas — également sans clic
+await wait();
+check('les pâtes sont à leur tour verrouillées par leur propre modification manuelle',
+  lockPressed()[2] === 'true', lockPressed().join(','));
+check('poulet (verrouillé) reste inchangé après la modification des pâtes', qty()[0] === '180');
 check('aucun ingrédient supprimé', $$('#drawer .item').length === 4);
+
+console.log('\n— Déverrouillage manuel puis nouvel ajustement (P1.2)');
+click($$('#drawer [data-lock]')[0]); // déverrouille poulet-Thomas, désormais verrouillé automatiquement
+await wait();
+check('le clic sur le cadenas déverrouille bien un item verrouillé automatiquement',
+  lockPressed()[0] === 'false', lockPressed().join(','));
+click($('#drawer [data-adjust]'));
+await wait();
+check('« Ajuster maintenant » peut de nouveau modifier poulet une fois déverrouillé',
+  qty()[0] !== '180', qty()[0]);
+check('les pâtes (toujours verrouillées) restent, elles, inchangées', qty()[2] === '150', qty()[2]);
 
 console.log('\n— « Ajuster maintenant » avec ajustement automatique désactivé');
 // le panneau ne recrée que son contenu à chaque rendu : on requête l'élément
@@ -204,6 +225,10 @@ let wasaQty = () => {
   return it ? it.qty.thomas : null;
 };
 check('3 tranches = 33 g stockés', wasaQty() === 33, `${wasaQty()} g`);
+// P1.2 : le verrouillage automatique fonctionne aussi en saisie par unités
+// entières (pas seulement en grammes), sans clic sur le cadenas.
+check('la saisie en unités (portions/unités entières) verrouille aussi automatiquement',
+  $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent)).querySelector('[data-lock]').getAttribute('aria-pressed') === 'true');
 click(wasaRow.querySelector('[data-unit-toggle]'));
 const wasaRow2 = $$('#drawer .item').find((el) => /croustillant/i.test(el.textContent));
 check('bascule en grammes', wasaRow2.querySelector('[data-qty]').dataset.unitmode === '0');
@@ -413,11 +438,12 @@ const pastaRow2 = () => $$('#drawer .item').find((el) => /Pâtes complètes/.tes
 change(pastaRow2().querySelectorAll('[data-qty]')[0], '400');
 change(pastaRow2().querySelectorAll('[data-qty]')[1], '400');
 await wait();
-// verrouillées (pas seulement épinglées pour cette passe) : la masse voulue ne
-// doit pas bouger quand un autre ingrédient est ajouté ensuite.
-click(pastaRow2().querySelectorAll('[data-lock]')[0]);
-click(pastaRow2().querySelectorAll('[data-lock]')[1]);
-await wait();
+// verrouillées AUTOMATIQUEMENT par la saisie manuelle elle-même (P1.2,
+// décision verrouillée) — plus besoin de cliquer sur le cadenas : la masse
+// voulue ne doit pas bouger quand un autre ingrédient est ajouté ensuite.
+check('la saisie manuelle a déjà verrouillé les pâtes (Thomas et Julie), sans clic sur le cadenas',
+  pastaRow2().querySelectorAll('[data-lock]')[0].getAttribute('aria-pressed') === 'true' &&
+  pastaRow2().querySelectorAll('[data-lock]')[1].getAttribute('aria-pressed') === 'true');
 // on bascule la section cible sur "Entrée" avant d'ajouter un aliment léger
 click($$('#drawer [data-target-section]').find((c) => c.textContent.trim() === 'Entrée'));
 add('haricots', 'Haricots verts');
@@ -426,10 +452,10 @@ const haricotsRow = () => $$('#drawer .item').find((el) => /Haricots verts/.test
 change(haricotsRow().querySelectorAll('[data-qty]')[0], '80');
 change(haricotsRow().querySelectorAll('[data-qty]')[1], '80');
 await wait();
-click(haricotsRow().querySelectorAll('[data-lock]')[0]);
-click(haricotsRow().querySelectorAll('[data-lock]')[1]);
-await wait();
-check('les 400 g de pâtes n’ont pas été réoptimisés après l’ajout des haricots (verrou)',
+check('les haricots sont eux aussi verrouillés automatiquement par leur propre saisie',
+  haricotsRow().querySelectorAll('[data-lock]')[0].getAttribute('aria-pressed') === 'true' &&
+  haricotsRow().querySelectorAll('[data-lock]')[1].getAttribute('aria-pressed') === 'true');
+check('les 400 g de pâtes n’ont pas été réoptimisés après l’ajout des haricots (verrou automatique)',
   pastaRow2().querySelectorAll('[data-qty]')[0].value === '400');
 const summary = $('#drawer .drawer__body').textContent;
 check('le PLAT est signalé volumineux', /Plat — .*volumineux/.test(summary), summary.match(/Plat — [^—]*/)?.[0]);
@@ -716,6 +742,10 @@ console.log('\n— Composition déployée pour N portions (dérivée, sans dupli
 change(portionQtyInput(), '2');
 await wait();
 check('2 portions acceptées', portionQtyInput().value === '2');
+// P1.2 : le verrouillage automatique fonctionne aussi sur un item RECETTE
+// (pas seulement un aliment classique), via le même handler data-qty.
+check('un item recette verrouille aussi automatiquement sa quantité par simple saisie',
+  portionRow().querySelectorAll('[data-lock]')[0].getAttribute('aria-pressed') === 'true');
 const compositionText = portionRow().textContent.replace(/\s+/g, ' ');
 check('composition déployée pour 2 portions : 6 tranches (aliment non fractionnable, unité naturelle)',
   /6 tranche/.test(compositionText), compositionText);
@@ -906,8 +936,11 @@ check('mode local expliqué dans le compte', /Mode local uniquement/.test($('#vi
 console.log('\n— Persistance locale');
 const saved = JSON.parse(localStorage.getItem('nutriplan.state.v1'));
 check('état écrit dans localStorage', !!saved && saved.foods.length > 50);
-check('repas conservé avec son verrou',
-  saved.meals[0].items.some((i) => i.locked.thomas === true && i.qty.thomas === 180));
+// pâtes (Thomas) : dernier item resté verrouillé (par sa propre saisie
+// manuelle, P1.2) sur ce repas — le poulet, lui, a été déverrouillé puis
+// réajusté explicitement plus haut (« Déverrouillage manuel »).
+check('repas conservé avec son verrou (verrouillage automatique persistant)',
+  saved.meals[0].items.some((i) => i.locked.thomas === true && i.qty.thomas === 5 && i.foodId === 'f_pates_completes'));
 check('ingrédient libre conservé', saved.meals[0].items.some((i) => i.free?.name === 'Curry'));
 
 console.log('\n' + '='.repeat(60));
