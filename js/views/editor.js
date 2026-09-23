@@ -27,6 +27,19 @@ let addFor = 'both'; // utilisé quand les compositions diffèrent
 let addSection = DEFAULT_SECTION; // section cible d'un ajout depuis le picker
 let host = null;
 
+/**
+ * Intitulé unique affiché à la place des sections (Entrée/Plat/…) pour un
+ * petit-déjeuner ou une collation (P3.1) : ces catégories n'ont pas de sens
+ * hors d'un repas classique. `SECTIONS`/`DEFAULT_SECTION` restent inchangés
+ * (décision verrouillée) — seul l'affichage change, `item.section` continue
+ * d'exister tel quel en interne.
+ */
+const CATALOG_HEADING = {
+  breakfast: 'Petit-déjeuner',
+  snack_afternoon: 'Collation 16 h',
+  snack_evening: 'Collation soir',
+};
+
 export const isOpen = () => ctx !== null;
 
 export function openEditor(kind, id) {
@@ -153,6 +166,15 @@ export function renderEditor() {
       <span class="spacer"></span>
       <button class="btn btn--ghost" data-close>Fermer</button>
     </div>
+    ${
+      ctx.kind === 'snack'
+        ? `<div class="row row--tight" style="margin-top:8px">
+             <small>Objectif de référence :</small>
+             <button class="chip" data-set-slot="afternoon" aria-pressed="${entity.targetSlot !== 'evening'}">16 h</button>
+             <button class="chip" data-set-slot="evening" aria-pressed="${entity.targetSlot === 'evening'}">Soir</button>
+           </div>`
+        : ''
+    }
     <div class="row" style="margin-top:8px">
       <input type="text" data-name value="${esc(entity.name)}" placeholder="Nom du repas (facultatif)" style="flex:1;min-width:180px">
     </div>
@@ -197,13 +219,18 @@ function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, prepa
     const diag = diagnose(macros, targets[person], state.foods, tol);
     // le volume, lui, est analysé INDÉPENDAMMENT par section (décision §6/§8) :
     // un plat volumineux ne doit pas noyer une entrée ou un dessert normaux
-    // dans une seule masse globale.
-    const volBySection = sectionsUsed(entity.items)
-      .map((section) => ({
-        section,
-        vol: analyzeMealVolume(entity.items.filter((it) => (it.section || DEFAULT_SECTION) === section), byId, person),
-      }))
-      .filter((x) => x.vol.level > 0);
+    // dans une seule masse globale. Un petit-déjeuner/collation (P3.1) n'a
+    // qu'un seul groupe (pas de sous-division Entrée/Plat/…) : analyse sur
+    // la totalité des items, libellée par CATALOG_HEADING.
+    const volBySection = ctx.kind === 'meal'
+      ? sectionsUsed(entity.items)
+          .map((section) => ({
+            label: SECTION_LABEL[section],
+            vol: analyzeMealVolume(entity.items.filter((it) => (it.section || DEFAULT_SECTION) === section), byId, person),
+          }))
+          .filter((x) => x.vol.level > 0)
+      : [{ label: CATALOG_HEADING[targetType()], vol: analyzeMealVolume(entity.items, byId, person) }]
+          .filter((x) => x.vol.level > 0);
     const chips = ev.rows
       .map(
         (r) => `<span class="macro is-${r.status}">
@@ -224,8 +251,8 @@ function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, prepa
       }
       ${volBySection
         .map(
-          ({ section, vol }) => `<div class="tag${vol.level >= 2 ? ' sync-error' : ''}" style="margin-top:4px">
-               ${esc(SECTION_LABEL[section])} — ${esc(vol.label)} — environ ${num(vol.grams, 0)} g${vol.partial ? ' (estimation partielle : au moins un ingrédient sans rendement cru → cuit renseigné n’est pas compté)' : ''}
+          ({ label, vol }) => `<div class="tag${vol.level >= 2 ? ' sync-error' : ''}" style="margin-top:4px">
+               ${esc(label)} — ${esc(vol.label)} — environ ${num(vol.grams, 0)} g${vol.partial ? ' (estimation partielle : au moins un ingrédient sans rendement cru → cuit renseigné n’est pas compté)' : ''}
              </div>`
         )
         .join('')}
@@ -262,8 +289,14 @@ export function unitHint(food, qty) {
   return `≈ ${txt} ${esc(unitLabel(food, u))}`;
 }
 
-/** Sélecteur de section, réutilisé sur chaque ligne : déplacer un item ne modifie qu'un champ. */
+/**
+ * Sélecteur de section, réutilisé sur chaque ligne : déplacer un item ne
+ * modifie qu'un champ. Absent pour un petit-déjeuner/collation (P3.1) : ces
+ * catégories (Entrée/Plat/…) n'ont pas de sens hors d'un repas classique —
+ * `item.section` reste néanmoins inchangé en interne (aucune migration).
+ */
 function sectionSelect(it) {
+  if (ctx.kind !== 'meal') return '';
   return `<select data-section-of="${it.id}" class="section-select" aria-label="Section">
     ${SECTIONS.map((s) => `<option value="${s}" ${(it.section || DEFAULT_SECTION) === s ? 'selected' : ''}>${esc(SECTION_LABEL[s])}</option>`).join('')}
   </select>`;
@@ -272,6 +305,17 @@ function sectionSelect(it) {
 function renderItems(entity, byId, recipesMap, preparationsMap) {
   if (!entity.items.length) {
     return `<div class="empty" style="margin:12px 0">Aucun ingrédient. Ajoute un aliment ci-dessous : la quantité est proposée automatiquement.</div>`;
+  }
+  if (ctx.kind !== 'meal') {
+    // Un seul groupe, intitulé par type (P3.1) — pas de sous-division en
+    // sections Entrée/Plat/… pour un petit-déjeuner ou une collation.
+    const rows = entity.items.map((it) => renderItemRow(it, byId, recipesMap, preparationsMap)).join('');
+    return `<div class="items" style="margin:12px 0">
+      <div class="section-group" style="margin-bottom:14px">
+        <h4 style="margin:0 0 6px">${esc(CATALOG_HEADING[targetType()])}</h4>
+        ${rows}
+      </div>
+    </div>`;
   }
   const used = sectionsUsed(entity.items);
   const groups = used
@@ -531,7 +575,7 @@ function pickerResults(state) {
   return list
     .map(
       (f) => `<button data-add="${f.id}">
-        <strong>${esc(f.name)}</strong>${f.favorite ? ' ★' : ''}
+        <strong>${esc(f.name)}</strong>${f.favorite ? ' ★' : ''}${isWholeUnitFood(f) ? ' <span class="tag">non fractionnable</span>' : ''}
         <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} G / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})${
         isWholeUnitFood(f) ? ` · ${num(f.gramsPerUnit, 0)} g / ${esc(f.unitName || 'unité')}` : ''
       }</div>
@@ -681,6 +725,17 @@ function wire(root, entity) {
   root.querySelector('[data-close]')?.addEventListener('click', closeEditor);
   root.querySelector('[data-close-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.closeBackdrop !== undefined) closeEditor();
+  });
+
+  // P3.2 : bascule 16 h / soir directement dans le tiroir, sans le fermer —
+  // même collation, mêmes items, seul `targetSlot` (la cible macro de
+  // référence) change ; identique au toggle déjà existant sur l'écran
+  // catalogue (catalogs.js), réutilise le même mécanisme mutate().
+  root.querySelectorAll('[data-set-slot]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const slot = e.currentTarget.dataset.setSlot;
+      mutate((en) => { en.targetSlot = slot; }, { adjust: false });
+    });
   });
 
   root.querySelector('[data-name]')?.addEventListener('change', (e) => {

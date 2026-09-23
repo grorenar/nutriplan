@@ -100,12 +100,13 @@ function suggestionsPanel(s, byId, recipesMap, preparationsMap) {
 function duplicatePanel(s) {
   const src = s.meals.find((m) => m.id === duplicateFrom);
   if (!src) return '';
+  const startWeekday = s.settings.cycle.startWeekday;
   const slots = s.meals
     .filter((m) => m.id !== src.id)
     .map(
       (m) => `<label class="check" style="padding:6px 0">
         <input type="checkbox" data-target="${m.id}">
-        Jour ${m.dayIndex + 1} — ${esc(MEAL_TYPES[m.mealType])}${m.items.length ? ' (sera remplacé)' : ''}
+        ${esc(dayName(startWeekday, m.dayIndex))} (jour ${m.dayIndex + 1}) — ${esc(MEAL_TYPES[m.mealType])}${m.items.length ? ' (sera remplacé)' : ''}
       </label>`
     )
     .join('');

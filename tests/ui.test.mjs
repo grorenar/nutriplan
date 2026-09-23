@@ -70,6 +70,17 @@ const add = (search, label) => {
   if (!btn) throw new Error(`aliment introuvable : ${label}`);
   click(btn);
 };
+
+console.log('\n— P3.6 : tag « non fractionnable » repris du picker de recettes dans le picker de repas');
+type($('#drawer [data-search]'), 'pain croustillant');
+const wasaPickerBtn = $$('#drawer [data-add]').find((b) => /Pain croustillant/i.test(b.textContent));
+check('aliment non fractionnable marqué « non fractionnable » dans le picker du repas (réutilise isWholeUnitFood, comme recipes.js)',
+  /non fractionnable/.test(wasaPickerBtn?.textContent || ''));
+type($('#drawer [data-search]'), 'blanc de poulet');
+const pouletPickerBtn = $$('#drawer [data-add]').find((b) => /Blanc de poulet/i.test(b.textContent));
+check('aliment fractionnable : aucun tag « non fractionnable »', !/non fractionnable/.test(pouletPickerBtn?.textContent || ''));
+type($('#drawer [data-search]'), '');
+
 add('poulet', 'Blanc de poulet');
 add('pâtes com', 'Pâtes complètes');
 add('haricots', 'Haricots verts');
@@ -278,6 +289,18 @@ click($('#drawer [data-close]'));
 check('éditeur fermé', !$('#drawer .drawer__panel'));
 check('macros visibles sur la carte du planning', $$('.meal-card .macro').length >= 8);
 
+console.log('\n— Duplication : nom du jour affiché dans les destinations (P3.5)');
+click($$('[data-dup]')[0]);
+await wait();
+const dupLabels = $$('[data-target]').map((cb) => cb.closest('label').textContent.replace(/\s+/g, ' ').trim());
+check('le panneau de duplication propose au moins une destination', dupLabels.length > 0);
+check('le nom du jour (Lundi/Mardi/…) accompagne désormais le numéro « jour X » (P3.5, réutilise dayName())',
+  dupLabels.every((t) => /^(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche) \(jour \d+\) — /.test(t)),
+  dupLabels.join(' | '));
+click($('[data-dup-cancel]'));
+await wait();
+check('panneau de duplication fermé sans duplication', !$('[data-dup-confirm]'));
+
 console.log('\n— Détection de doublons : popup bloquante');
 click($('[data-view="foods"]'));
 await wait();
@@ -398,12 +421,19 @@ await wait();
 check('couverture affichée pour les deux personnes', /Couverture du cycle/.test($('#view').textContent));
 check('besoin théorique = durée du cycle', /0 \/ 4/.test($('#view').textContent), $('#view').textContent.slice(0, 120));
 check('avertissement de manque affiché', /⚠️/.test($('#view').textContent));
-check('bouton de forçage proposé', !!$('[data-force]'));
+// P3.3 : « Forcer quand même » supprimé (sans effet fonctionnel, cf. diagnostic P3) — l'avertissement seul suffit.
+check('bouton de forçage retiré (fonctionnalité cosmétique supprimée, P3.3)', !$('[data-force]'));
 
 click($('[data-new]'));
 await wait();
 type($('#drawer [data-search]'), 'flocons');
 click($$('#drawer [data-add]')[0]);
+await wait();
+// P3.1 — petit-déjeuner : plus de sections Entrée/Plat/…, un seul intitulé fixe.
+check('aucun sélecteur de section dans l’éditeur d’un petit-déjeuner (P3.1)',
+  $$('#drawer [data-section-of]').length === 0);
+check('intitulé unique « Petit-déjeuner » à la place des sections (P3.1)',
+  $$('#drawer .section-group h4').map((h) => h.textContent).join(',') === 'Petit-déjeuner');
 click($('#drawer [data-close]'));
 await wait();
 click($('[data-view="shopping"]'));
@@ -422,10 +452,7 @@ const bState = () => JSON.parse(localStorage.getItem('nutriplan.state.v1')).brea
 check('compteurs indépendants Thomas / Julie', bState().uses.thomas === 2 && bState().uses.julie === 1,
   JSON.stringify(bState().uses));
 check('couverture mise à jour', /2 \/ 4/.test($('#view').textContent));
-click($('[data-force]'));
-await wait();
-check('écart assumé mémorisé', JSON.parse(localStorage.getItem('nutriplan.state.v1')).coverage.forced.breakfast === true);
-check('avertissement toujours visible après forçage', /⚠️/.test($('#view').textContent));
+check('avertissement toujours visible (aucun mécanisme pour le masquer, P3.3)', /⚠️/.test($('#view').textContent));
 
 click($('[data-view="shopping"]'));
 await wait();
@@ -440,6 +467,32 @@ click($('[data-new]'));
 await wait();
 type($('#drawer [data-search]'), 'cajou');
 click($$('#drawer [data-add]')[0]);
+await wait();
+// P3.1 — collation : plus de sections Entrée/Plat/…, un seul intitulé fixe selon le créneau.
+check('aucun sélecteur de section dans l’éditeur d’une collation (P3.1)',
+  $$('#drawer [data-section-of]').length === 0);
+check('intitulé « Collation 16 h » par défaut (targetSlot afternoon, P3.1)',
+  $$('#drawer .section-group h4').map((h) => h.textContent).join(',') === 'Collation 16 h');
+
+console.log('\n— Navigation 16 h / Soir directement dans l’éditeur (P3.2)');
+const newSnackId = () => JSON.parse(localStorage.getItem('nutriplan.state.v1')).snacks.at(-1).id;
+check('toggle 16 h actif par défaut', $$('#drawer [data-set-slot]')[0].getAttribute('aria-pressed') === 'true');
+check('toggle Soir inactif par défaut', $$('#drawer [data-set-slot]')[1].getAttribute('aria-pressed') === 'false');
+click($$('#drawer [data-set-slot]')[1]); // Soir
+await wait();
+check('éditeur resté ouvert après le changement de créneau', !!$('#drawer .drawer__panel'));
+check('targetSlot passé à evening en state', newSnackId() && JSON.parse(localStorage.getItem('nutriplan.state.v1')).snacks.find((o) => o.id === newSnackId()).targetSlot === 'evening');
+check('intitulé mis à jour : « Collation soir »',
+  $$('#drawer .section-group h4').map((h) => h.textContent).join(',') === 'Collation soir');
+check('toggle Soir désormais actif', $$('#drawer [data-set-slot]')[1].getAttribute('aria-pressed') === 'true');
+check('toggle 16 h désormais inactif', $$('#drawer [data-set-slot]')[0].getAttribute('aria-pressed') === 'false');
+check('même collation, aucun item dupliqué', $$('#drawer .item').length === 1);
+click($$('#drawer [data-set-slot]')[0]); // retour 16 h
+await wait();
+check('retour 16 h → targetSlot afternoon', JSON.parse(localStorage.getItem('nutriplan.state.v1')).snacks.find((o) => o.id === newSnackId()).targetSlot === 'afternoon');
+check('intitulé de nouveau « Collation 16 h »',
+  $$('#drawer .section-group h4').map((h) => h.textContent).join(',') === 'Collation 16 h');
+
 click($('#drawer [data-close]'));
 await wait();
 const snackPlus = (person, slot) =>
@@ -905,8 +958,13 @@ const line = $$('.list-row').map((l) => l.textContent.replace(/\s+/g, ' ').trim(
 console.log(`        ${line}`);
 check('ligne de courses avec besoin et conditionnement', /Besoin/.test(line || ''));
 const cb = $$('[data-buy]')[0];
+const checkedFoodName = store.getState().foods.find((f) => f.id === cb.dataset.buy)?.name || '';
+const uncheckedBuy = $$('[data-buy]')[1];
+const uncheckedFoodName = store.getState().foods.find((f) => f.id === uncheckedBuy?.dataset.buy)?.name || '';
 cb.checked = true; cb.dispatchEvent(new window.Event('change', { bubbles: true }));
 check('case "acheté" enregistrée', $$('[data-buy]')[0].checked === true);
+check('état coché persisté en localStorage (P3.4.b)',
+  JSON.parse(localStorage.getItem('nutriplan.state.v1')).shopping.purchased[cb.dataset.buy] === true);
 
 // aliments sans prix : nommés et cliquables (on vide le prix via la fiche)
 click($('[data-view="foods"]'));
@@ -955,6 +1013,16 @@ check('état pesé indiqué à côté des quantités imprimées',
   /\d+ g (cru \/ brut|cuit|égoutté|prêt à consommer)/i.test($('#print').textContent),
   ($('#print').textContent.match(/\d+ g [a-zé\s\/]+/i) || [''])[0].trim());
 check('window.print() appelé', printed === 1);
+
+console.log('\n— P3.4.b : état coché de la liste de courses reporté à l’impression');
+const printedRow = (name) => $$('#print tr').find((tr) => tr.textContent.includes(name));
+const checkedPrintedRow = printedRow(checkedFoodName);
+check(`« ${checkedFoodName} » (coché à l’écran) imprimé avec sa case cochée`,
+  !!checkedPrintedRow?.querySelector('.check.is-checked'), checkedPrintedRow?.textContent.replace(/\s+/g, ' ').trim());
+const uncheckedPrintedRow = printedRow(uncheckedFoodName);
+check(`« ${uncheckedFoodName} » (non coché à l’écran) reste non coché à l’impression`,
+  !!uncheckedPrintedRow && !uncheckedPrintedRow.querySelector('.check.is-checked'),
+  uncheckedPrintedRow?.textContent.replace(/\s+/g, ' ').trim());
 
 console.log('\n— Paramètres');
 click($('[data-view="settings"]'));

@@ -1149,7 +1149,6 @@ function catalogState(duration = 6) {
       uses: { thomas: { afternoon: 0, evening: 0 }, julie: { afternoon: 0, evening: 0 } },
       items: [item(F('Skyr'), 0, { thomas: 150, julie: 150 })] },
   ];
-  st.coverage = { forced: {} };
   return st;
 }
 
@@ -1170,13 +1169,6 @@ test('Petits-déjeuners — couverture du cycle par personne', () => {
   check('Julie 5 / 6 → avertissement', r.persons.julie.used === 5 && r.persons.julie.status === 'missing');
   check('manque chiffré', r.persons.julie.delta === -1);
   check('Thomas et Julie comptés indépendamment', r.persons.thomas.used !== r.persons.julie.used);
-
-  // forçage : l'écart est assumé, l'avertissement reste
-  st.coverage.forced.breakfast = true;
-  check('écart assumé mémorisé', cov().persons.julie.forced === true);
-  check('l’avertissement reste visible malgré le forçage', cov().persons.julie.status === 'missing');
-  check('aucun compteur modifié automatiquement',
-    st.breakfasts[0].uses.julie === 2 && st.breakfasts[1].uses.julie === 3);
 
   // dépassement : information, jamais blocage
   st.breakfasts[1].uses.julie = 5;
@@ -1212,11 +1204,6 @@ test('Collations — catalogue unique, affectations 16 h / soir', () => {
     r.snack_afternoon.persons.thomas.used !== r.snack_evening.persons.thomas.used);
   check('Thomas et Julie indépendants sur le même créneau',
     r.snack_evening.persons.thomas.used !== r.snack_evening.persons.julie.used);
-
-  st.coverage.forced.snack_evening = true;
-  check('forçage possible sur un seul créneau',
-    cov().snack_evening.persons.thomas.forced === true && cov().snack_afternoon.persons.thomas.forced === false);
-  check('avertissement toujours affiché', cov().snack_evening.persons.thomas.status === 'missing');
 
   st.snacks[1].uses.thomas.evening = 6;
   check('Thomas soir : 8 / 6 → information', cov().snack_evening.persons.thomas.status === 'extra');

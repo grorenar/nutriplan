@@ -185,7 +185,7 @@ function shoppingSection(s, byId, recipesMap = {}, preparationsMap = {}) {
     <table><thead><tr><th></th><th>Article</th><th>Besoin</th><th>À acheter</th><th>Surplus</th><th>Prix</th></tr></thead>
     <tbody>${lines
       .map(
-        (l) => `<tr><td><span class="check"></span></td><td>${esc(l.food.name)}</td>
+        (l) => `<tr><td><span class="check${l.purchased ? ' is-checked' : ''}">${l.purchased ? '✓' : ''}</span></td><td>${esc(l.food.name)}</td>
       <td class="nums">${grams(l.required)}</td>
       <td class="nums">${l.packages ? `${l.packages} × ${grams(l.packageWeight)}` : grams(l.buyGrams)}</td>
       <td class="nums">${l.packages ? grams(l.surplus) : '—'}</td>

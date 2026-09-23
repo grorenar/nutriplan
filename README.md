@@ -50,7 +50,6 @@ meals[]            id, dayIndex, mealType(lunch|dinner), name, sameComposition, 
 breakfasts[]       id, name, sameComposition, uses{thomas,julie}, items[]
 snacks[]           id, name, sameComposition, targetSlot, items[],
                    uses{thomas:{afternoon,evening}, julie:{afternoon,evening}}
-coverage.forced    {breakfast|snack_afternoon|snack_evening: bool}  écarts assumés
 items[]            id, foodId|null, free{name,quantity}|null, state,
                    qty{thomas,julie}, locked{thomas,julie}
 shopping.purchased {foodId: bool}        ← simple case "acheté", aucun stock

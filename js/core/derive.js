@@ -276,7 +276,6 @@ export const COVERAGE_SLOTS = [
  */
 export function coverageReport(state) {
   const needed = state.settings.cycle.duration;
-  const forced = state.coverage?.forced || {};
   const report = {};
 
   for (const slot of COVERAGE_SLOTS) {
@@ -294,10 +293,9 @@ export function coverageReport(state) {
         needed,
         delta,
         status: delta === 0 ? 'ok' : delta < 0 ? 'missing' : 'extra',
-        forced: !!forced[slot.key],
       };
     }
-    report[slot.key] = { ...slot, needed, persons: rows, forced: !!forced[slot.key] };
+    report[slot.key] = { ...slot, needed, persons: rows };
   }
   return report;
 }

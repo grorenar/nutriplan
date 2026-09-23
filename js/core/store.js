@@ -49,7 +49,6 @@ export function defaultState() {
     breakfasts: [],
     snacks: [], // catalogue unique : 16 h et soir ne sont que des affectations
     shopping: { purchased: {} }, // foodId -> bool
-    coverage: { forced: {} },    // écarts de couverture assumés par l'utilisateur
     batch: { overrides: {} }, // `${session}:${foodId}` -> grammes préparés
     // syncing : indicateur d'exécution, jamais une donnée à synchroniser —
     // toujours remis à false au chargement (cf. migrate()), une synchronisation
@@ -224,7 +223,10 @@ function migrate(s) {
   ];
   delete merged.snacksAfternoon;
   delete merged.snacksEvening;
-  merged.coverage = { forced: {}, ...(s.coverage || {}) };
+  // P3.3 : coverage.forced supprimé (bouton « Forcer quand même », sans
+  // aucun effet sur le moteur) — nettoyage d'une éventuelle donnée
+  // antérieure encore présente dans un état local déjà persisté.
+  delete merged.coverage;
   return merged;
 }
 
@@ -540,7 +542,6 @@ export function resetCycle() {
     // les catalogues sont conservés : seuls leurs compteurs d'utilisation repartent à zéro
     for (const o of s.breakfasts) o.uses = emptyBreakfastUses();
     for (const o of s.snacks) o.uses = emptySnackUses();
-    s.coverage = { forced: {} };
     ensureCycleMeals(s);
   });
 }

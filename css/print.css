@@ -4,6 +4,11 @@
   @page { size: A4; margin: 14mm 12mm; }
 
   body { background: #fff; }
+  /* .layout (flex, min-height:100vh — css/app.css) reste sinon un conteneur
+     vide occupant une pleine page avant #print (P3.4.a) : le masquer suffit,
+     ses enfants (.rail/.topbar/.view) n'ont alors plus besoin d'être cachés
+     individuellement, mais on les garde pour la robustesse. */
+  .layout { display: none !important; }
   .rail, .topbar, .drawer, #toasts, .no-print { display: none !important; }
   .main { padding: 0 !important; }
   .view { display: none !important; }
@@ -29,7 +34,14 @@
   #print .print-section { break-inside: auto; }
   #print .print-day { break-inside: avoid; margin-bottom: 4mm; }
   #print .print-meta { font-size: 9pt; color: #444; margin-bottom: 4mm; }
-  #print .check { display: inline-block; width: 3.5mm; height: 3.5mm; border: 1px solid #000; margin-right: 2mm; vertical-align: -0.5mm; }
+  #print .check {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 3.5mm; height: 3.5mm; border: 1px solid #000; margin-right: 2mm;
+    vertical-align: -0.5mm; font-size: 3mm; line-height: 1;
+  }
+  /* état coché de la liste de courses (P3.4.b) : reflète state.shopping.purchased,
+     déjà calculé par buildShoppingList() — rien de nouveau à stocker. */
+  #print .check.is-checked { background: #000; color: #fff; }
   #print .nums { font-variant-numeric: tabular-nums; }
   #print ul { margin: 0 0 2mm; padding-left: 5mm; }
 }

@@ -94,7 +94,7 @@ function coverageCard(slots, s) {
         messages.push(
           `<div class="sync-error">⚠️ ${PERSON_LABEL[p]} — ${esc(sl.label.toLowerCase())} : ${r.used} / ${r.needed}. Il manque ${-r.delta} ${
             -r.delta > 1 ? 'options' : 'option'
-          }.${r.forced ? ' <em>Écart assumé.</em>' : ''}</div>`
+          }.</div>`
         );
       } else if (r.status === 'extra') {
         messages.push(
@@ -107,7 +107,6 @@ function coverageCard(slots, s) {
   }
 
   const incomplete = slots.some((sl) => PERSONS.some((p) => sl.persons[p].status === 'missing'));
-  const allForced = slots.every((sl) => sl.forced);
 
   return `<div class="card">
     <div class="card__head">
@@ -119,9 +118,6 @@ function coverageCard(slots, s) {
     ${
       incomplete
         ? `<div class="row" style="margin-top:10px">
-             <button class="btn btn--sm" data-force="${slots.map((sl) => sl.key).join(',')}" data-forced="${allForced}">
-               ${allForced ? 'Ne plus assumer l’écart' : 'Forcer quand même'}
-             </button>
              <small>Le cycle reste utilisable : l’avertissement reste affiché, rien n’est complété automatiquement.</small>
            </div>`
         : ''
@@ -250,15 +246,6 @@ function wire(root, kind, rerender) {
       });
     })
   );
-
-  root.querySelector('[data-force]')?.addEventListener('click', (e) => {
-    const keys = e.currentTarget.dataset.force.split(',');
-    const forced = e.currentTarget.dataset.forced !== 'true';
-    update((st) => {
-      st.coverage.forced = { ...st.coverage.forced };
-      for (const k of keys) st.coverage.forced[k] = forced;
-    });
-  });
 
   root.querySelectorAll('[data-dup]').forEach((b) =>
     b.addEventListener('click', (e) => {
