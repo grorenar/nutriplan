@@ -72,23 +72,31 @@ function conservationBlock(sess) {
 /* ---------------------------------------------------- A — à préparer en batch */
 
 /**
- * Conservation plus courte que la session (P0.3) : au lieu d'une simple
+ * Conservation plus courte que la session (P0.3/P2.2) : au lieu d'une simple
  * alerte, le calendrier concret de reprise — une ligne par sous-préparation,
- * avec sa propre plage de jours et sa propre saisie "je prépare" (clé
- * distincte de la ligne principale, cf. `computeSubBatches()` / derive.js).
+ * ancrée sur les jours de consommation réels et sa propre saisie "je prépare"
+ * (clé distincte de la ligne principale, cf. `computeSubBatches()` /
+ * derive.js). La première préparation est neutre (☐) ; toute préparation
+ * supplémentaire après la première porte un ⚠️ (P2.3) pour signaler qu'elle
+ * s'ajoute à celle déjà prévue en début de session.
  */
 function subBatchRows(subBatches, startWeekday) {
   if (!subBatches?.length) return '';
   return `<table style="margin-top:6px">
-    <thead><tr><th>Reprise</th><th class="nums">Besoin</th><th>Je prépare</th></tr></thead>
+    <thead><tr><th>Préparation</th><th class="nums">Besoin</th><th>Je prépare</th></tr></thead>
     <tbody>
       ${subBatches
-        .map((b) => {
-          const range = b.startDay === b.endDay
-            ? dayName(startWeekday, b.startDay)
-            : `${dayName(startWeekday, b.startDay)} → ${dayName(startWeekday, b.endDay)}`;
+        .map((b, i) => {
+          const marker = i === 0 ? '☐' : '⚠️';
+          const label = i === 0 ? 'Préparation' : 'Nouvelle préparation nécessaire';
+          const prepDayName = dayName(startWeekday, b.startDay);
+          const coversText = (b.coversDays?.length ? b.coversDays : [b.startDay, b.endDay])
+            .map((d) => dayName(startWeekday, d)).join(', ');
           return `<tr>
-            <td>${esc(range)}</td>
+            <td>
+              ${marker} <strong>${esc(prepDayName)}</strong> — ${esc(label)}
+              <div class="tag muted">couvre ${esc(coversText)}</div>
+            </td>
             <td class="nums">${grams(b.requiredRaw)}</td>
             <td><input type="number" step="10" min="0" value="${num(b.preparedRaw, 0).replace(',', '.')}"
                    data-prep="${b.key}" style="width:104px" aria-label="Quantité préparée"> g</td>

@@ -25,8 +25,10 @@ import { seedFoods } from '../js/core/seed-foods.js';
 import {
   migrateState, newRecipe, newRecipeItem, defaultState, newItem, newFreeItem, sectionsUsed, SECTIONS, DEFAULT_SECTION,
   newPreparation, preparationsById, newPreparationItem, newRecipeMealItem,
+  newMeal, normalizeMeal, autoMealName,
 } from '../js/core/store.js';
 import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
+import { stateToTables, tablesToState } from '../js/core/sync.js';
 
 /* ---------------------------------------------------------------- harnais */
 
@@ -2897,6 +2899,346 @@ test('Calibration asymétrique — scénario réel Skyr Avoine + Wasa fromage fr
   const mJulie = mealMacros(items, byId, 'julie', recipesById, {});
   check('julie : kcal nettement rapproché de la cible (±10 %, contre -14,6 % avant calibration)',
     Math.abs(dev(mJulie.kcal, targets.julie.kcal)) <= 0.10, `${mJulie.kcal.toFixed(0)} / ${targets.julie.kcal}`);
+});
+
+/* ============================================== P2.1 — RECETTES : CHAMPS OPÉRATOIRES (v1.5.3) */
+
+test('P2.1.1 — création d’une recette avec les 7 champs opératoires', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  recipe.shelfLifeDays = 3;
+  recipe.cookingMethod = 'mijoteuse';
+  recipe.cookingTemp = 90;
+  recipe.cookingTime = 120;
+  recipe.prepTime = 15;
+  recipe.equipment = 'mijoteuse électrique';
+  recipe.instructions = 'Saisir la viande puis mijoter 2 h.';
+  check('batchAllowed conservé', recipe.batchAllowed === true);
+  check('shelfLifeDays conservé', recipe.shelfLifeDays === 3);
+  check('cookingMethod conservé', recipe.cookingMethod === 'mijoteuse');
+  check('cookingTemp conservé', recipe.cookingTemp === 90);
+  check('cookingTime conservé', recipe.cookingTime === 120);
+  check('prepTime conservé', recipe.prepTime === 15);
+  check('equipment conservé', recipe.equipment === 'mijoteuse électrique');
+  check('instructions conservé', recipe.instructions === 'Saisir la viande puis mijoter 2 h.');
+});
+
+test('P2.1.2 — modification d’une recette existante', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.shelfLifeDays = 2;
+  recipe.cookingMethod = 'poêle';
+  recipe.shelfLifeDays = 4; // modification
+  recipe.cookingMethod = 'four'; // modification
+  check('shelfLifeDays modifié', recipe.shelfLifeDays === 4);
+  check('cookingMethod modifié', recipe.cookingMethod === 'four');
+  check('les autres champs (items, baseGrams) restent inchangés par la modification',
+    recipe.items.length === 1 && recipe.baseGrams === 1000);
+});
+
+test('P2.1.3 — persistance locale : migrateState()/normalizeRecipe() préservent les 7 champs', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  recipe.shelfLifeDays = 3;
+  recipe.cookingMethod = 'mijoteuse';
+  recipe.cookingTemp = 90;
+  recipe.cookingTime = 120;
+  recipe.prepTime = 15;
+  recipe.equipment = 'mijoteuse électrique';
+  recipe.instructions = 'Saisir puis mijoter.';
+  const raw = { ...defaultState(), recipes: [recipe] };
+  const migrated = migrateState(JSON.parse(JSON.stringify(raw)));
+  const r = migrated.recipes.find((x) => x.id === recipe.id);
+  check('recette retrouvée après migration (round-trip JSON + migrateState)', !!r);
+  check('7 champs intacts après migration',
+    r.batchAllowed === true && r.shelfLifeDays === 3 && r.cookingMethod === 'mijoteuse' &&
+    r.cookingTemp === 90 && r.cookingTime === 120 && r.prepTime === 15 &&
+    r.equipment === 'mijoteuse électrique' && r.instructions === 'Saisir puis mijoter.');
+});
+
+test('P2.1.4 — round-trip via sync.js (stateToTables/tablesToState) : les 7 champs survivent', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  recipe.shelfLifeDays = 3;
+  recipe.cookingMethod = 'mijoteuse';
+  recipe.cookingTemp = 90;
+  recipe.cookingTime = 120;
+  recipe.prepTime = 15;
+  recipe.equipment = 'mijoteuse électrique';
+  recipe.instructions = 'Saisir puis mijoter.';
+  const s = { ...defaultState(), recipes: [recipe] };
+  const tables = stateToTables(s);
+  const row = tables.recipes.find((r) => r.id === recipe.id);
+  check('shelf_life_days sérialisé', row.shelf_life_days === 3);
+  check('batch_allowed sérialisé', row.batch_allowed === true);
+  check('cooking_method sérialisé', row.cooking_method === 'mijoteuse');
+  const back = tablesToState({ recipes: tables.recipes, recipe_items: tables.recipe_items });
+  const r = back.recipes.find((x) => x.id === recipe.id);
+  check('recette retrouvée après round-trip', !!r);
+  check('7 champs intacts après round-trip complet (aller-retour Supabase)',
+    r.batchAllowed === true && r.shelfLifeDays === 3 && r.cookingMethod === 'mijoteuse' &&
+    r.cookingTemp === 90 && r.cookingTime === 120 && r.prepTime === 15 &&
+    r.equipment === 'mijoteuse électrique' && r.instructions === 'Saisir puis mijoter.');
+});
+
+test('P2.1.5 — valeurs par défaut lorsque les 7 champs sont absents (recette antérieure à P0)', () => {
+  const raw = {
+    id: 'r_old', name: 'Ancienne recette', kind: 'weight', baseGrams: 500,
+    items: [{ foodId: F('Riz basmati').id, qty: 500, state: 'cru' }],
+  };
+  const s = { ...defaultState(), recipes: [raw] };
+  const migrated = migrateState(JSON.parse(JSON.stringify(s)));
+  const r = migrated.recipes.find((x) => x.id === 'r_old');
+  check('batchAllowed par défaut = false', r.batchAllowed === false);
+  check('shelfLifeDays par défaut = null (non renseigné, pas 0)', r.shelfLifeDays === null);
+  check('cookingMethod/equipment/instructions par défaut = chaîne vide',
+    r.cookingMethod === '' && r.equipment === '' && r.instructions === '');
+  check('cookingTemp/cookingTime/prepTime par défaut = null',
+    r.cookingTemp === null && r.cookingTime === null && r.prepTime === null);
+});
+
+/* ============================================== P2.2 — BATCH COOKING : ALGORITHME GLOUTON ANCRÉ SUR LA CONSOMMATION RÉELLE (v1.5.3) */
+
+test('P2.2.1 — shelfLifeDays = 1 : une préparation par jour de consommation', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 1;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [0, 1, 2].map((day) => mkMeal(day, 'lunch',
+    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
+  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('3 sous-préparations (une par jour de consommation)', r.subBatches.length === 3,
+    JSON.stringify(r.subBatches.map((b) => `${b.startDay}-${b.endDay}`)));
+  check('chaque sous-préparation ne couvre qu’un seul jour', r.subBatches.every((b) => b.startDay === b.endDay));
+});
+
+test('P2.2.2 — shelfLifeDays = 2, consommation J1+J2 : UNE SEULE préparation (correction de la sur-recommandation)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Poulet curry', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [1, 2].map((day) => mkMeal(day, 'lunch',
+    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
+  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('UNE SEULE sous-préparation (J1, couvre J1 et J2 — grille fixe corrigée)',
+    r.subBatches.length === 1, JSON.stringify(r.subBatches));
+  check('préparation datée J1 (premier jour de consommation, pas J0)', r.subBatches[0].startDay === 1);
+  check('couvre bien J1 et J2', JSON.stringify(r.subBatches[0].coversDays) === JSON.stringify([1, 2]));
+  check('quantité = 200 g (2 jours × 100 g), pas 100 g comme le ferait une scission inutile',
+    r.subBatches[0].requiredRaw === 200);
+});
+
+test('P2.2.3 — shelfLifeDays = 2, consommation J1+J3 : deux préparations (l’écart dépasse la conservation)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [1, 3].map((day) => mkMeal(day, 'lunch',
+    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
+  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('2 sous-préparations (J1 et J3, écart de conservation dépassé)',
+    r.subBatches.length === 2, JSON.stringify(r.subBatches.map((b) => `${b.startDay}-${b.endDay}`)));
+  check('1ère préparation à J1', r.subBatches[0].startDay === 1);
+  check('2e préparation à J3 (pas J2, car aucune consommation ce jour-là)', r.subBatches[1].startDay === 3);
+});
+
+test('P2.2.4 — shelfLifeDays = 4 : toutes les consommations dans la fenêtre → une seule préparation', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 4;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [1, 2, 3, 4].map((day) => mkMeal(day, 'lunch',
+    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
+  const st = batchTestState(meals);
+  st.settings.cycle.duration = 6; st.settings.batch.maxDays = 6;
+  const plan = buildBatchPlan(st, byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('une seule sous-préparation malgré 4 jours de consommation distincts',
+    r.subBatches.length === 1, JSON.stringify(r.subBatches));
+  check('quantité = 400 g (4 × 100 g)', r.subBatches[0].requiredRaw === 400);
+});
+
+test('P2.2.5 — shelfLifeDays NULL : comportement de secours (couvre toute la session, aucune scission)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = null;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [0, 1, 3].map((day) => mkMeal(day, 'lunch',
+    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
+  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('shelfLifeShort = false (conservation inconnue → jamais signalée comme insuffisante)', r.shelfLifeShort === false);
+  check('aucune scission (subBatches === null)', r.subBatches === null);
+});
+
+test('P2.2.6 — exemple du brief : consommation J0+J1+J3, conservation 2 jours', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Poulet curry', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [0, 1, 3].map((day) => mkMeal(day, 'lunch',
+    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
+  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('2 sous-préparations', r.subBatches.length === 2, JSON.stringify(r.subBatches));
+  check('préparation J0 couvrant J0 et J1',
+    r.subBatches[0].startDay === 0 && JSON.stringify(r.subBatches[0].coversDays) === JSON.stringify([0, 1]));
+  check('nouvelle préparation J3 (pas J2, aucune consommation ce jour-là)', r.subBatches[1].startDay === 3);
+  check('quantités : 200 g (J0+J1) puis 100 g (J3)',
+    r.subBatches[0].requiredRaw === 200 && r.subBatches[1].requiredRaw === 100);
+});
+
+test('P2.2.7 — recette consommée plusieurs fois le même jour : agrégée avant la scission', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [
+    mkMeal(1, 'lunch', [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]),
+    mkMeal(1, 'dinner', [{ ...newRecipeMealItem(recipe.id, 50), qty: { thomas: 50, julie: 0 } }]),
+  ];
+  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('une seule sous-préparation (un seul jour de consommation, malgré 2 repas)', r.subBatches.length === 1);
+  check('quantité agrégée des deux repas du même jour (100 + 50 = 150 g)', r.subBatches[0].requiredRaw === 150);
+});
+
+test('P2.2.8 — recette consommée plusieurs fois DANS sa durée de conservation : aucune préparation supplémentaire inutile', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 3;
+  const recipesById = { [recipe.id]: recipe };
+  const meals = [0, 1, 2].map((day) => mkMeal(day, 'lunch',
+    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
+  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare[0];
+  check('une seule préparation malgré 3 consommations (toutes dans la fenêtre de 3 jours)',
+    r.subBatches.length === 1, JSON.stringify(r.subBatches));
+  check('quantité agrégée des 3 jours (300 g)', r.subBatches[0].requiredRaw === 300);
+});
+
+/* ============================================== P2.4 — AUTO-NOMMAGE DES REPAS (v1.5.3) */
+
+test('P2.4.1 — nouveau repas vide : nameAuto === true', () => {
+  const m = newMeal(0, 'lunch');
+  check('nom vide à la création', m.name === '');
+  check('nameAuto actif par défaut', m.nameAuto === true);
+});
+
+test('P2.4.2 — autoMealName() : féculent + protéine + légume → nom généré dans l’ordre attendu', () => {
+  const items = [
+    newItem(F('Pâtes complètes').id, 200),
+    newItem(F('Blanc de poulet').id, 150),
+    newItem(F('Courgettes').id, 100),
+  ];
+  const name = autoMealName(items, byId);
+  check('nom généré : Pâtes complètes - Blanc de poulet - Courgettes (exemple de la spécification)',
+    name === 'Pâtes complètes - Blanc de poulet - Courgettes', name);
+});
+
+test('P2.4.3 — modification d’une quantité : le nom auto est recalculé si le représentant du groupe change', () => {
+  const items = [
+    { ...newItem(F('Pâtes complètes').id, 0), qty: { thomas: 200, julie: 0 } },
+    { ...newItem(F('Riz basmati').id, 0), qty: { thomas: 50, julie: 0 } }, // féculent minoritaire au départ
+    { ...newItem(F('Blanc de poulet').id, 0), qty: { thomas: 150, julie: 0 } },
+  ];
+  const before = autoMealName(items, byId);
+  check('pâtes complètes retenues au départ (plus lourdes : 200 g > 50 g)', before.startsWith('Pâtes complètes'), before);
+  items[1].qty = { thomas: 400, julie: 0 }; // le riz devient majoritaire (400 g > 200 g)
+  const after = autoMealName(items, byId);
+  check('le riz devient le représentant féculent une fois plus lourd que les pâtes', after.startsWith('Riz basmati'), after);
+});
+
+test('P2.4.4 — plusieurs aliments dans la même catégorie : le plus lourd (Thomas + Julie) est retenu', () => {
+  const items = [
+    { ...newItem(F('Pâtes complètes').id, 0), qty: { thomas: 100, julie: 0 } },
+    { ...newItem(F('Riz basmati').id, 0), qty: { thomas: 80, julie: 90 } }, // 170 g cumulés > 100 g des pâtes
+  ];
+  const name = autoMealName(items, byId);
+  check('riz retenu (170 g cumulés Thomas+Julie > 100 g pâtes)', name === 'Riz basmati', name);
+});
+
+test('P2.4.5 — catégorie absente : le segment est omis, jamais remplacé par un placeholder', () => {
+  const items = [newItem(F('Blanc de poulet').id, 150), newItem(F('Courgettes').id, 100)]; // pas de féculent
+  const name = autoMealName(items, byId);
+  check('aucun placeholder pour le féculent manquant', name === 'Blanc de poulet - Courgettes', name);
+});
+
+test('P2.4.6 — aucun des trois groupes identifiable : nom vide', () => {
+  const items = [newItem(F('Fromage frais tartinable').id, 30)]; // catégorie laitier, hors des 3 groupes
+  const name = autoMealName(items, byId);
+  check('nom vide, jamais un nom absurde', name === '');
+});
+
+test('P2.4.7 — recette/préparation seules : jamais prises en compte pour l’auto-nommage', () => {
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const items = [{ ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 300, julie: 0 } }];
+  const name = autoMealName(items, byId);
+  check('un item recette (sans foodId) ne produit aucun nom', name === '');
+});
+
+test('P2.4.8 — migration : repas existant avec un nom non vide → nameAuto forcé à false', () => {
+  const m = normalizeMeal({ id: 'm1', dayIndex: 0, mealType: 'lunch', name: 'Repas post-entraînement', sameComposition: true, items: [] });
+  check('nameAuto = false : un nom déjà saisi n’est jamais pris pour un nom généré', m.nameAuto === false);
+});
+
+test('P2.4.9 — migration : repas existant sans nom → nameAuto = true', () => {
+  const m = normalizeMeal({ id: 'm2', dayIndex: 0, mealType: 'lunch', name: '', sameComposition: true, items: [] });
+  check('nameAuto = true : repas jamais nommé, régénérable', m.nameAuto === true);
+});
+
+test('P2.4.10 — migration : un repas qui porte déjà nameAuto conserve sa valeur telle quelle', () => {
+  const m1 = normalizeMeal({ id: 'm3', name: 'Pâtes complètes - Blanc de poulet', nameAuto: true, items: [] });
+  check('un nom AUTO-GÉNÉRÉ non vide n’est jamais réinterprété comme un nom saisi (nameAuto reste true)', m1.nameAuto === true);
+  const m2 = normalizeMeal({ id: 'm4', name: '', nameAuto: false, items: [] });
+  check('un nom vidé volontairement (nameAuto déjà false) n’est jamais réactivé automatiquement', m2.nameAuto === false);
+});
+
+test('P2.4.11 — persistance locale : migrateState() préserve name/nameAuto d’un repas', () => {
+  const raw = {
+    ...defaultState(),
+    meals: [{ id: 'm5', dayIndex: 0, mealType: 'lunch', name: 'Repas post-entraînement', nameAuto: false, sameComposition: true, items: [] }],
+  };
+  const migrated = migrateState(JSON.parse(JSON.stringify(raw)));
+  const m = migrated.meals.find((x) => x.id === 'm5');
+  check('nom conservé après migration', m.name === 'Repas post-entraînement');
+  check('nameAuto conservé après migration', m.nameAuto === false);
+});
+
+test('P2.4.12 — round-trip via sync.js : name_auto sérialisé/désérialisé correctement', () => {
+  const meal = { id: 'm6', dayIndex: 0, mealType: 'lunch', name: 'Repas post-entraînement', nameAuto: false, sameComposition: true, items: [] };
+  const s = { ...defaultState(), meals: [meal] };
+  const tables = stateToTables(s);
+  const row = tables.meals.find((m) => m.id === 'm6');
+  check('name_auto = false sérialisé', row.name_auto === false);
+  const back = tablesToState({ meals: tables.meals, meal_items: tables.meal_items });
+  const m = back.meals.find((x) => x.id === 'm6');
+  check('nameAuto = false désérialisé (nom réel jamais perdu au round-trip)', m.nameAuto === false);
+  check('name désérialisé', m.name === 'Repas post-entraînement');
 });
 
 /* ---------------------------------------------------------------- bilan */

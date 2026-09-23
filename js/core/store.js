@@ -214,6 +214,7 @@ function migrate(s) {
   merged.foods = merged.foods.map(normalizeFood);
   merged.recipes = (Array.isArray(merged.recipes) ? merged.recipes : []).map(normalizeRecipe);
   merged.preparations = (Array.isArray(merged.preparations) ? merged.preparations : []).map(normalizePreparation);
+  merged.meals = (Array.isArray(merged.meals) ? merged.meals : []).map(normalizeMeal);
   merged.breakfasts = (merged.breakfasts || []).map(normalizeBreakfast);
   // fusion des deux anciens catalogues de collations en un seul
   merged.snacks = [
@@ -424,9 +425,60 @@ export const newMeal = (dayIndex, mealType) => ({
   dayIndex,
   mealType,
   name: '',
+  nameAuto: true, // P2.4 : nom vide, régénérable depuis la composition
   sameComposition: true,
   items: [],
 });
+
+/**
+ * Complète un repas venant d'une version antérieure (ou d'un import partiel).
+ * `nameAuto` piloté par store.js seul (jamais recalculé côté UI/sync) : un
+ * repas qui porte déjà le champ (booléen) le conserve tel quel — y compris
+ * un nom auto-généré non vide, qui ne doit JAMAIS être pris pour un nom
+ * saisi par l'utilisateur simplement parce qu'il n'est pas vide. Seul un
+ * repas qui n'a jamais connu ce champ (donnée antérieure à P2.4) reçoit une
+ * valeur dérivée de `name` — jamais l'inverse, sous peine d'écraser un nom
+ * réel au premier recalcul.
+ */
+export function normalizeMeal(m) {
+  const nameAuto = typeof m.nameAuto === 'boolean' ? m.nameAuto : !(m.name && String(m.name).trim());
+  return { sameComposition: true, items: [], ...m, nameAuto };
+}
+
+const AUTO_NAME_GROUPS = ['feculent', 'proteine', 'legume'];
+
+/**
+ * Nom généré depuis la composition : "[Féculent] - [Protéine] - [Légume]"
+ * (P2.4). Seuls les aliments simples (foodId) participent — une recette ou
+ * une préparation n'a pas de catégorie alimentaire réelle (cf.
+ * recipeAsVirtualFood()/preparationAsVirtualFood(), nutrition.js) et n'est
+ * donc jamais prise en compte ici. Pour chaque groupe, l'aliment retenu est
+ * celui à la plus grande quantité cumulée Thomas + Julie ; un groupe absent
+ * est simplement omis (aucun placeholder). Si aucun des trois groupes n'est
+ * identifiable, retourne une chaîne vide.
+ */
+export function autoMealName(items, byId) {
+  const totals = new Map(); // foodId -> { food, qty }
+  for (const it of items) {
+    if (!it.foodId) continue;
+    const food = byId[it.foodId];
+    if (!food || !AUTO_NAME_GROUPS.includes(food.category)) continue;
+    const qty = (Number(it.qty?.thomas) || 0) + (Number(it.qty?.julie) || 0);
+    const entry = totals.get(it.foodId) || { food, qty: 0 };
+    entry.qty += qty;
+    totals.set(it.foodId, entry);
+  }
+  const parts = [];
+  for (const group of AUTO_NAME_GROUPS) {
+    let best = null;
+    for (const entry of totals.values()) {
+      if (entry.food.category !== group) continue;
+      if (!best || entry.qty > best.qty) best = entry;
+    }
+    if (best) parts.push(best.food.name);
+  }
+  return parts.join(' - ');
+}
 
 /**
  * Option de catalogue (petit-déjeuner ou collation).

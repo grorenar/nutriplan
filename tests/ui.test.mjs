@@ -75,6 +75,14 @@ add('pâtes com', 'Pâtes complètes');
 add('haricots', 'Haricots verts');
 add('huile d', 'Huile d');
 check('4 ingrédients', $$('#drawer .item').length === 4);
+
+console.log('\n— Auto-nommage du repas depuis la composition (P2.4)');
+check('nom généré automatiquement : Féculent - Protéine - Légume',
+  $('#drawer [data-name]').value === 'Pâtes complètes - Blanc de poulet - Haricots verts',
+  $('#drawer [data-name]').value);
+check('nameAuto reste actif tant qu’aucun nom n’a été saisi à la main',
+  store.getState().meals[0].nameAuto === true);
+
 const macros = $$('#drawer .macro').slice(0, 4).map((m) => m.textContent.replace(/\s+/g, ' ').trim());
 console.log(`        ${macros.join(' | ')}`);
 check('macros affichées sans clic supplémentaire', macros.length === 4);
@@ -241,6 +249,30 @@ type($('#drawer [data-search]'), ''); // la recherche filtre aussi l'onglet Réc
 click($('#drawer [data-cat="recent"]'));
 check('les aliments utilisés apparaissent dans "Récents"',
   $$('#drawer [data-add]').some((b) => b.textContent.includes('Blanc de poulet')));
+
+console.log('\n— Auto-nommage : une saisie manuelle protège le nom pour toujours (P2.4)');
+click($('#drawer [data-cat="all"]'));
+change($('#drawer [data-name]'), 'Repas post-entraînement');
+await wait();
+check('nom manuel enregistré', $('#drawer [data-name]').value === 'Repas post-entraînement');
+check('nameAuto désactivé dès la saisie manuelle', store.getState().meals[0].nameAuto === false);
+add('carottes', 'Carottes');
+await wait();
+check('le nom saisi à la main survit à une modification ultérieure de la composition',
+  $('#drawer [data-name]').value === 'Repas post-entraînement', $('#drawer [data-name]').value);
+click($$('#drawer .item').find((el) => /Carottes/.test(el.textContent)).querySelector('[data-del]'));
+await wait();
+
+change($('#drawer [data-name]'), '');
+await wait();
+check('nameAuto reste désactivé après un nom volontairement vidé', store.getState().meals[0].nameAuto === false);
+type($('#drawer [data-search]'), '');
+add('carottes', 'Carottes');
+await wait();
+check('un nom volontairement vidé n’est jamais régénéré automatiquement',
+  $('#drawer [data-name]').value === '', $('#drawer [data-name]').value);
+click($$('#drawer .item').find((el) => /Carottes/.test(el.textContent)).querySelector('[data-del]'));
+await wait();
 
 click($('#drawer [data-close]'));
 check('éditeur fermé', !$('#drawer .drawer__panel'));
@@ -737,6 +769,8 @@ const portionQtyInput = () => portionRow().querySelectorAll('[data-qty]')[0];
 check('quantité initiale = 1 portion (jamais 143 g)', portionQtyInput().value === '1', portionQtyInput().value);
 check('unité affichée = "portion", jamais "g"', /portion/.test(portionRow().querySelector('.item__unit').textContent));
 check('pas de saisie = 1 (increment par portion entière)', portionQtyInput().step === '1', portionQtyInput().step);
+check('P2.4 — un repas composé uniquement d’une recette n’a aucun nom auto-généré (pas de catégorie alimentaire réelle)',
+  $('#drawer [data-name]').value === '', $('#drawer [data-name]').value);
 
 console.log('\n— Composition déployée pour N portions (dérivée, sans duplication de state)');
 change(portionQtyInput(), '2');

@@ -141,6 +141,10 @@ create table if not exists meals (
   meal_type         text not null,                   -- lunch | dinner
   name              text,
   same_composition  boolean not null default true,
+  -- nom généré automatiquement depuis la composition (P2.4) vs saisi par
+  -- l'utilisateur : pilote la régénération, jamais l'inverse (cf. migration
+  -- ci-dessous, qui protège les noms déjà saisis).
+  name_auto         boolean not null default true,
   primary key (user_id, id)
 );
 
@@ -275,6 +279,16 @@ alter table snack_options add column if not exists uses_thomas_evening int not n
 alter table snack_options add column if not exists uses_julie_afternoon int not null default 0;
 alter table snack_options add column if not exists uses_julie_evening int not null default 0;
 alter table snack_options alter column type set default 'snack';
+
+-- Auto-nommage des repas (P2.4) : la colonne est ajoutée avec DEFAULT true
+-- (obligatoire pour satisfaire NOT NULL sur les lignes déjà existantes), puis
+-- immédiatement corrigée pour toute ligne qui portait déjà un nom saisi par
+-- l'utilisateur — jamais l'inverse, sous peine d'écraser silencieusement un
+-- nom réel au premier recalcul de repas (ex. « Repas post-entraînement »).
+-- Rejouable : au second passage il n'y a plus de ligne nommée avec
+-- name_auto = true, donc plus rien à corriger.
+alter table meals add column if not exists name_auto boolean not null default true;
+update meals set name_auto = false where name is not null and name <> '';
 
 -- Recettes/préparations (étape 5) : un item peut désormais référencer une
 -- recette (mode "molle", calcul inverse) ou une préparation (utilisation

@@ -7,6 +7,7 @@ import {
   getState, update, foodsById, newItem, newFreeItem, catalogKey,
   SECTIONS, SECTION_LABEL, DEFAULT_SECTION, sectionsUsed,
   recipesById, preparationsById, newRecipeMealItem, newPreparationItem, newPreparation,
+  autoMealName,
 } from '../core/store.js';
 import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
@@ -103,6 +104,14 @@ function mutate(fn, { adjust = true, force = false, pinned = [] } = {}) {
         preparationsById: preparationsByIdFrom(s),
         preparationAvailability,
       });
+    }
+    // Auto-nommage (P2.4) : uniquement les repas (lunch/dinner), jamais les
+    // catalogues petit-déjeuner/collation — leur "nom" désigne le plat
+    // lui-même, pas un résumé de composition. Ne s'applique QUE si le nom
+    // est encore piloté automatiquement (nameAuto) : un nom saisi ou
+    // volontairement vidé par l'utilisateur n'est jamais régénéré.
+    if (ctx.kind === 'meal' && e.nameAuto) {
+      e.name = autoMealName(e.items, foodsByIdFrom(s));
     }
   });
   renderEditor();
@@ -676,7 +685,11 @@ function wire(root, entity) {
 
   root.querySelector('[data-name]')?.addEventListener('change', (e) => {
     const v = e.target.value;
-    mutate((en) => { en.name = v; }, { adjust: false });
+    // Saisie manuelle (y compris un champ volontairement vidé) : nameAuto
+    // passe à false immédiatement, avant le hook de régénération de mutate()
+    // — un repas dont le nom vient d'être tapé/effacé à la main n'est plus
+    // jamais recalculé automatiquement (règle obligatoire P2.4).
+    mutate((en) => { en.name = v; if (ctx.kind === 'meal') en.nameAuto = false; }, { adjust: false });
   });
 
   root.querySelector('[data-same]')?.addEventListener('change', (e) => {

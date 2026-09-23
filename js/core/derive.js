@@ -369,42 +369,65 @@ function servedGrams(food, qty, itemState) {
 }
 
 /**
- * Découpe [startDay, endDay] en tranches consécutives d'au plus `chunkDays`
- * jours (la dernière peut être plus courte). `chunkDays <= 0` → une seule
- * tranche couvrant toute la plage (pas de scission).
+ * Regroupe les jours de consommation réels (`consumptionDays`, triés, sans
+ * doublon) en lots glouton ancrés sur la conservation (P2.2) : chaque lot
+ * démarre au premier jour non couvert, et couvre tous les jours de
+ * consommation suivants jusqu'à `prepDay + shelfLifeDays - 1` inclus.
+ * `shelfLifeDays === 0` → une préparation par jour de consommation (aucune
+ * conservation). Remplace l'ancienne grille fixe (`splitDayRange`, ancrée sur
+ * le début de session plutôt que sur la consommation réelle), qui pouvait
+ * recommander des préparations inutiles.
  */
-function splitDayRange(startDay, endDay, chunkDays) {
-  if (!(chunkDays > 0)) return [{ startDay, endDay }];
-  const chunks = [];
-  for (let d = startDay; d <= endDay; d += chunkDays) {
-    chunks.push({ startDay: d, endDay: Math.min(endDay, d + chunkDays - 1) });
+function groupConsumptionDays(consumptionDays, shelfLifeDays) {
+  if (shelfLifeDays === 0) return consumptionDays.map((day) => ({ startDay: day, endDay: day, days: [day] }));
+  const groups = [];
+  let i = 0;
+  while (i < consumptionDays.length) {
+    const prepDay = consumptionDays[i];
+    const limitDay = prepDay + shelfLifeDays - 1;
+    let j = i;
+    while (j + 1 < consumptionDays.length && consumptionDays[j + 1] <= limitDay) j += 1;
+    groups.push({ startDay: prepDay, endDay: consumptionDays[j], days: consumptionDays.slice(i, j + 1) });
+    i = j + 1;
   }
-  return chunks;
+  return groups;
 }
 
 /**
  * Sous-préparations d'un composant (aliment OU recette) dont la conservation
- * (`shelfLifeDays`) est plus courte que la session (P0.3) : au lieu d'une
- * simple alerte, la session est effectivement scindée en tranches de
- * `shelfLifeDays` jours, chacune avec son propre besoin (recalculé via
- * `computeRaw`, restreint aux repas de la tranche — même mécanisme
- * d'agrégation que le reste, aucune nouvelle formule). Besoin BRUT par
- * tranche (comme les composants aliments, qui n'ont jamais eu de notion de
- * stock déjà disponible) : la soustraction du disponible existant (recettes
- * uniquement, cf. `recipeAvailableFromPreparations`) reste au niveau de la
- * session entière, pas réparties entre tranches — on ignore SI le stock
- * existant a été consommé plutôt en début ou en fin de session, information
- * que le modèle actuel ne représente pas.
+ * (`shelfLifeDays`) est plus courte que la session (P0.3/P2.2) : au lieu
+ * d'une simple alerte, la session est effectivement scindée en préparations
+ * distinctes, chacune avec son propre besoin (recalculé via `computeRaw`,
+ * restreint aux repas concernés — même mécanisme d'agrégation que le reste,
+ * aucune nouvelle formule). Les tranches sont ancrées sur les jours de
+ * consommation RÉELS (P2.2), pas sur une grille fixe démarrant en début de
+ * session : une recette consommée deux fois dans sa durée de conservation ne
+ * déclenche jamais plus d'une préparation pour ces deux consommations.
+ * Besoin BRUT par tranche (comme les composants aliments, qui n'ont jamais
+ * eu de notion de stock déjà disponible) : la soustraction du disponible
+ * existant (recettes uniquement, cf. `recipeAvailableFromPreparations`) reste
+ * au niveau de la session entière, pas répartie entre tranches — on ignore SI
+ * le stock existant a été consommé plutôt en début ou en fin de session,
+ * information que le modèle actuel ne représente pas.
  */
 function computeSubBatches(shelfLifeDays, coveredDays, sessionIndex, startDay, endDay, keyPart, meals, computeRaw, overrides) {
+  // shelfLifeDays === null (non renseigné) : Number(null) vaut 0, donc FINI — sans
+  // l'exclusion explicite ci-dessous, une conservation inconnue serait traitée
+  // comme une conservation de 0 jour (scission quotidienne) au lieu du
+  // comportement de secours attendu (couvre toute la session, cf. P2.2).
+  if (shelfLifeDays === null || shelfLifeDays === undefined) return null;
   if (!(Number.isFinite(Number(shelfLifeDays)) && Number(shelfLifeDays) < coveredDays)) return null;
-  const chunkDays = Math.max(1, Math.floor(Number(shelfLifeDays)));
-  return splitDayRange(startDay, endDay, chunkDays).map((c) => {
-    const chunkMeals = meals.filter((m) => m.dayIndex >= c.startDay && m.dayIndex <= c.endDay);
+  const shelfLife = Math.max(0, Math.floor(Number(shelfLifeDays)));
+  const consumptionDays = [...new Set(
+    meals.filter((m) => computeRaw([m]) > 0).map((m) => m.dayIndex)
+  )].sort((a, b) => a - b);
+  if (!consumptionDays.length) return [];
+  return groupConsumptionDays(consumptionDays, shelfLife).map((g) => {
+    const chunkMeals = meals.filter((m) => g.days.includes(m.dayIndex));
     const requiredRaw = computeRaw(chunkMeals);
-    const key = `${sessionIndex}:${c.startDay}-${c.endDay}:${keyPart}`;
+    const key = `${sessionIndex}:${g.startDay}-${g.endDay}:${keyPart}`;
     const preparedRaw = overrides[key] ?? requiredRaw;
-    return { key, startDay: c.startDay, endDay: c.endDay, requiredRaw, preparedRaw };
+    return { key, startDay: g.startDay, endDay: g.endDay, requiredRaw, preparedRaw, coversDays: g.days };
   });
 }
 

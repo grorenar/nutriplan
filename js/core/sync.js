@@ -320,6 +320,7 @@ export function stateToTables(s) {
     meal_type: m.mealType,
     name: m.name || null,
     same_composition: m.sameComposition,
+    name_auto: m.nameAuto !== false,
   }));
   const meal_items = s.meals.flatMap((m) => m.items.flatMap((it) => itemRows(it, 'meal_id', m.id)));
 
@@ -421,6 +422,10 @@ export function tablesToState(t) {
     mealType: m.meal_type,
     name: m.name || '',
     sameComposition: m.same_composition !== false,
+    // nameAuto absent (m.name_auto === undefined) : laissé tel quel, dérivé
+    // depuis `name` par normalizeMeal() (store.js) à la migration suivante —
+    // même mécanisme que foods/recipes/preparations, une seule source de vérité.
+    nameAuto: m.name_auto,
     items: itemsFromRows(t.meal_items || [], 'meal_id', m.id),
   }));
 
