@@ -281,6 +281,10 @@ const preparationRow = (p) => ({
   prepared_quantity: p.preparedQuantity,
   created_at: p.createdAt,
   recipe_snapshot: p.recipeSnapshot,
+  // P4 : stock réellement restant, figé au dernier resetCycle() — null tant
+  // qu'aucun reset n'a encore eu lieu depuis la création (comportement dérivé
+  // habituel, cf. preparationAvailable()/derive.js).
+  remaining_at_reset: p.remainingAtReset ?? null,
 });
 
 const preparationFromRow = (row) => ({
@@ -290,6 +294,7 @@ const preparationFromRow = (row) => ({
   preparedQuantity: Number(row.prepared_quantity) || 0,
   createdAt: row.created_at,
   recipeSnapshot: row.recipe_snapshot,
+  remainingAtReset: row.remaining_at_reset === null || row.remaining_at_reset === undefined ? null : Number(row.remaining_at_reset),
 });
 
 export function stateToTables(s) {

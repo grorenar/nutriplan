@@ -95,13 +95,17 @@ create index if not exists recipe_items_recipe_idx on recipe_items (user_id, rec
 -- recette qui a des préparations existantes est refusé, pour ne jamais
 -- perdre silencieusement leur historique.
 create table if not exists preparations (
-  user_id           uuid not null default auth.uid() references auth.users(id) on delete cascade,
-  id                text not null,
-  recipe_id         text not null,
-  label             text,
-  prepared_quantity numeric not null default 0,
-  created_at        timestamptz not null default now(),
-  recipe_snapshot   jsonb not null,          -- copie figée de { kind, base_grams, items } au moment de la création
+  user_id             uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  id                  text not null,
+  recipe_id           text not null,
+  label               text,
+  prepared_quantity   numeric not null default 0,
+  created_at          timestamptz not null default now(),
+  recipe_snapshot     jsonb not null,          -- copie figée de { kind, base_grams, items } au moment de la création
+  -- stock réellement restant, figé au dernier resetCycle() (P4) — null tant
+  -- qu'aucun reset n'a eu lieu depuis la création : preparationAvailable()
+  -- retombe alors sur prepared_quantity − usages, comme avant P4.
+  remaining_at_reset  numeric,
   primary key (user_id, id),
   foreign key (user_id, recipe_id) references recipes(user_id, id) on delete restrict
 );
@@ -289,6 +293,11 @@ alter table snack_options alter column type set default 'snack';
 -- name_auto = true, donc plus rien à corriger.
 alter table meals add column if not exists name_auto boolean not null default true;
 update meals set name_auto = false where name is not null and name <> '';
+
+-- Stock de préparations (P4) : nullable, aucun backfill nécessaire — une
+-- ligne existante sans cette colonne se comporte exactement comme avant P4
+-- (preparationAvailable() retombe sur prepared_quantity − usages).
+alter table preparations add column if not exists remaining_at_reset numeric;
 
 -- Recettes/préparations (étape 5) : un item peut désormais référencer une
 -- recette (mode "molle", calcul inverse) ou une préparation (utilisation

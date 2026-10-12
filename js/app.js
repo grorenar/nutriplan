@@ -7,6 +7,7 @@ import * as planning from './views/planning.js';
 import * as foods from './views/foods.js';
 import * as recipes from './views/recipes.js';
 import * as catalogs from './views/catalogs.js';
+import * as preparations from './views/preparations.js';
 import * as batch from './views/batch.js';
 import * as shopping from './views/shopping.js';
 import * as settings from './views/settings.js';
@@ -19,6 +20,7 @@ const VIEWS = [
   { id: 'recipes', label: 'Recettes', icon: '📖', render: recipes.render, title: 'Recettes' },
   { id: 'breakfasts', label: 'Petits-déj.', icon: '☕', render: catalogs.renderBreakfasts, title: 'Petits-déjeuners' },
   { id: 'snacks', label: 'Collations', icon: '◍', render: catalogs.renderSnacks, title: 'Collations' },
+  { id: 'preparations', label: 'Préparations', icon: '🍲', render: preparations.render, title: 'Préparations' },
   { id: 'batch', label: 'Batch', icon: '⊞', render: batch.render, title: 'Batch cooking' },
   { id: 'shopping', label: 'Courses', icon: '✓', render: shopping.render, title: 'Liste de courses' },
   { id: 'settings', label: 'Paramètres', icon: '⚙', render: settings.render, title: 'Paramètres' },

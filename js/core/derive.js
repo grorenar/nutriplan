@@ -3,7 +3,11 @@
  * Aucune de ces fonctions ne modifie le planning.
  */
 
-import { convertGrams, toReferenceGrams, PERSONS, mealMacros, preparedGramsOf, portionGramsOf } from './nutrition.js';
+import {
+  convertGrams, toReferenceGrams, PERSONS, mealMacros, preparedGramsOf, portionGramsOf,
+  MEAL_TYPES, resolveZeroWasteAllocation,
+} from './nutrition.js';
+import { dayName } from './util.js';
 
 /** Utilisations totales d'une option de catalogue, par personne. */
 export function optionUses(option, kind) {
@@ -141,8 +145,14 @@ export function preparationUsed(state, preparationId) {
 }
 
 /**
- * Disponible = préparé − déjà affecté. Toujours dérivé, jamais stocké
- * (décision verrouillée). Peut être négatif : un sur-engagement n'est pas
+ * Disponible = référence − déjà affecté sur le cycle COURANT. Toujours
+ * dérivé, jamais stocké tel quel (décision verrouillée) : la RÉFÉRENCE est
+ * `preparedGramsOf()` tant qu'aucun reset n'a eu lieu, ou `remainingAtReset`
+ * (P4) une fois qu'un reset a figé le stock réellement restant à cet
+ * instant-là — `preparationUsed()` ne compte alors que les usages du
+ * nouveau cycle (state.meals ayant été vidé par resetCycle()), donc le
+ * disponible ne revient jamais artificiellement au `preparedQuantity`
+ * d'origine après un reset. Peut être négatif : un sur-engagement n'est pas
  * masqué ici (rien n'empêche encore le dépassement avant l'étape 7, qui fera
  * de cette valeur une contrainte réelle sur l'optimiseur).
  */
@@ -150,7 +160,8 @@ export function preparationAvailable(state, preparation) {
   // toujours en GRAMMES (l'unité de stockage réelle des item.qty) : pour une
   // préparation `kind:'portion'`, preparedQuantity est en PORTIONS — la
   // comparer directement à preparationUsed() (grammes) serait faux.
-  return preparedGramsOf(preparation) - preparationUsed(state, preparation.id);
+  const baseline = preparation.remainingAtReset ?? preparedGramsOf(preparation);
+  return baseline - preparationUsed(state, preparation.id);
 }
 
 /**
@@ -171,6 +182,162 @@ export function zeroWasteSlotsFor(state, preparationId) {
     }
   }
   return slots;
+}
+
+/* ------------------------------------------------------------------ */
+/* Répartition guidée d'une préparation — stock (étape P4)             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Cibles sélectionnables pour répartir une préparation (P4) : un candidat
+ * par repas classique du cycle (identité de jour réelle, `dayIndex` +
+ * `mealType`), et un candidat par occurrence PAR OPTION de petit-déjeuner/
+ * collation effectivement utilisée dans le cycle — jamais par jour, une
+ * option n'ayant pas de jour propre dans ce modèle (catalogue unique,
+ * décision verrouillée). Une collation utilisée à la fois 16 h et le soir
+ * produit deux candidats distincts, un par créneau, chacun avec son propre
+ * nombre d'utilisations — c'est ce nombre qui, multiplié par la quantité par
+ * service choisie par l'utilisateur, donne la quantité réellement prélevée
+ * sur le stock (cf. `planPreparationDistribution()`).
+ */
+export function distributionCandidates(state, startWeekday) {
+  const meals = state.meals
+    .map((m) => ({
+      mealId: m.id,
+      dayIndex: m.dayIndex,
+      mealType: m.mealType,
+      label: `${dayName(startWeekday, m.dayIndex)} — ${MEAL_TYPES[m.mealType]}`,
+    }))
+    .sort((a, b) => a.dayIndex - b.dayIndex || (a.mealType === 'lunch' ? -1 : 1));
+
+  const catalog = [];
+  for (const o of state.breakfasts || []) {
+    const usesCount = (Number(o.uses?.thomas) || 0) + (Number(o.uses?.julie) || 0);
+    if (usesCount > 0) {
+      catalog.push({
+        kind: 'breakfast', optionId: o.id, slot: null, usesCount,
+        label: `${MEAL_TYPES.breakfast} — « ${o.name || 'Sans nom'} »`,
+      });
+    }
+  }
+  for (const o of state.snacks || []) {
+    for (const [slot, typeKey] of [['afternoon', 'snack_afternoon'], ['evening', 'snack_evening']]) {
+      const usesCount = (Number(o.uses?.thomas?.[slot]) || 0) + (Number(o.uses?.julie?.[slot]) || 0);
+      if (usesCount > 0) {
+        catalog.push({
+          kind: 'snack', optionId: o.id, slot, usesCount,
+          label: `${MEAL_TYPES[typeKey]} — « ${o.name || 'Sans nom'} »`,
+        });
+      }
+    }
+  }
+  return { meals, catalog };
+}
+
+/**
+ * Calcule (SANS RIEN ÉCRIRE — fonction pure, cohérente avec le reste de ce
+ * fichier) le plan de répartition d'une préparation sur une sélection de
+ * repas classiques et d'options de petit-déjeuner/collation (P4).
+ *
+ * `resolveZeroWasteAllocation()` (nutrition.js, INCHANGÉE) ne reçoit JAMAIS
+ * les options de catalogue : leur quantité par service est une saisie
+ * directe de l'utilisateur (cf. diagnostic P4 §6 — une option n'a pas
+ * d'identité de jour, "Σ allocation = quantité" n'a pas de sens pour elle).
+ * Le solveur ne reçoit que le RELIQUAT (`amount − catalogTotal`) à répartir
+ * sur les repas classiques sélectionnés : la somme qu'il produit ne peut
+ * donc, par construction, jamais dépasser ce reliquat — jamais de
+ * vérification a posteriori, une garantie structurelle (§7/§9 de la
+ * validation).
+ *
+ * `picks = { amount, mealPicks: [{mealId, item}], catalogPicks: [{kind,
+ * optionId, slot, usesCount, perServiceQty}] }` — `item` d'un `mealPick` est
+ * un item préparation DÉJÀ CONSTRUIT par l'appelant (`newPreparationItem()`,
+ * store.js) avec `qty:{thomas:0,julie:0}` : cette fonction ne connaît pas
+ * `store.js` (derive.js n'importe jamais de store.js, pour éviter tout cycle
+ * d'imports), elle se contente de lui attribuer une quantité.
+ *
+ * Retour : `{ ok:false, reason }` ou `{ ok:true, catalogWrites, mealWrites }`
+ *   catalogWrites = [{ kind, optionId, slot, qty }]
+ *   mealWrites    = [{ mealId, item, qtyByPerson: {thomas,julie}, otherQuantities }]
+ *     `otherQuantities` = { itemId: {thomas?, julie?} } — quantités
+ *     réoptimisées des AUTRES items déjà présents dans ce repas, produites
+ *     par `resolveZeroWasteAllocation()` elle-même (aucun second calcul).
+ */
+export function planPreparationDistribution(state, foodsById, recipesById, preparationsById, preparationId, picks) {
+  const prep = state.preparations.find((p) => p.id === preparationId);
+  if (!prep) return { ok: false, reason: 'Préparation introuvable.' };
+
+  const disponible = preparationAvailable(state, prep);
+  const amount = Math.max(0, Number(picks.amount) || 0);
+  if (!(amount > 0)) return { ok: false, reason: 'Indique une quantité à répartir supérieure à 0.' };
+  if (amount > disponible + 1e-6) {
+    return { ok: false, reason: `Cette sélection nécessite ${Math.round(amount)} g pour ${Math.round(disponible)} g disponibles.` };
+  }
+
+  const catalogPicks = (picks.catalogPicks || []).filter((c) => Number(c.perServiceQty) > 0);
+  const catalogTotal = catalogPicks.reduce(
+    (sum, c) => sum + Number(c.perServiceQty) * Math.max(0, Number(c.usesCount) || 0), 0
+  );
+  if (catalogTotal > amount + 1e-6) {
+    return {
+      ok: false,
+      reason: `Les collations/petits-déjeuners sélectionnés nécessitent ${Math.round(catalogTotal)} g, plus que les ${Math.round(amount)} g à répartir.`,
+    };
+  }
+
+  const mealPicks = picks.mealPicks || [];
+  const remainder = amount - catalogTotal;
+  if (remainder > 1e-6 && !mealPicks.length) {
+    return { ok: false, reason: `${Math.round(remainder)} g resteraient sans repas sélectionné pour les recevoir.` };
+  }
+  if (remainder <= 1e-6 && mealPicks.length) {
+    return { ok: false, reason: 'Aucune quantité ne reste pour les repas sélectionnés : retire-les ou augmente la quantité à répartir.' };
+  }
+
+  const catalogWrites = catalogPicks.map((c) => ({ kind: c.kind, optionId: c.optionId, slot: c.slot, qty: Number(c.perServiceQty) }));
+
+  let mealWrites = [];
+  if (remainder > 1e-6) {
+    const roundStep = prep.recipeSnapshot?.kind === 'portion' ? portionGramsOf(prep.recipeSnapshot) : 1;
+    const resolved = mealPicks.map(({ mealId, item }) => {
+      const meal = state.meals.find((m) => m.id === mealId);
+      return { meal, item };
+    });
+    if (resolved.some((r) => !r.meal)) return { ok: false, reason: 'Un des repas sélectionnés est introuvable.' };
+
+    // un créneau par (repas, personne) — EXACTEMENT la même construction que
+    // `zeroWasteSlotsFor()` (item ajouté à la liste COMPLÈTE des items du
+    // repas) : les AUTRES ingrédients de chaque repas se réoptimisent autour
+    // de l'allocation, au sein même de `resolveZeroWasteAllocation()` —
+    // aucune deuxième passe de réajustement n'est ajoutée ici, c'est le
+    // mécanisme déjà existant qui s'en charge, tel quel.
+    const slots = [];
+    const slotOf = []; // { mealIdx, person } — pour ranger le résultat par repas
+    resolved.forEach(({ meal, item }, mealIdx) => {
+      const items = [...meal.items, item];
+      for (const person of PERSONS) {
+        slots.push({ items, itemId: item.id, target: state.settings.targets[person][meal.mealType], person });
+        slotOf.push({ mealIdx, person });
+      }
+    });
+    const result = resolveZeroWasteAllocation(slots, remainder, foodsById, recipesById, preparationsById, { roundStep });
+
+    mealWrites = resolved.map(({ meal, item }, mealIdx) => {
+      const qtyByPerson = {};
+      const otherQuantities = {}; // itemId existant -> { thomas, julie }
+      slotOf.forEach((s, i) => {
+        if (s.mealIdx !== mealIdx) return;
+        qtyByPerson[s.person] = result.allocation[i];
+        for (const [itemId, qty] of Object.entries(result.quantities[i])) {
+          otherQuantities[itemId] = otherQuantities[itemId] || {};
+          otherQuantities[itemId][s.person] = qty;
+        }
+      });
+      return { mealId: meal.id, item, qtyByPerson, otherQuantities };
+    });
+  }
+
+  return { ok: true, catalogWrites, mealWrites };
 }
 
 /* ------------------------------------------------------------------ */

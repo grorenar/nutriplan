@@ -11,6 +11,7 @@
 import { STORAGE_KEY } from '../config.js';
 import { uid, deepCopy } from './util.js';
 import { seedFoods } from './seed-foods.js';
+import { preparationAvailable } from './derive.js';
 
 export const DEFAULT_TARGETS = {
   thomas: {
@@ -130,6 +131,12 @@ export function normalizePreparation(p) {
     label: '',
     createdAt: new Date().toISOString(),
     recipeSnapshot: null,
+    // P4 : null = aucun reset n'a encore figé de stock restant pour cette
+    // préparation — comportement dérivé habituel (preparedGramsOf − usages).
+    // Une préparation antérieure à P4 (donc sans ce champ) est normalisée
+    // avec null, jamais une autre valeur : aucun changement de comportement
+    // tant qu'aucun reset n'a eu lieu depuis la mise à jour.
+    remainingAtReset: null,
     ...p,
   };
 }
@@ -148,6 +155,7 @@ export const newPreparation = (recipe, preparedQuantity, label = '') => ({
   preparedQuantity: Math.max(0, Number(preparedQuantity) || 0),
   createdAt: new Date().toISOString(),
   recipeSnapshot: deepCopy({ kind: recipe.kind, baseGrams: recipe.baseGrams, items: recipe.items }),
+  remainingAtReset: null, // P4 : stock restant figé au dernier reset (null = jamais reseté)
 });
 
 /** Compteurs d'utilisation d'une option dans le cycle, par personne. */
@@ -536,6 +544,16 @@ export function importJSON(text) {
 /** Réinitialise uniquement le cycle en cours. */
 export function resetCycle() {
   update((s) => {
+    // P4 : figer le stock RÉELLEMENT restant de chaque préparation AVANT de
+    // vider le planning — sinon preparationUsed() (qui lit state.meals) ne
+    // trouverait plus aucun usage une fois les repas supprimés, et
+    // preparationAvailable() referait passer le disponible à preparedQuantity
+    // en entier, comme si la préparation venait d'être cuisinée. Idempotent
+    // sur des resets successifs : preparationAvailable() tient déjà compte
+    // d'un remainingAtReset déjà présent (baseline = remainingAtReset ??
+    // preparedGramsOf(...)), donc chaque reset re-fige simplement "ce qu'il
+    // reste maintenant", quel que soit le nombre de resets précédents.
+    for (const p of s.preparations) p.remainingAtReset = preparationAvailable(s, p);
     s.meals = [];
     s.shopping = { purchased: {} };
     s.batch = { overrides: {} };

@@ -57,7 +57,7 @@ const type = (el, v) => { el.value = v; el.dispatchEvent(new window.Event('input
 const wait = () => new Promise((r) => setTimeout(r, 20));
 
 console.log('\n— Démarrage');
-check('8 entrées de navigation (Recettes ajoutée)', $$('#nav button').length === 8);
+check('9 entrées de navigation (Préparations ajoutée, P4)', $$('#nav button').length === 9);
 check('8 créneaux de repas pour un cycle de 4 jours', $$('.meal-card').length === 8);
 check('état de synchronisation affiché', /Mode local/.test($('#status').textContent));
 
@@ -693,7 +693,7 @@ if (anyInput) {
 }
 
 console.log('\n— Navigation complète');
-for (const id of ['foods', 'recipes', 'breakfasts', 'snacks', 'batch', 'shopping', 'settings']) {
+for (const id of ['foods', 'recipes', 'breakfasts', 'snacks', 'preparations', 'batch', 'shopping', 'settings']) {
   click($(`[data-view="${id}"]`));
   await wait();
   check(`vue ${id} rendue`, $('#view').textContent.length > 50, `${$('#title').textContent}`);
@@ -1035,6 +1035,122 @@ click($('[data-view="settings"]'));
 await wait();
 check('mode local expliqué dans le compte', /Mode local uniquement/.test($('#view').textContent));
 
+console.log('\n— P4 : écran « Préparations » — stock et assistant de répartition');
+const p4Beef = store.getState().foods.find((f) => /Steak haché/.test(f.name));
+let p4PrepId;
+store.update((s) => {
+  const recipe = store.newRecipe('Bœuf effiloché P4', 'weight');
+  recipe.items = [store.newRecipeItem(p4Beef.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  s.recipes.push(recipe);
+  const prep = store.newPreparation(recipe, 1000);
+  p4PrepId = prep.id;
+  s.preparations.push(prep);
+});
+await wait();
+
+click($('[data-view="preparations"]'));
+await wait();
+check('écran Préparations accessible depuis la navigation', $('#title').textContent === 'Préparations');
+check('la préparation apparaît comme un stock : Préparé/Affecté/Disponible',
+  /Préparé/.test($('#view').textContent) && /Affecté/.test($('#view').textContent) && /Disponible/.test($('#view').textContent));
+check('disponible initial = 1 000 g (rien encore affecté)', /1\s?000 g/.test($('#view').textContent));
+
+click($$('[data-open-distribute]').find((b) => b.dataset.openDistribute === p4PrepId));
+await wait();
+check('assistant ouvert avec le disponible affiché', /Disponible : 1\s?000 g/.test($('#view').textContent));
+check('champ « combien répartir » pré-rempli au disponible', $('[data-wizard-amount]').value === '1000');
+check('0 repas sélectionné au départ', /0 repas sélectionné/.test($('#view').textContent));
+
+// les deux derniers créneaux de la liste correspondent aux jours ajoutés par
+// l'extension du cycle à 6 jours (encore vides) — sans risque d'interférer
+// avec les repas déjà utilisés par les sections précédentes de ce test.
+check('des libellés « Jour — Type » réels sont proposés (réutilise dayName(), P3.5)',
+  $$('[data-pick-meal]').some((cb) => /^(Lundi|Mardi|Mercredi|Jeudi|Vendredi|Samedi|Dimanche) — /.test(cb.closest('label').textContent.trim())));
+// re-requêter à chaque clic : render(root) reconstruit le DOM à chaque
+// changement (même motif que le reste du fichier, ex. pastaRow2()) — une
+// référence capturée avant un premier clic serait détachée pour le second.
+const p4LastMealIds = () => $$('[data-pick-meal]').slice(-2).map((cb) => cb.dataset.pickMeal);
+const [p4MealA, p4MealB] = p4LastMealIds();
+click($$('[data-pick-meal]').find((cb) => cb.dataset.pickMeal === p4MealA));
+await wait();
+click($$('[data-pick-meal]').find((cb) => cb.dataset.pickMeal === p4MealB));
+await wait();
+check('2 repas sélectionnés (compteur mis à jour)', /2 repas sélectionné/.test($('#view').textContent));
+check('bouton Répartir activé (sélection cohérente)', !$('[data-wizard-submit]').disabled);
+
+click($('[data-wizard-submit]'));
+await wait();
+check('résultat affiché immédiatement, sans fermeture silencieuse', /Répartition terminée/.test($('#view').textContent));
+check('1 000 g affectés annoncés dans le résumé', /1\s?000 g/.test($('#view').textContent));
+check('macros affichées dans le résumé (réutilise mealMacros()/evaluate())', /kcal/.test($('#view').textContent));
+
+const p4Saved = () => JSON.parse(localStorage.getItem('nutriplan.state.v1'));
+check('disponible retombé à 0 après répartition complète (persisté)',
+  p4Saved().meals.filter((m) => m.items.some((it) => it.preparationId === p4PrepId))
+    .reduce((sum, m) => sum + m.items.filter((it) => it.preparationId === p4PrepId).reduce((s, it) => s + it.qty.thomas + it.qty.julie, 0), 0) === 1000);
+check('les items créés portent zeroWaste:true (compatibilité avec l’ancien mécanisme, P4 §16)',
+  p4Saved().meals.some((m) => m.items.some((it) => it.preparationId === p4PrepId && it.zeroWaste === true)));
+
+console.log('\n— P4 : sur-engagement bloqué (jamais de stock négatif)');
+let p4Prep2Id;
+store.update((s) => {
+  const recipe = store.newRecipe('Curry léger P4', 'weight');
+  recipe.items = [store.newRecipeItem(p4Beef.id, 500, 'cru')];
+  recipe.baseGrams = 500;
+  s.recipes.push(recipe);
+  const prep = store.newPreparation(recipe, 500);
+  p4Prep2Id = prep.id;
+  s.preparations.push(prep);
+});
+await wait();
+click($('[data-view="preparations"]'));
+await wait();
+click($$('[data-open-distribute]').find((b) => b.dataset.openDistribute === p4Prep2Id));
+await wait();
+change($('[data-wizard-amount]'), '700'); // > 500 g disponibles
+await wait();
+check('message explicite de dépassement affiché', /nécessite 700 g pour 500 g disponibles/.test($('#view').textContent));
+check('bouton Répartir désactivé : impossible de valider un dépassement', $('[data-wizard-submit]').disabled);
+const p4BeforeOverCommit = JSON.stringify(p4Saved().preparations.find((p) => p.id === p4Prep2Id));
+click($('[data-wizard-cancel]'));
+await wait();
+check('annulation : aucune écriture, préparation strictement inchangée',
+  JSON.stringify(p4Saved().preparations.find((p) => p.id === p4Prep2Id)) === p4BeforeOverCommit);
+
+console.log('\n— P4 : « + Utiliser dans un repas » (assignation directe, sans assistant)');
+// préparation DÉDIÉE, isolée des scénarios précédents/suivants (sur-engagement,
+// puis reset) pour ne pas fausser leurs quantités attendues.
+let p4Prep3Id;
+store.update((s) => {
+  const recipe = store.newRecipe('Riz P4', 'weight');
+  recipe.items = [store.newRecipeItem(p4Beef.id, 400, 'cru')];
+  recipe.baseGrams = 400;
+  s.recipes.push(recipe);
+  const prep = store.newPreparation(recipe, 400);
+  p4Prep3Id = prep.id;
+  s.preparations.push(prep);
+});
+await wait();
+click($('[data-view="preparations"]'));
+await wait();
+click($$('[data-open-quick-use]').find((b) => b.dataset.openQuickUse === p4Prep3Id));
+await wait();
+check('formulaire rapide ouvert avec un repas proposé par défaut', !!$('[data-quickuse-meal]') && !!$('[data-quickuse-qty]'));
+const p4QuickMealId = $('[data-quickuse-meal]').value;
+// comme l'existant « + Utiliser » de l'éditeur (data-use-preparation,
+// newPreparationItem() symétrique), 100 g saisis affectent 100 g à CHAQUE
+// personne — 200 g au total prélevés sur le stock (400 − 200 = 200 g).
+change($('[data-quickuse-qty]'), '100');
+click($('[data-quickuse-confirm]'));
+await wait();
+check('toast de confirmation', /ajoutée au repas/i.test(document.getElementById('toasts')?.textContent || ''));
+check('item préparation ajouté au repas choisi (100 g pour chaque personne, motif symétrique existant)',
+  p4Saved().meals.find((m) => m.id === p4QuickMealId)?.items.some((it) => it.preparationId === p4Prep3Id && it.qty.thomas === 100 && it.qty.julie === 100));
+click($('[data-view="preparations"]'));
+await wait();
+check('disponible réduit en conséquence (400 − 100×2 = 200 g)', /200 g/.test($('#view').textContent));
+
 console.log('\n— Persistance locale');
 const saved = JSON.parse(localStorage.getItem('nutriplan.state.v1'));
 check('état écrit dans localStorage', !!saved && saved.foods.length > 50);
@@ -1044,6 +1160,48 @@ check('état écrit dans localStorage', !!saved && saved.foods.length > 50);
 check('repas conservé avec son verrou (verrouillage automatique persistant)',
   saved.meals[0].items.some((i) => i.locked.thomas === true && i.qty.thomas === 5 && i.foodId === 'f_pates_completes'));
 check('ingrédient libre conservé', saved.meals[0].items.some((i) => i.free?.name === 'Curry'));
+
+// P4 : réinitialisation du cycle — DESTRUCTIVE (vide s.meals), volontairement
+// exécutée en tout dernier, après toutes les assertions de persistance
+// ci-dessus qui dépendent des repas existants (verrou, ingrédient libre).
+console.log('\n— P4 : réinitialisation du cycle — le stock restant est conservé, jamais republié en entier');
+// 500 g disponibles, on en affecte 200 -> 300 g restants avant reset
+click($('[data-view="preparations"]'));
+await wait();
+click($$('[data-open-distribute]').find((b) => b.dataset.openDistribute === p4Prep2Id));
+await wait();
+change($('[data-wizard-amount]'), '200');
+await wait();
+click($$('[data-pick-meal]')[$$('[data-pick-meal]').length - 1]);
+await wait();
+click($('[data-wizard-submit]'));
+await wait();
+const p4SavedFinal = () => JSON.parse(localStorage.getItem('nutriplan.state.v1'));
+check('200 g affectés, 300 g restants avant reset',
+  p4SavedFinal().preparations.find((p) => p.id === p4Prep2Id) &&
+  p4SavedFinal().meals.some((m) => m.items.some((it) => it.preparationId === p4Prep2Id)));
+
+click($('[data-view="settings"]'));
+await wait();
+click($('[data-reset-cycle]'));
+await wait();
+const afterReset1 = p4SavedFinal().preparations.find((p) => p.id === p4Prep2Id);
+check('remainingAtReset figé à 300 g (500 préparés − 200 affectés), jamais republié à 500 g',
+  afterReset1.remainingAtReset === 300, `remainingAtReset=${afterReset1.remainingAtReset}`);
+check('les repas du cycle sont bien vidés (planning réinitialisé)', p4SavedFinal().meals.every((m) => !m.items.some((it) => it.preparationId === p4Prep2Id)));
+
+click($('[data-view="preparations"]'));
+await wait();
+check('l’écran Préparations affiche 300 g disponibles après reset, pas 500 g', /300 g/.test($('#view').textContent));
+
+// deuxième reset successif, sans nouvelle affectation : le stock ne doit pas bouger
+click($('[data-view="settings"]'));
+await wait();
+click($('[data-reset-cycle]'));
+await wait();
+const afterReset2 = p4SavedFinal().preparations.find((p) => p.id === p4Prep2Id);
+check('deux resets successifs sans nouvel usage : remainingAtReset stable à 300 g',
+  afterReset2.remainingAtReset === 300, `remainingAtReset=${afterReset2.remainingAtReset}`);
 
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));

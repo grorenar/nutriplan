@@ -19,16 +19,17 @@ import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
   coverageReport, optionUses, needsCooking, preparationUsed, preparationAvailable,
   recipeNeeded, buildRecipeNeeds, zeroWasteSlotsFor, deployItems, aggregateNeeds,
-  recipeAvailableFromPreparations, recipeNeededNet,
+  recipeAvailableFromPreparations, recipeNeededNet, distributionCandidates, planPreparationDistribution,
 } from '../js/core/derive.js';
 import { seedFoods } from '../js/core/seed-foods.js';
 import {
   migrateState, newRecipe, newRecipeItem, defaultState, newItem, newFreeItem, sectionsUsed, SECTIONS, DEFAULT_SECTION,
   newPreparation, preparationsById, newPreparationItem, newRecipeMealItem,
-  newMeal, normalizeMeal, autoMealName,
+  newMeal, normalizeMeal, autoMealName, normalizePreparation,
 } from '../js/core/store.js';
 import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
 import { stateToTables, tablesToState } from '../js/core/sync.js';
+import { analyzeMealVolume } from '../js/core/meal-volume.js';
 
 /* ---------------------------------------------------------------- harnais */
 
@@ -3226,6 +3227,304 @@ test('P2.4.12 — round-trip via sync.js : name_auto sérialisé/désérialisé 
   const m = back.meals.find((x) => x.id === 'm6');
   check('nameAuto = false désérialisé (nom réel jamais perdu au round-trip)', m.nameAuto === false);
   check('name désérialisé', m.name === 'Repas post-entraînement');
+});
+
+/* ============================================== P4 — STOCK DE PRÉPARATIONS / RÉPARTITION (v1.5.5) */
+
+const p4Targets = () => ({
+  thomas: { kcal: 900, protein: 50, carbs: 90, fat: 30 },
+  julie: { kcal: 650, protein: 35, carbs: 70, fat: 20 },
+});
+
+function p4State(meals, preparations, extra = {}) {
+  return {
+    meals, breakfasts: [], snacks: [], preparations,
+    settings: { cycle: { startWeekday: 1, duration: 6 }, targets: p4Targets(), tolerance: 0.05, batch: { enabled: true, maxDays: 6 } },
+    ...extra,
+  };
+}
+
+test('P4.1 — preparationAvailable() : remainingAtReset absent (null) → comportement inchangé (préparé − affecté)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Hachis de boeuf', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1200);
+  check('remainingAtReset = null à la création', prep.remainingAtReset === null);
+  const st = p4State([mkMeal(0, 'lunch', [{ ...newPreparationItem(prep.id, 400), qty: { thomas: 400, julie: 0 } }])], [prep]);
+  check('disponible = 1200 − 400 = 800 (comme avant P4)', preparationAvailable(st, prep) === 800);
+});
+
+test('P4.2 — preparationAvailable() : remainingAtReset figé → sert de référence à la place de preparedQuantity', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1200);
+  prep.remainingAtReset = 300; // figé par un reset simulé
+  const stEmpty = p4State([], [prep]);
+  check('disponible = remainingAtReset (300), pas preparedQuantity (1200)', preparationAvailable(stEmpty, prep) === 300);
+  const stUsed = p4State([mkMeal(0, 'lunch', [{ ...newPreparationItem(prep.id, 100), qty: { thomas: 100, julie: 0 } }])], [prep]);
+  check('disponible = 300 − 100 (usage du NOUVEAU cycle uniquement) = 200', preparationAvailable(stUsed, prep) === 200);
+  const prepZero = { ...prep, remainingAtReset: 0 };
+  check('remainingAtReset = 0 → disponible = 0, jamais republié à preparedQuantity', preparationAvailable(p4State([], [prepZero]), prepZero) === 0);
+});
+
+test('P4.3 — normalizePreparation() : ancienne préparation sans remainingAtReset → null (jamais une autre valeur)', () => {
+  const old = { id: 'p_old', recipeId: 'r1', label: 'Ancien chili', preparedQuantity: 500, recipeSnapshot: { kind: 'weight', baseGrams: 500, items: [] } };
+  const n = normalizePreparation(old);
+  check('remainingAtReset normalisé à null', n.remainingAtReset === null);
+  check('les autres champs restent inchangés', n.preparedQuantity === 500 && n.label === 'Ancien chili');
+});
+
+test('P4.4 — distributionCandidates() : repas classiques libellés avec le vrai nom du jour', () => {
+  const meals = [mkMeal(0, 'lunch', []), mkMeal(1, 'dinner', [])];
+  const st = p4State(meals, []);
+  const cand = distributionCandidates(st, 1); // startWeekday=1 → jour 0 = Mardi
+  check('2 candidats repas', cand.meals.length === 2);
+  check('libellé = nom du jour réel + type (réutilise dayName()/MEAL_TYPES)',
+    cand.meals[0].label === 'Mardi — Déjeuner', cand.meals[0].label);
+  check('triés par jour puis déjeuner avant dîner', cand.meals[1].label === 'Mercredi — Dîner', cand.meals[1].label);
+});
+
+test('P4.5 — distributionCandidates() : options petit-déjeuner/collation, une par service utilisé, jamais par jour', () => {
+  const st = p4State([], [], {
+    breakfasts: [{ id: 'b1', name: 'Flocons', uses: { thomas: 3, julie: 1 }, items: [] }],
+    snacks: [
+      { id: 's1', name: 'Whey', targetSlot: 'afternoon', uses: { thomas: { afternoon: 3, evening: 0 }, julie: { afternoon: 0, evening: 0 } }, items: [] },
+      { id: 's2', name: 'Fromage blanc', targetSlot: 'evening', uses: { thomas: { afternoon: 0, evening: 2 }, julie: { afternoon: 0, evening: 2 } }, items: [] },
+    ],
+  });
+  const cand = distributionCandidates(st, 1);
+  check('3 candidats catalogue (1 petit-déj + 1 collation 16h + 1 collation soir)', cand.catalog.length === 3, JSON.stringify(cand.catalog.map((c) => c.label)));
+  check('petit-déjeuner : 4 utilisations (3 Thomas + 1 Julie)', cand.catalog.find((c) => c.kind === 'breakfast').usesCount === 4);
+  check('collation 16h : 3 utilisations', cand.catalog.find((c) => c.slot === 'afternoon').usesCount === 3);
+  check('collation soir : 4 utilisations (2+2)', cand.catalog.find((c) => c.slot === 'evening').usesCount === 4);
+  check('libellés « Collation 16 h »/« Collation du soir » (MEAL_TYPES), jamais un jour (P4 §6)',
+    /Collation 16 h/.test(cand.catalog.find((c) => c.slot === 'afternoon').label) &&
+    /Collation du soir/.test(cand.catalog.find((c) => c.slot === 'evening').label));
+  const noUses = p4State([], [], { snacks: [{ id: 's3', name: 'Jamais utilisée', uses: { thomas: { afternoon: 0, evening: 0 }, julie: { afternoon: 0, evening: 0 } }, items: [] }] });
+  check('une option jamais utilisée (0 service) n’apparaît pas', distributionCandidates(noUses, 1).catalog.length === 0);
+});
+
+test('P4.6 — planPreparationDistribution() : 1000 g sur 4 repas, somme exacte, disponible correctement recalculé (§11 du diagnostic)', () => {
+  const boeuf = F('Steak haché');
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Hachis de boeuf', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  const preparationsMap = { [prep.id]: prep };
+  const meals = [0, 1, 3, 4].map((d) => mkMeal(d, d % 2 === 0 ? 'lunch' : 'dinner', [
+    { ...newItem(riz.id, 150), qty: { thomas: 150, julie: 150 } },
+  ]));
+  const st = p4State(meals, [prep]);
+  const mealPicks = meals.map((m) => ({ mealId: m.id, item: newPreparationItem(prep.id, 0) }));
+  const plan = planPreparationDistribution(st, byId, {}, preparationsMap, prep.id, { amount: 1000, mealPicks });
+  check('plan accepté', plan.ok === true);
+  const sum = plan.mealWrites.reduce((s, w) => s + w.qtyByPerson.thomas + w.qtyByPerson.julie, 0);
+  check('Σ affecté (Thomas+Julie, tous repas) = 1000 g EXACTEMENT', sum === 1000, `${sum} g`);
+  check('4 repas écrits', plan.mealWrites.length === 4);
+  check('le riz déjà présent dans chaque repas est réoptimisé (réutilise resolveZeroWasteAllocation(), aucun second calcul)',
+    plan.mealWrites.every((w) => Object.keys(w.otherQuantities).length > 0));
+
+  // écriture réelle + vérification du disponible recalculé
+  for (const w of plan.mealWrites) {
+    const meal = meals.find((m) => m.id === w.mealId);
+    w.item.qty = { thomas: w.qtyByPerson.thomas, julie: w.qtyByPerson.julie };
+    meal.items.push(w.item);
+  }
+  check('disponible après répartition complète = 0', preparationAvailable(st, prep) === 0);
+});
+
+test('P4.7 — planPreparationDistribution() : dépassement du stock → refus, ÉTAT STRICTEMENT INCHANGÉ (§7 de la validation)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 800);
+  const meals = [mkMeal(0, 'lunch', []), mkMeal(1, 'dinner', [])];
+  const st = p4State(meals, [prep]);
+  const snapshotBefore = JSON.stringify(st);
+  const mealPicks = meals.map((m) => ({ mealId: m.id, item: newPreparationItem(prep.id, 0) }));
+  const plan = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, { amount: 950, mealPicks });
+  check('refusé', plan.ok === false);
+  check('message explicite avec les deux quantités', /950/.test(plan.reason) && /800/.test(plan.reason), plan.reason);
+  check('état strictement inchangé (aucune écriture, fonction pure)', JSON.stringify(st) === snapshotBefore);
+  check('le stock ne devient jamais négatif : disponible toujours 800', preparationAvailable(st, prep) === 800);
+});
+
+test('P4.8 — planPreparationDistribution() : stock partiellement puis totalement utilisé', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 500);
+  const meal = mkMeal(0, 'lunch', []);
+  const st = p4State([meal], [prep]);
+  const plan1 = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 200, mealPicks: [{ mealId: meal.id, item: newPreparationItem(prep.id, 0) }],
+  });
+  check('répartition partielle acceptée', plan1.ok === true);
+  meal.items.push({ ...plan1.mealWrites[0].item, qty: { thomas: plan1.mealWrites[0].qtyByPerson.thomas, julie: plan1.mealWrites[0].qtyByPerson.julie } });
+  const disponibleApres1 = preparationAvailable(st, prep);
+  check('disponible partiellement réduit (500 − 200 = 300)', disponibleApres1 === 300, `${disponibleApres1}`);
+
+  const meal2 = mkMeal(1, 'dinner', []);
+  st.meals.push(meal2);
+  const plan2 = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 300, mealPicks: [{ mealId: meal2.id, item: newPreparationItem(prep.id, 0) }],
+  });
+  check('reliquat exact accepté', plan2.ok === true);
+  meal2.items.push({ ...plan2.mealWrites[0].item, qty: { thomas: plan2.mealWrites[0].qtyByPerson.thomas, julie: plan2.mealWrites[0].qtyByPerson.julie } });
+  check('stock totalement consommé → disponible = 0', preparationAvailable(st, prep) === 0);
+});
+
+test('P4.9 — planPreparationDistribution() : collation SEULE (16 h), sans repas classique', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 300);
+  const st = p4State([], [prep], {
+    snacks: [{ id: 's1', name: 'Chili froid', targetSlot: 'afternoon', uses: { thomas: { afternoon: 3, evening: 0 }, julie: { afternoon: 0, evening: 0 } }, items: [] }],
+  });
+  const plan = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 300, catalogPicks: [{ kind: 'snack', optionId: 's1', slot: 'afternoon', usesCount: 3, perServiceQty: 100 }],
+  });
+  check('accepté sans aucun repas sélectionné', plan.ok === true, plan.reason);
+  check('aucune écriture repas (mealWrites vide)', plan.mealWrites.length === 0);
+  check('1 écriture catalogue à 100 g/service', plan.catalogWrites.length === 1 && plan.catalogWrites[0].qty === 100);
+});
+
+test('P4.10 — planPreparationDistribution() : petit-déjeuner seul', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 400);
+  const st = p4State([], [prep], { breakfasts: [{ id: 'b1', name: 'Chili matin', uses: { thomas: 2, julie: 2 }, items: [] }] });
+  const plan = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 400, catalogPicks: [{ kind: 'breakfast', optionId: 'b1', slot: null, usesCount: 4, perServiceQty: 100 }],
+  });
+  check('petit-déjeuner seul accepté', plan.ok === true, plan.reason);
+  check('400 g = 100 g × 4 utilisations, exactement le disponible', plan.catalogWrites[0].qty === 100);
+});
+
+test('P4.11 — planPreparationDistribution() : collation SOIR seule (distincte de 16 h)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 200);
+  const st = p4State([], [prep], {
+    snacks: [{ id: 's1', name: 'Chili soir', targetSlot: 'evening', uses: { thomas: { afternoon: 0, evening: 2 }, julie: { afternoon: 0, evening: 0 } }, items: [] }],
+  });
+  const plan = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 200, catalogPicks: [{ kind: 'snack', optionId: 's1', slot: 'evening', usesCount: 2, perServiceQty: 100 }],
+  });
+  check('collation soir seule acceptée', plan.ok === true, plan.reason);
+  check('slot evening correctement écrit (pas afternoon)', plan.catalogWrites[0].slot === 'evening');
+});
+
+test('P4.12 — planPreparationDistribution() : mélange collation + repas classiques, reliquat exact vers le solveur (§9 de la validation)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 800);
+  const meals = [mkMeal(0, 'lunch', []), mkMeal(1, 'dinner', [])];
+  const st = p4State(meals, [prep], {
+    snacks: [{ id: 's1', name: 'Whey', targetSlot: 'afternoon', uses: { thomas: { afternoon: 3, evening: 0 }, julie: { afternoon: 0, evening: 0 } }, items: [] }],
+  });
+  const mealPicks = meals.map((m) => ({ mealId: m.id, item: newPreparationItem(prep.id, 0) }));
+  const plan = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 800,
+    catalogPicks: [{ kind: 'snack', optionId: 's1', slot: 'afternoon', usesCount: 3, perServiceQty: 100 }],
+    mealPicks,
+  });
+  check('plan mixte accepté', plan.ok === true, plan.reason);
+  check('collation : 300 g (100 × 3)', plan.catalogWrites[0].qty === 100);
+  const mealSum = plan.mealWrites.reduce((s, w) => s + w.qtyByPerson.thomas + w.qtyByPerson.julie, 0);
+  check('resolveZeroWasteAllocation() ne reçoit JAMAIS plus que le reliquat : Σ repas = 800 − 300 = 500 g EXACTEMENT',
+    mealSum === 500, `${mealSum} g`);
+});
+
+test('P4.13 — planPreparationDistribution() : recalcul des macros après répartition (réutilise mealMacros()/evaluate(), aucun nouveau calcul)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Hachis de boeuf', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 500);
+  const meal = mkMeal(0, 'lunch', []);
+  const st = p4State([meal], [prep]);
+  const plan = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 500, mealPicks: [{ mealId: meal.id, item: newPreparationItem(prep.id, 0) }],
+  });
+  const w = plan.mealWrites[0];
+  w.item.qty = { thomas: w.qtyByPerson.thomas, julie: w.qtyByPerson.julie };
+  meal.items.push(w.item);
+  // le partage thomas/julie n'est pas garanti égal (l'optimiseur peut donner
+  // 0 à l'un d'eux selon les cibles) : on vérifie les DEUX, pas un seul au hasard.
+  const macrosByPerson = { thomas: mealMacros(meal.items, byId, 'thomas', {}, { [prep.id]: prep }),
+    julie: mealMacros(meal.items, byId, 'julie', {}, { [prep.id]: prep }) };
+  const evByPerson = { thomas: evaluate(macrosByPerson.thomas, p4Targets().thomas, 0.05),
+    julie: evaluate(macrosByPerson.julie, p4Targets().julie, 0.05) };
+  check('mealMacros()/evaluate() fonctionnent normalement sur le repas après répartition (item preparationId standard)',
+    (macrosByPerson.thomas.kcal > 0 || macrosByPerson.julie.kcal > 0) &&
+    evByPerson.thomas.rows.length === 4 && evByPerson.julie.rows.length === 4);
+  check('somme des quantités affectées cohérente avec l’item réellement stocké',
+    w.item.qty.thomas + w.item.qty.julie === 500);
+});
+
+test('P4.14 — planPreparationDistribution() : recalcul du volume après répartition (réutilise analyzeMealVolume(), aucun nouveau calcul)', () => {
+  const boeuf = F('Steak haché');
+  const riz = F('Riz basmati');
+  const recipe = newRecipe('Hachis de boeuf', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 900); // grosse quantité concentrée sur un seul repas → volume élevé attendu
+  // découverte réelle (pas une hypothèse) : analyzeMealVolume() (meal-volume.js,
+  // NON modifiée par P4, conformément à la consigne) ignore tout item SANS
+  // foodId — un item recipeId/preparationId n'est actuellement jamais compté
+  // dans la masse d'assiette. Un repas composé UNIQUEMENT d'une préparation
+  // distribuée ne déclenchera donc jamais d'alerte volume, quelle que soit la
+  // quantité. On ajoute ici un ingrédient foodId classique (riz), comme dans
+  // un repas réel, pour vérifier ce que la fonction calcule effectivement.
+  const meal = mkMeal(0, 'lunch', [{ ...newItem(riz.id, 800), qty: { thomas: 800, julie: 0 } }]);
+  const st = p4State([meal], [prep]);
+  const plan = planPreparationDistribution(st, byId, {}, { [prep.id]: prep }, prep.id, {
+    amount: 900, mealPicks: [{ mealId: meal.id, item: newPreparationItem(prep.id, 0) }],
+  });
+  const w = plan.mealWrites[0];
+  w.item.qty = { thomas: w.qtyByPerson.thomas, julie: w.qtyByPerson.julie };
+  meal.items.push(w.item);
+  const vol = analyzeMealVolume(meal.items, byId, 'thomas');
+  const volRizSeul = analyzeMealVolume([meal.items[0]], byId, 'thomas'); // sans l'item préparation
+  check('analyzeMealVolume() recalculée sur le repas après répartition (fonction non modifiée, réutilisée telle quelle)',
+    typeof vol.level === 'number' && vol.grams > 0, JSON.stringify(vol));
+  check('l’item de préparation (900 g, sans foodId) n’est PAS ajouté à la masse — limitation réelle et préexistante de la fonction, hors périmètre P4',
+    vol.grams === volRizSeul.grams, `avec préparation : ${vol.grams} g / riz seul : ${volRizSeul.grams} g`);
+});
+
+test('P4.15 — round-trip via sync.js : remaining_at_reset sérialisé/désérialisé correctement', () => {
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1200);
+  prep.remainingAtReset = 300;
+  const s = { ...defaultState(), recipes: [recipe], preparations: [prep] };
+  const tables = stateToTables(s);
+  const row = tables.preparations.find((r) => r.id === prep.id);
+  check('remaining_at_reset = 300 sérialisé', row.remaining_at_reset === 300);
+  const back = tablesToState({ recipes: tables.recipes, recipe_items: tables.recipe_items, preparations: tables.preparations });
+  const p = back.preparations.find((x) => x.id === prep.id);
+  check('remainingAtReset = 300 désérialisé', p.remainingAtReset === 300);
+
+  const prepNull = newPreparation(recipe, 500);
+  const s2 = { ...defaultState(), recipes: [recipe], preparations: [prepNull] };
+  const row2 = stateToTables(s2).preparations.find((r) => r.id === prepNull.id);
+  check('remaining_at_reset = null sérialisé quand jamais reseté', row2.remaining_at_reset === null);
 });
 
 /* ---------------------------------------------------------------- bilan */
