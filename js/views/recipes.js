@@ -23,6 +23,19 @@ const foodsMapOf = (s) => Object.fromEntries(s.foods.map((f) => [f.id, f]));
 export function render(root) {
   const s = getState();
   const byId = foodsMapOf(s);
+
+  // Le tiroir est déjà ouvert (son .drawer__panel existe déjà dans le DOM) :
+  // on ne met à jour QUE son contenu, sans recréer .drawer/.drawer__panel —
+  // voir refreshDrawerBody() pour la raison (rejeu de l'animation d'entrée).
+  if (editing && root.querySelector('.drawer__panel')) {
+    refreshDrawerBody(root, s, byId);
+    return;
+  }
+
+  renderFull(root, s, byId);
+}
+
+function renderFull(root, s, byId) {
   const list = [...s.recipes].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 
   root.innerHTML = `
@@ -43,7 +56,24 @@ export function render(root) {
     <small>Les macros d'une recette sont toujours recalculées depuis ses ingrédients, jamais stockées.</small>
     ${editing ? formPanel(s, byId) : ''}
   `;
-  wire(root, s);
+  wireList(root, s);
+  if (editing) { wireDrawerChrome(root); wireDrawerBody(root, s); }
+}
+
+/**
+ * Met à jour UNIQUEMENT le contenu de .drawer__body (ingrédients, macros,
+ * champs conditionnels au type) sans jamais recréer .drawer/.drawer__panel.
+ * Cause du bug « clipping » : un render() complet recréait tout le tiroir à
+ * chaque validation de champ (Tab/blur) ou sélection d'ingrédient, ce qui
+ * rejouait son animation CSS d'entrée (slide-in) et faisait perdre le focus
+ * — y compris l'avancement natif du navigateur vers le champ suivant sur Tab.
+ */
+function refreshDrawerBody(root, s, byId) {
+  const body = root.querySelector('.drawer__body');
+  const r = currentDraft(s);
+  if (!body || !r) { renderFull(root, s, byId); return; }
+  body.innerHTML = formBodyHtml(r, s, byId);
+  wireDrawerBody(root, s);
 }
 
 function rowOf(r, s, byId) {
@@ -123,6 +153,19 @@ function updateIngredientResults(root) {
 function formPanel(s, byId) {
   const r = currentDraft(s);
   if (!r) return '';
+  return `<div class="drawer" data-form-backdrop>
+    <div class="drawer__panel" style="width:min(560px,100%)">
+      <div class="drawer__head"><div class="row">
+        <h3 style="flex:1">${editing === 'new' ? 'Nouvelle recette' : 'Modifier la recette'}</h3>
+        <button class="btn btn--ghost" data-form-cancel>Fermer</button>
+      </div></div>
+      <div class="drawer__body">${formBodyHtml(r, s, byId)}</div>
+    </div>
+  </div>`;
+}
+
+/** Contenu de .drawer__body — réutilisé tel quel par refreshDrawerBody(). */
+function formBodyHtml(r, s, byId) {
   const per100 = recipeMacrosPer100g(r, byId);
   const portionBase = portionGramsOf(r);
 
@@ -166,71 +209,61 @@ function formPanel(s, byId) {
       }).join('')
     : `<div class="empty" style="margin:8px 0">Aucun ingrédient. Ajoute-en un ci-dessous.</div>`;
 
-  return `<div class="drawer" data-form-backdrop>
-    <div class="drawer__panel" style="width:min(560px,100%)">
-      <div class="drawer__head"><div class="row">
-        <h3 style="flex:1">${editing === 'new' ? 'Nouvelle recette' : 'Modifier la recette'}</h3>
-        <button class="btn btn--ghost" data-form-cancel>Fermer</button>
-      </div></div>
-      <div class="drawer__body">
-        <div class="grid grid--3">
-          <label class="field" style="grid-column:1/-1">Nom
-            <input type="text" data-r="name" value="${esc(r.name)}"></label>
-          <label class="field">Type
-            <select data-r="kind">
-              <option value="weight" ${r.kind === 'weight' ? 'selected' : ''}>Au poids (grammes)</option>
-              <option value="portion" ${r.kind === 'portion' ? 'selected' : ''}>Portion (unité indivisible)</option>
-            </select>
-          </label>
-          ${
-            r.kind === 'weight'
-              ? `<label class="field">Poids de référence (g)
-                   <input type="number" min="1" step="1" data-r="baseGrams" value="${num(r.baseGrams, 0)}"></label>
-                 <small style="grid-column:1/-1">Calculé automatiquement depuis la composition (${num(portionBase, 0)} g) — modifie-le uniquement si le poids RÉELLEMENT obtenu après cuisson diffère (perte/gain à la cuisson). Sert de référence à l'optimiseur, jamais une contrainte.</small>`
-              : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). Utilisée dans un repas, la recette se sélectionne en nombre entier de portions.</small>`
-          }
-        </div>
-
-        <h3 style="margin:16px 0 6px">Ingrédients</h3>
-        <small>kcal / 100${r.kind === 'weight' ? ' g' : ' (base = 1 portion)'} : ${num(per100.kcal, 0)} · P ${num(per100.protein, 1)} g · G ${num(per100.carbs, 1)} g · L ${num(per100.fat, 1)} g</small>
-        <div class="items" style="margin:10px 0">${ingredientRows}</div>
-        ${
-          r.kind === 'weight'
-            ? `<small style="display:block;margin-bottom:6px">Une recette « au poids » ne peut pas contenir d'aliment non fractionnable (décision verrouillée) — une telle recette doit être créée en type « Portion ».</small>`
-            : ''
-        }
-        ${ingredientPicker(s)}
-
-        <h3 style="margin:16px 0 6px">Batch cooking</h3>
-        <label class="check"><input type="checkbox" data-r="batchAllowed" ${r.batchAllowed ? 'checked' : ''}> Autorisée en batch cooking</label>
-        <small style="display:block;margin:4px 0 8px">Une recette autorisée en batch cooking, référencée directement dans un repas (pas encore préparée), apparaît dans l'écran Batch avec sa quantité nette à préparer.</small>
-        <div class="grid grid--3">
-          <label class="field">Durée maximale de conservation après préparation (jours)
-            <input type="number" step="1" min="0" data-r="shelfLifeDays" value="${num(r.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
-        </div>
-        <small style="display:block;margin:4px 0 8px">Si la conservation est plus courte que la durée d'une session de batch, le plan indique automatiquement les préparations supplémentaires nécessaires en cours de session.</small>
-        <div class="grid grid--3">
-          <label class="field">Méthode de cuisson
-            <input type="text" data-r="cookingMethod" value="${esc(r.cookingMethod || '')}" placeholder="Four, mijoteuse, poêle…"></label>
-          <label class="field">Température (°C)
-            <input type="number" step="5" data-r="cookingTemp" value="${num(r.cookingTemp)}"></label>
-          <label class="field">Durée de cuisson (min)
-            <input type="number" step="1" data-r="cookingTime" value="${num(r.cookingTime)}"></label>
-          <label class="field">Temps de préparation (min)
-            <input type="number" step="1" data-r="prepTime" value="${num(r.prepTime)}"></label>
-          <label class="field">Matériel
-            <input type="text" data-r="equipment" value="${esc(r.equipment || '')}" placeholder="Four, sauteuse…"></label>
-        </div>
-        <label class="field" style="margin-top:8px">Consignes libres
-          <textarea data-r="instructions" rows="3" placeholder="Ex. mijoter à couvert, remuer à mi-cuisson.">${esc(r.instructions || '')}</textarea></label>
-
-        <div class="row" style="margin-top:18px">
-          <button class="btn btn--primary" data-save>Enregistrer</button>
-          ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${r.id}">Supprimer</button>`}
-        </div>
-      </div>
+  return `<div class="grid grid--3">
+      <label class="field" style="grid-column:1/-1">Nom
+        <input type="text" data-r="name" value="${esc(r.name)}"></label>
+      <label class="field">Type
+        <select data-r="kind">
+          <option value="weight" ${r.kind === 'weight' ? 'selected' : ''}>Au poids (grammes)</option>
+          <option value="portion" ${r.kind === 'portion' ? 'selected' : ''}>Portion (unité indivisible)</option>
+        </select>
+      </label>
+      ${
+        r.kind === 'weight'
+          ? `<label class="field">Poids de référence (g)
+               <input type="number" min="1" step="1" data-r="baseGrams" value="${num(r.baseGrams, 0)}"></label>
+             <small style="grid-column:1/-1">Calculé automatiquement depuis la composition (${num(portionBase, 0)} g) — modifie-le uniquement si le poids RÉELLEMENT obtenu après cuisson diffère (perte/gain à la cuisson). Sert de référence à l'optimiseur, jamais une contrainte.</small>`
+          : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). Utilisée dans un repas, la recette se sélectionne en nombre entier de portions.</small>`
+      }
     </div>
-  </div>`;
+
+    <h3 style="margin:16px 0 6px">Ingrédients</h3>
+    <small>kcal / 100${r.kind === 'weight' ? ' g' : ' (base = 1 portion)'} : ${num(per100.kcal, 0)} · P ${num(per100.protein, 1)} g · G ${num(per100.carbs, 1)} g · L ${num(per100.fat, 1)} g</small>
+    <div class="items" style="margin:10px 0">${ingredientRows}</div>
+    ${
+      r.kind === 'weight'
+        ? `<small style="display:block;margin-bottom:6px">Une recette « au poids » ne peut pas contenir d'aliment non fractionnable (décision verrouillée) — une telle recette doit être créée en type « Portion ».</small>`
+        : ''
+    }
+    ${ingredientPicker(s)}
+
+    <h3 style="margin:16px 0 6px">Batch cooking</h3>
+    <label class="check"><input type="checkbox" data-r="batchAllowed" ${r.batchAllowed ? 'checked' : ''}> Autorisée en batch cooking</label>
+    <small style="display:block;margin:4px 0 8px">Une recette autorisée en batch cooking, référencée directement dans un repas (pas encore préparée), apparaît dans l'écran Batch avec sa quantité nette à préparer.</small>
+    <div class="grid grid--3">
+      <label class="field">Durée maximale de conservation après préparation (jours)
+        <input type="number" step="1" min="0" data-r="shelfLifeDays" value="${num(r.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
+    </div>
+    <small style="display:block;margin:4px 0 8px">Si la conservation est plus courte que la durée d'une session de batch, le plan indique automatiquement les préparations supplémentaires nécessaires en cours de session.</small>
+    <div class="grid grid--3">
+      <label class="field">Méthode de cuisson
+        <input type="text" data-r="cookingMethod" value="${esc(r.cookingMethod || '')}" placeholder="Four, mijoteuse, poêle…"></label>
+      <label class="field">Température (°C)
+        <input type="number" step="5" data-r="cookingTemp" value="${num(r.cookingTemp)}"></label>
+      <label class="field">Durée de cuisson (min)
+        <input type="number" step="1" data-r="cookingTime" value="${num(r.cookingTime)}"></label>
+      <label class="field">Temps de préparation (min)
+        <input type="number" step="1" data-r="prepTime" value="${num(r.prepTime)}"></label>
+      <label class="field">Matériel
+        <input type="text" data-r="equipment" value="${esc(r.equipment || '')}" placeholder="Four, sauteuse…"></label>
+    </div>
+    <label class="field" style="margin-top:8px">Consignes libres
+      <textarea data-r="instructions" rows="3" placeholder="Ex. mijoter à couvert, remuer à mi-cuisson.">${esc(r.instructions || '')}</textarea></label>
+
+    <div class="row" style="margin-top:18px">
+      <button class="btn btn--primary" data-save>Enregistrer</button>
+      ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${r.id}">Supprimer</button>`}
+    </div>`;
 }
 
 /**
@@ -256,28 +289,36 @@ function resetForm() {
   ingQuery = '';
 }
 
-function wire(root, s) {
+function wireList(root, s) {
   root.querySelector('[data-new]')?.addEventListener('click', () => { resetForm(); editing = 'new'; render(root); });
   root.querySelectorAll('[data-edit]').forEach((b) =>
     b.addEventListener('click', (e) => { resetForm(); editing = e.currentTarget.dataset.edit; render(root); })
   );
+}
 
+/**
+ * Chrome du tiroir (bouton Fermer, clic sur le fond) : vit dans .drawer et
+ * .drawer__head, jamais recréés par refreshDrawerBody() — ne se câble donc
+ * qu'une fois, à l'ouverture (sinon : écouteurs dupliqués à chaque validation
+ * de champ ou ajout d'ingrédient, puisque ces éléments resteraient les mêmes
+ * nœuds DOM d'un refreshDrawerBody() à l'autre).
+ */
+function wireDrawerChrome(root) {
   root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { resetForm(); render(root); });
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.formBackdrop !== undefined) { resetForm(); render(root); }
   });
+}
 
+/** Contenu de .drawer__body : recâblé à chaque renderFull() ET refreshDrawerBody(). */
+function wireDrawerBody(root, s) {
   const RECIPE_NUMERIC_FIELDS = ['shelfLifeDays', 'cookingTemp', 'cookingTime', 'prepTime'];
   const RECIPE_TEXT_FIELDS = ['cookingMethod', 'equipment', 'instructions'];
   root.querySelectorAll('[data-r]').forEach((input) => {
     input.addEventListener('change', (e) => {
       const key = e.target.dataset.r;
       const draft = currentDraft(getState());
-      if (key === 'baseGrams') draft.baseGrams = Math.max(0, Number(e.target.value) || 0);
-      else if (key === 'batchAllowed') draft.batchAllowed = e.target.checked;
-      else if (RECIPE_NUMERIC_FIELDS.includes(key)) draft[key] = e.target.value === '' ? null : Number(e.target.value);
-      else if (RECIPE_TEXT_FIELDS.includes(key)) draft[key] = e.target.value;
-      else if (key === 'kind') {
+      if (key === 'kind') {
         const newKind = e.target.value;
         if (newKind === 'weight') {
           // même règle qu'à l'ajout d'un ingrédient (décision verrouillée) :
@@ -298,8 +339,23 @@ function wire(root, s) {
         // en basculant vers "weight", la référence part de la composition
         // actuelle (au lieu de forcer une saisie manuelle à 0).
         if (draft.kind === 'weight' && !draft.baseGrams) draft.baseGrams = portionGramsOf(draft);
-      } else draft.name = e.target.value;
-      render(root);
+        // seul champ dont le changement affecte l'affichage du panneau
+        // (apparition de « Poids de référence », libellés kcal/100) : un
+        // render() est donc nécessaire ici, contrairement aux autres champs.
+        render(root);
+        return;
+      }
+      // Tous les autres champs n'ont aucun affichage dépendant ailleurs dans
+      // le panneau : la valeur saisie EST déjà le seul reflet attendu à
+      // l'écran, donc AUCUN render() n'est déclenché. C'est ce qui corrige le
+      // clipping au Tab/blur hors du champ : le DOM du tiroir n'est jamais
+      // touché, donc l'avancement natif du focus du navigateur vers le champ
+      // suivant n'est jamais interrompu par une reconstruction du tiroir.
+      if (key === 'baseGrams') draft.baseGrams = Math.max(0, Number(e.target.value) || 0);
+      else if (key === 'batchAllowed') draft.batchAllowed = e.target.checked;
+      else if (RECIPE_NUMERIC_FIELDS.includes(key)) draft[key] = e.target.value === '' ? null : Number(e.target.value);
+      else if (RECIPE_TEXT_FIELDS.includes(key)) draft[key] = e.target.value;
+      else draft.name = e.target.value;
     });
   });
 

@@ -757,6 +757,60 @@ check('les résultats sont bien filtrés par la saisie frappée caractère par c
 click($('[data-form-cancel]'));
 await wait();
 
+console.log('\n— Écran Recettes : validation d’un champ (Tab/blur) et sélection d’un ingrédient (régression « clipping », 2e cause)');
+// Le premier correctif (ci-dessus) ne couvrait que la frappe dans la
+// recherche d'ingrédient. Mais `change` sur n'importe quel champ `[data-r]`
+// (déclenché par un Tab ou un blur), ainsi que la sélection d'un ingrédient
+// dans la liste, appelaient AUSSI render(root) — même symptôme : le tiroir
+// entier (.drawer__panel) était recréé, rejouant l'animation CSS d'entrée,
+// ET l'avancement natif du focus au Tab vers le champ suivant était
+// interrompu (le champ visé par le navigateur disparaissait avant d'être
+// focalisé, le focus retombait sur <body>).
+click($('[data-new]'));
+await wait();
+const panelBeforeValidation = $('.drawer__panel');
+const kindSelectBeforeValidation = $('[data-r="kind"]');
+const nameField = $('[data-r="name"]');
+nameField.value = 'Gratin de courgettes';
+nameField.focus();
+// simule le blur déclenché par un Tab quittant le champ du nom : `change`
+// est le même événement que le navigateur émettrait dans ce cas.
+nameField.dispatchEvent(new window.Event('change', { bubbles: true }));
+check('le panneau n’est PAS recréé après la validation (Tab/blur) du champ Nom',
+  $('.drawer__panel') === panelBeforeValidation);
+check('le champ Type n’est PAS recréé après la validation du champ Nom (identité DOM stable, pertinent pour l’avancement du focus au Tab)',
+  $('[data-r="kind"]') === kindSelectBeforeValidation);
+check('la valeur saisie dans Nom est bien conservée dans le brouillon après validation',
+  $('[data-r="name"]').value === 'Gratin de courgettes');
+
+const panelBeforeSelect = $('.drawer__panel');
+type($('[data-ing-search]'), 'courgette');
+await wait();
+const courgetteBtn = $$('[data-ing-add]').find((b) => / courgette/i.test(b.textContent));
+if (courgetteBtn) click(courgetteBtn);
+else click($$('[data-ing-add]')[0]); // selon le catalogue de test, se replie sur le premier résultat
+await wait();
+check('le panneau n’est PAS recréé immédiatement après la sélection d’un ingrédient',
+  $('.drawer__panel') === panelBeforeSelect);
+check('l’ingrédient sélectionné apparaît bien dans la composition (la mise à jour fonctionnelle est conservée)',
+  $('.drawer__body .items').textContent.trim().length > 0 && !/Aucun ingrédient/.test($('.drawer__body .items').textContent));
+
+// répète avec un second ingrédient : même garantie à chaque ajout, pas
+// seulement au premier.
+const panelBeforeSecondAdd = $('.drawer__panel');
+const itemCountBefore = $$('.drawer__body .items .item').length;
+type($('[data-ing-search]'), 'poulet');
+await wait();
+const secondBtn = $$('[data-ing-add]')[0];
+if (secondBtn) click(secondBtn);
+await wait();
+check('le panneau n’est toujours pas recréé après un second ajout d’ingrédient',
+  $('.drawer__panel') === panelBeforeSecondAdd);
+check('le second ingrédient a bien été ajouté (un item de plus dans la composition)',
+  $$('.drawer__body .items .item').length === itemCountBefore + 1);
+click($('[data-form-cancel]'));
+await wait();
+
 console.log('\n— Écran Recettes : recette « portion », ingrédient non fractionnable en unité naturelle');
 click($('[data-new]'));
 await wait();
