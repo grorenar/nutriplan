@@ -14,10 +14,14 @@
  * `update()`, exactement comme les autres écrans.
  */
 
-import { getState, update, foodsById, recipesById, preparationsById, newPreparationItem } from '../core/store.js';
+import {
+  getState, update, foodsById, recipesById, preparationsById, newPreparationItem,
+  newPreparation, newPreparationLoss,
+} from '../core/store.js';
 import { mealMacros, evaluate, preparedGramsOf, portionGramsOf, PERSONS, PERSON_LABEL } from '../core/nutrition.js';
 import {
-  preparationUsed, preparationAvailable, distributionCandidates, planPreparationDistribution,
+  preparationUsed, preparationAvailable, preparationWasted, preparationAssignments,
+  distributionCandidates, planPreparationDistribution, deployItems,
 } from '../core/derive.js';
 import { analyzeMealVolume } from '../core/meal-volume.js';
 import { esc, num, toast } from '../core/util.js';
@@ -27,6 +31,9 @@ import { esc, num, toast } from '../core/util.js';
 let wizard = null;   // { preparationId, amount, mealIds: Set<string>, catalog: Map<key, {picked, perServiceQty}> }
 let quickUse = null; // { preparationId, mealId, qty }
 let lastResult = null;
+let creating = null;    // { recipeId, qty } — P1.A, création depuis une recette
+let discarding = null;  // { preparationId, qty } — P1.C, « Jeter les restes »
+const assignmentsOpen = new Set(); // ids de préparation dont la liste d'affectations est dépliée
 
 export function render(root) {
   const s = getState();
@@ -35,15 +42,19 @@ export function render(root) {
 
   root.innerHTML = `
     <div class="row" style="margin-bottom:12px">
-      <small>Une préparation est un stock : préparée une fois, elle peut être répartie sur plusieurs repas au fil du cycle, sans devoir cocher un « zéro reste » repas par repas.</small>
+      <small style="flex:1">Une préparation est un stock : préparée une fois, elle peut être répartie sur plusieurs repas au fil du cycle, sans devoir cocher un « zéro reste » repas par repas.</small>
+      <button class="btn btn--primary" data-open-create ${s.recipes.length ? '' : 'disabled'}
+        title="${s.recipes.length ? '' : 'Crée d’abord une recette dans l’écran Recettes.'}">Nouvelle préparation</button>
     </div>
     ${lastResult ? resultCard(lastResult) : ''}
+    ${creating ? createPanel(s) : ''}
+    ${discarding ? discardPanel(s) : ''}
     ${wizard ? distributeWizard(s, recipesMap) : ''}
     ${quickUse ? quickUseCard(s, recipesMap) : ''}
     ${
       preps.length
         ? preps.map((p) => prepCard(p, s, recipesMap)).join('')
-        : `<div class="empty">Aucune préparation. Crée-en une depuis l'éditeur d'un repas (panneau « Recettes & préparations »).</div>`
+        : `<div class="empty">Aucune préparation. Crée-en une à partir d'une recette avec le bouton « Nouvelle préparation » ci-dessus.</div>`
     }
   `;
   wire(root, s);
@@ -64,9 +75,12 @@ function unitLabelFor(prep, grams) {
 function prepCard(p, s, recipesMap) {
   const prepared = preparedGramsOf(p);
   const used = preparationUsed(s, p.id);
+  const jete = preparationWasted(p);
   const disponible = preparationAvailable(s, p);
   const recipeName = recipesMap[p.recipeId]?.name || '?';
   const epuisee = disponible <= 0;
+  const assignments = preparationAssignments(s, p.id, s.settings.cycle.startWeekday);
+  const open = assignmentsOpen.has(p.id);
 
   return `<div class="card" style="margin-bottom:12px">
     <div class="card__head">
@@ -76,12 +90,158 @@ function prepCard(p, s, recipesMap) {
     <div class="kv">
       <div><small>Préparé</small><b>${unitLabelFor(p, prepared)}</b></div>
       <div><small>Affecté</small><b>${unitLabelFor(p, Math.max(0, used))}</b></div>
+      ${jete > 0 ? `<div><small>Jeté</small><b>${unitLabelFor(p, jete)}</b></div>` : ''}
       <div><small>Disponible</small><b class="${epuisee ? 'muted' : ''}">${unitLabelFor(p, Math.max(0, disponible))}</b></div>
     </div>
     ${epuisee ? '<small class="muted">Entièrement affectée : conservée dans la liste, mais plus proposée pour une nouvelle répartition.</small>' : ''}
     <div class="row" style="margin-top:10px">
       <button class="btn btn--primary" data-open-distribute="${p.id}" ${epuisee ? 'disabled' : ''}>Répartir</button>
       <button class="btn btn--sm" data-open-quick-use="${p.id}" ${epuisee ? 'disabled' : ''}>+ Utiliser dans un repas</button>
+      <button class="btn btn--sm" data-open-discard="${p.id}" ${disponible <= 0 ? 'disabled' : ''}>Jeter les restes</button>
+      ${assignments.length ? `<button class="btn btn--sm btn--ghost" data-toggle-assignments="${p.id}">${open ? 'Masquer' : 'Voir'} les affectations (${assignments.length})</button>` : ''}
+    </div>
+    ${open ? assignmentsSection(p, assignments) : ''}
+  </div>`;
+}
+
+/**
+ * Liste éditable des affectations actuelles d'une préparation (P1.B) : modifie
+ * la quantité de l'item EN PLACE (jamais de doublon, jamais un second
+ * décompte) — même `itemId` retrouvé et réécrit par `onEditAssignment()`.
+ */
+function assignmentsSection(p, assignments) {
+  const disponible = preparationAvailable(getState(), p);
+  const rows = assignments.map((a) => {
+    const total = a.qtyByPerson.thomas + a.qtyByPerson.julie;
+    // la nouvelle quantité peut aller jusqu'à (ce qui est déjà affecté ICI +
+    // le disponible restant ailleurs) — jamais plus, jamais de stock négatif.
+    const max = Math.round(total + disponible);
+    return `<div class="item" style="padding:6px 0">
+      <div class="item__main">
+        <div class="item__name">${esc(a.label)}</div>
+      </div>
+      <div class="item__qty">
+        <input type="number" min="0" max="${max}" step="1" data-assignment-qty="${a.itemId}" value="${num(total, 0)}" style="width:90px"> <small>g</small>
+        <button class="btn btn--sm btn--danger" data-assignment-remove="${a.itemId}">Retirer</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+    <small class="muted">Modifier une quantité réécrit l'affectation existante (aucun doublon). La retirer libère entièrement le disponible.</small>
+    <div class="items" style="margin-top:6px">${rows}</div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Création d'une préparation à partir d'une recette (P1.A)            */
+/* ------------------------------------------------------------------ */
+
+function createPanel(s) {
+  const recipe = s.recipes.find((r) => r.id === creating.recipeId) || s.recipes[0];
+  if (!recipe) return '';
+  const isPortion = recipe.kind === 'portion';
+  const refGrams = isPortion ? portionGramsOf(recipe) : (Number(recipe.baseGrams) || 0);
+  const byId = foodsById();
+  const qty = Number(creating.qty) || 0;
+  // préparation PORTION : la quantité saisie est un NOMBRE DE PORTIONS (même
+  // convention que newPreparation()/preparedGramsOf(), décision verrouillée) ;
+  // c'est donc bien × refGrams, et non refGrams lui-même, qu'il faut passer à
+  // deployItems() pour obtenir les quantités d'ingrédients réellement nécessaires.
+  const targetGrams = isPortion ? qty * refGrams : qty;
+  // réutilise EXACTEMENT le mécanisme déjà utilisé par le batch/les courses
+  // pour déplier une recette en aliments réels à une échelle donnée — aucun
+  // second calcul de proportion ici.
+  const previewItems = qty > 0 && refGrams > 0
+    ? deployItems([{ recipeId: recipe.id, qty: { thomas: targetGrams, julie: 0 } }], recipesById(), {})
+    : [];
+
+  const refRows = recipe.items
+    .map((it) => `<div class="item" style="padding:4px 0">
+        <div class="item__main"><div class="item__name">${esc(byId[it.foodId]?.name || 'Aliment supprimé')}</div></div>
+        <div class="item__meta nums">${num(it.qty, 0)} g (référence)</div>
+      </div>`)
+    .join('');
+
+  const previewRows = previewItems
+    .map((it) => `<div class="item" style="padding:4px 0">
+        <div class="item__main"><div class="item__name">${esc(byId[it.foodId]?.name || 'Aliment supprimé')}</div></div>
+        <div class="item__meta nums">${num(it.qty.thomas, 0)} g</div>
+      </div>`)
+    .join('');
+
+  return `<div class="drawer" data-create-backdrop>
+    <div class="drawer__panel" style="width:min(520px,100%)">
+      <div class="drawer__head"><div class="row">
+        <h3 style="flex:1">Nouvelle préparation</h3>
+        <button class="btn btn--ghost" data-create-cancel>Fermer</button>
+      </div></div>
+      <div class="drawer__body">
+        <label class="field">Recette
+          <select data-create-recipe>
+            ${s.recipes.map((r) => `<option value="${r.id}" ${r.id === recipe.id ? 'selected' : ''}>${esc(r.name)} (${r.kind === 'portion' ? 'portion' : 'au poids'})</option>`).join('')}
+          </select>
+        </label>
+        <small style="display:block;margin-top:6px">${isPortion ? `Référence : 1 portion = ${num(refGrams, 0)} g` : `Référence : ${num(refGrams, 0)} g`} · ${recipe.items.length} ingrédient(s)</small>
+        <div class="items" style="margin:8px 0">${refRows}</div>
+
+        <label class="field" style="margin-top:10px">${isPortion ? 'Nombre de portions obtenues' : 'Quantité obtenue (g)'}
+          <input type="number" min="0" step="1" data-create-qty value="${creating.qty || ''}"
+                 placeholder="${isPortion ? 'ex. 4 portions' : 'ex. 1200 g'}"></label>
+        <small style="display:block;margin-top:4px">Quantité RÉELLEMENT obtenue après cuisson — jamais recalculée depuis les ingrédients.</small>
+
+        ${
+          qty > 0
+            ? `<h4 style="margin-top:14px">Quantités d'ingrédients nécessaires pour ${isPortion ? `${num(qty, 0)} portion(s)` : `${num(qty, 0)} g`}</h4>
+               <div class="items" style="margin-top:6px">${previewRows}</div>`
+            : ''
+        }
+
+        <div class="row" style="margin-top:14px">
+          <button class="btn btn--ghost" data-create-cancel>Annuler</button>
+          <button class="btn btn--primary" data-create-confirm ${qty > 0 ? '' : 'disabled'}>Créer la préparation</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* « Jeter les restes » (P1.C)                                         */
+/* ------------------------------------------------------------------ */
+
+function discardPanel(s) {
+  const p = s.preparations.find((x) => x.id === discarding.preparationId);
+  if (!p) return '';
+  const disponible = preparationAvailable(s, p);
+  const qty = Number(discarding.qty) || 0;
+  const valid = qty > 0 && qty <= disponible + 1e-6;
+  return `<div class="drawer" data-discard-backdrop>
+    <div class="drawer__panel" style="width:min(420px,100%)">
+      <div class="drawer__head"><div class="row">
+        <h3 style="flex:1">Jeter les restes — « ${esc(p.label)} »</h3>
+        <button class="btn btn--ghost" data-discard-cancel>Fermer</button></div>
+        <small>Disponible : ${unitLabelFor(p, disponible)}</small>
+      </div>
+      <div class="drawer__body">
+        <label class="field">Quantité à jeter (g)
+          <input type="number" min="0" max="${Math.max(0, Math.round(disponible))}" step="1" data-discard-qty value="${discarding.qty || ''}"></label>
+        <div class="row" style="margin-top:8px">
+          <button class="btn btn--sm" data-discard-all>Jeter tout le disponible (${num(disponible, 0)} g)</button>
+        </div>
+        ${
+          !valid && discarding.qty !== ''
+            ? `<small class="sync-error" style="display:block;margin-top:8px">${
+                qty > disponible
+                  ? `Tu ne peux pas jeter plus que les ${num(disponible, 0)} g disponibles.`
+                  : 'Indique une quantité à jeter supérieure à 0.'
+              }</small>`
+            : ''
+        }
+        <div class="row" style="margin-top:14px">
+          <button class="btn btn--ghost" data-discard-cancel>Annuler</button>
+          <button class="btn btn--danger" data-discard-confirm ${valid ? '' : 'disabled'}>Confirmer la perte</button>
+        </div>
+      </div>
     </div>
   </div>`;
 }
@@ -347,6 +507,154 @@ function wire(root, s) {
   });
 
   root.querySelector('[data-dismiss-result]')?.addEventListener('click', () => { lastResult = null; render(root); });
+
+  // --- Nouvelle préparation (P1.A)
+  root.querySelector('[data-open-create]')?.addEventListener('click', () => {
+    const st = getState();
+    if (!st.recipes.length) return;
+    creating = { recipeId: st.recipes[0].id, qty: '' };
+    render(root);
+  });
+  const closeCreate = () => { creating = null; render(root); };
+  root.querySelector('[data-create-cancel]')?.addEventListener('click', closeCreate);
+  root.querySelector('[data-create-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.createBackdrop !== undefined) closeCreate();
+  });
+  root.querySelector('[data-create-recipe]')?.addEventListener('change', (e) => {
+    creating.recipeId = e.target.value;
+    creating.qty = ''; // changer de recette invalide la quantité (unité différente possible : g vs portions)
+    render(root);
+  });
+  root.querySelector('[data-create-qty]')?.addEventListener('change', (e) => {
+    creating.qty = e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0);
+    render(root);
+  });
+  root.querySelector('[data-create-confirm]')?.addEventListener('click', () => {
+    const st = getState();
+    const recipe = st.recipes.find((r) => r.id === creating.recipeId);
+    const qty = Number(creating.qty);
+    if (!recipe) { toast('Choisis une recette', 'error'); return; }
+    if (!(qty > 0)) { toast('Indique la quantité réellement obtenue', 'error'); return; }
+    update((s2) => {
+      const r = s2.recipes.find((x) => x.id === recipe.id);
+      if (r) s2.preparations.push(newPreparation(r, qty));
+    });
+    toast(`Préparation « ${recipe.name} » créée`);
+    creating = null;
+    render(root);
+  });
+
+  // --- Jeter les restes (P1.C)
+  root.querySelectorAll('[data-open-discard]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.openDiscard;
+      const p = getState().preparations.find((x) => x.id === id);
+      if (!p) return;
+      discarding = { preparationId: id, qty: '' };
+      render(root);
+    });
+  });
+  const closeDiscard = () => { discarding = null; render(root); };
+  root.querySelector('[data-discard-cancel]')?.addEventListener('click', closeDiscard);
+  root.querySelector('[data-discard-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.discardBackdrop !== undefined) closeDiscard();
+  });
+  root.querySelector('[data-discard-qty]')?.addEventListener('change', (e) => {
+    discarding.qty = e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0);
+    render(root);
+  });
+  root.querySelector('[data-discard-all]')?.addEventListener('click', () => {
+    const p = getState().preparations.find((x) => x.id === discarding.preparationId);
+    if (!p) return;
+    discarding.qty = Math.max(0, Math.round(preparationAvailable(getState(), p)));
+    render(root);
+  });
+  root.querySelector('[data-discard-confirm]')?.addEventListener('click', () => {
+    const st0 = getState();
+    const p0 = st0.preparations.find((x) => x.id === discarding.preparationId);
+    if (!p0) return;
+    const qty = Number(discarding.qty) || 0;
+    const disponible = preparationAvailable(st0, p0);
+    if (!(qty > 0)) { toast('Indique une quantité à jeter supérieure à 0', 'error'); return; }
+    if (qty > disponible + 1e-6) { toast(`Tu ne peux pas jeter plus que les ${Math.round(disponible)} g disponibles.`, 'error'); return; }
+    // confirmation bloquante avant toute perte, même motif que la suppression
+    // d'un aliment/d'une recette ailleurs dans l'application.
+    if (!confirm(`Jeter ${Math.round(qty)} g de « ${p0.label} » ? Cette quantité ne sera plus comptée dans le disponible.`)) return;
+    update((s2) => {
+      const p = s2.preparations.find((x) => x.id === p0.id);
+      if (!p) return;
+      p.losses = p.losses || [];
+      p.losses.push(newPreparationLoss(qty));
+    });
+    toast('Perte enregistrée');
+    discarding = null;
+    render(root);
+  });
+
+  // --- Affectations actuelles (P1.B) : édition en place, jamais de doublon
+  root.querySelectorAll('[data-toggle-assignments]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.toggleAssignments;
+      if (assignmentsOpen.has(id)) assignmentsOpen.delete(id); else assignmentsOpen.add(id);
+      render(root);
+    });
+  });
+  root.querySelectorAll('[data-assignment-qty]').forEach((input) => {
+    input.addEventListener('change', (e) => onEditAssignment(root, e.currentTarget.dataset.assignmentQty, Number(e.target.value)));
+  });
+  root.querySelectorAll('[data-assignment-remove]').forEach((btn) => {
+    btn.addEventListener('click', (e) => onEditAssignment(root, e.currentTarget.dataset.assignmentRemove, 0));
+  });
+}
+
+/**
+ * Localise l'item (repas ou option de catalogue) référencé par `itemId` et
+ * réécrit sa quantité EN PLACE — jamais de nouvel item créé, jamais un double
+ * décompte. `newQty` réparti selon le ratio thomas/julie déjà en place (ou
+ * également réparti si l'affectation existante était nulle). `newQty = 0`
+ * retire entièrement l'item.
+ */
+function onEditAssignment(root, itemId, newQty) {
+  if (!(newQty >= 0)) { toast('Indique une quantité valide', 'error'); return; }
+  const st0 = getState();
+  let found = null;
+  for (const meal of st0.meals) { const it = meal.items.find((x) => x.id === itemId); if (it) { found = { container: 'meal', ownerId: meal.id, item: it }; break; } }
+  if (!found) for (const o of st0.breakfasts) { const it = o.items.find((x) => x.id === itemId); if (it) { found = { container: 'breakfasts', ownerId: o.id, item: it }; break; } }
+  if (!found) for (const o of st0.snacks) { const it = o.items.find((x) => x.id === itemId); if (it) { found = { container: 'snacks', ownerId: o.id, item: it }; break; } }
+  if (!found) return;
+
+  const prep = st0.preparations.find((p) => p.id === found.item.preparationId);
+  if (!prep) return;
+  const oldTotal = (found.item.qty?.thomas || 0) + (found.item.qty?.julie || 0);
+  const disponible = preparationAvailable(st0, prep);
+  if (newQty > oldTotal + disponible + 1e-6) {
+    toast(`Cette affectation ne peut pas dépasser ${Math.round(oldTotal + disponible)} g (disponible actuel compris).`, 'error');
+    return;
+  }
+
+  update((s) => {
+    const owners = found.container === 'meal' ? s.meals : s[found.container];
+    const owner = owners.find((x) => x.id === found.ownerId);
+    if (!owner) return;
+    if (newQty <= 1e-6) {
+      owner.items = owner.items.filter((x) => x.id !== itemId);
+      return;
+    }
+    const it = owner.items.find((x) => x.id === itemId);
+    if (!it) return;
+    // conserve le ratio thomas/julie déjà en place (ex. issu du solveur) ;
+    // 0/0 (jamais affecté avant) se répartit également.
+    const ratio = oldTotal > 1e-6 ? newQty / oldTotal : 0.5;
+    if (oldTotal > 1e-6) {
+      it.qty.thomas = (it.qty.thomas || 0) * ratio;
+      it.qty.julie = (it.qty.julie || 0) * ratio;
+    } else {
+      it.qty.thomas = newQty / 2;
+      it.qty.julie = newQty / 2;
+    }
+  });
+  toast(newQty <= 1e-6 ? 'Affectation retirée' : 'Affectation mise à jour');
+  render(root);
 }
 
 function onSubmitDistribution(root) {

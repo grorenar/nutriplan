@@ -20,15 +20,16 @@ import {
   coverageReport, optionUses, needsCooking, preparationUsed, preparationAvailable,
   recipeNeeded, buildRecipeNeeds, zeroWasteSlotsFor, deployItems, aggregateNeeds,
   recipeAvailableFromPreparations, recipeNeededNet, distributionCandidates, planPreparationDistribution,
+  preparationWasted, preparationAssignments,
 } from '../js/core/derive.js';
 import { seedFoods } from '../js/core/seed-foods.js';
 import {
   migrateState, newRecipe, newRecipeItem, defaultState, newItem, newFreeItem, sectionsUsed, SECTIONS, DEFAULT_SECTION,
   newPreparation, preparationsById, newPreparationItem, newRecipeMealItem,
-  newMeal, normalizeMeal, autoMealName, normalizePreparation,
+  newMeal, normalizeMeal, autoMealName, normalizePreparation, newPreparationLoss,
 } from '../js/core/store.js';
 import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
-import { stateToTables, tablesToState } from '../js/core/sync.js';
+import { stateToTables, tablesToState, TABLES } from '../js/core/sync.js';
 import { analyzeMealVolume } from '../js/core/meal-volume.js';
 
 /* ---------------------------------------------------------------- harnais */
@@ -3525,6 +3526,120 @@ test('P4.15 — round-trip via sync.js : remaining_at_reset sérialisé/déséri
   const s2 = { ...defaultState(), recipes: [recipe], preparations: [prepNull] };
   const row2 = stateToTables(s2).preparations.find((r) => r.id === prepNull.id);
   check('remaining_at_reset = null sérialisé quand jamais reseté', row2.remaining_at_reset === null);
+});
+
+/* ============================================== P1 — préparations centralisées, pertes, fermeture sécurisée */
+
+test('P1.1 — newPreparationLoss() : enregistrement de perte correctement formé', () => {
+  const loss = newPreparationLoss(150);
+  check('id généré', typeof loss.id === 'string' && loss.id.length > 0);
+  check('qty = 150', loss.qty === 150);
+  check('at horodaté (ISO)', typeof loss.at === 'string' && !Number.isNaN(Date.parse(loss.at)));
+  check('qty négative clampée à 0', newPreparationLoss(-50).qty === 0);
+});
+
+test('P1.2 — normalizePreparation() : préparation antérieure à P1 → losses:[] et lastResetAt:null', () => {
+  const old = { id: 'p_old2', recipeId: 'r1', label: 'Ancien', preparedQuantity: 500, recipeSnapshot: { kind: 'weight', baseGrams: 500, items: [] } };
+  const n = normalizePreparation(old);
+  check('losses = []', Array.isArray(n.losses) && n.losses.length === 0);
+  check('lastResetAt = null', n.lastResetAt === null);
+});
+
+test('P1.3 — preparationWasted() : aucune perte → 0, ne modifie jamais preparationAvailable() sans "jeter"', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili P1', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  check('preparationWasted() = 0 par défaut', preparationWasted(prep) === 0);
+  const st = { meals: [], breakfasts: [], snacks: [], preparations: [prep] };
+  check('preparationAvailable() inchangé (1000) sans perte', preparationAvailable(st, prep) === 1000);
+});
+
+test('P1.4 — preparationWasted()/preparationAvailable() : une perte réduit le disponible, jamais l’affecté', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili P1', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  prep.losses = [newPreparationLoss(200)];
+  check('preparationWasted() = 200', preparationWasted(prep) === 200);
+  const meal = mkMeal(0, 'lunch', [{ ...newPreparationItem(prep.id, 300), qty: { thomas: 300, julie: 0 } }]);
+  const st = { meals: [meal], breakfasts: [], snacks: [], preparations: [prep] };
+  check('preparationUsed() = 300 (la perte ne compte jamais comme un usage)', preparationUsed(st, prep.id) === 300);
+  check('preparationAvailable() = 1000 − 300 − 200 = 500', preparationAvailable(st, prep) === 500);
+});
+
+test('P1.5 — preparationWasted() : fenêtre de comptage — seules les pertes POSTÉRIEURES à lastResetAt comptent (jamais deux fois)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili P1', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  // perte AVANT le dernier reset (déjà repliée dans remainingAtReset au moment du reset) :
+  prep.losses = [{ id: 'l1', qty: 300, at: '2024-01-01T00:00:00.000Z' }];
+  prep.lastResetAt = '2024-06-01T00:00:00.000Z';
+  prep.remainingAtReset = 700; // déjà net de la perte de janvier au moment du reset de juin
+  check('la perte antérieure au reset n’est PAS recomptée', preparationWasted(prep) === 0);
+  const st = { meals: [], breakfasts: [], snacks: [], preparations: [prep] };
+  check('disponible = remainingAtReset (700), la perte de janvier n’est pas déduite une seconde fois', preparationAvailable(st, prep) === 700);
+
+  // nouvelle perte APRÈS le reset de juin : comptée normalement
+  prep.losses.push({ id: 'l2', qty: 100, at: '2024-07-01T00:00:00.000Z' });
+  check('la perte postérieure au reset est comptée', preparationWasted(prep) === 100);
+  check('disponible = 700 − 100 = 600', preparationAvailable(st, prep) === 600);
+});
+
+test('P1.6 — preparationAssignments() : liste les affectations repas et catalogue, avec le bon libellé et la bonne quantité', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili P1', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  const meal = mkMeal(0, 'lunch', [{ ...newPreparationItem(prep.id, 200), qty: { thomas: 120, julie: 80 } }]);
+  const st = {
+    meals: [meal],
+    breakfasts: [{ id: 'b1', name: 'Chili matin', uses: { thomas: 2, julie: 0 }, items: [{ ...newPreparationItem(prep.id, 100), qty: { thomas: 100, julie: 0 } }] }],
+    snacks: [],
+    preparations: [prep],
+  };
+  const assignments = preparationAssignments(st, prep.id, 1);
+  check('2 affectations (1 repas + 1 petit-déjeuner)', assignments.length === 2, JSON.stringify(assignments));
+  const mealAssignment = assignments.find((a) => a.kind === 'meal');
+  check('affectation repas : quantité par personne correcte', mealAssignment.qtyByPerson.thomas === 120 && mealAssignment.qtyByPerson.julie === 80);
+  check('affectation repas : libellé avec jour réel + type', /Mardi — Déjeuner/.test(mealAssignment.label), mealAssignment.label);
+  const bfAssignment = assignments.find((a) => a.kind === 'breakfast');
+  check('affectation petit-déjeuner : optionId renseigné (pas de mealId)', bfAssignment.optionId === 'b1' && bfAssignment.mealId === null);
+  const used = preparationUsed(st, prep.id);
+  check('affectation petit-déjeuner : Σ (= preparationUsed(), pondérée par les utilisations) cohérente', used === 400, `used=${used}`);
+});
+
+test('P1.7 — sync.js : round-trip preparation_losses + last_reset_at (table séparée, même motif que recipe_items)', () => {
+  const recipe = newRecipe('Chili P1', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const prep = newPreparation(recipe, 1000);
+  prep.lastResetAt = '2024-06-01T00:00:00.000Z';
+  prep.losses = [{ id: 'loss_a', qty: 150, at: '2024-07-01T00:00:00.000Z' }, { id: 'loss_b', qty: 50, at: '2024-08-01T00:00:00.000Z' }];
+  const s = { ...defaultState(), recipes: [recipe], preparations: [prep] };
+  const tables = stateToTables(s);
+  check('preparation_losses : 2 lignes émises', tables.preparation_losses.length === 2);
+  check('preparation_losses : preparation_id correctement renseigné', tables.preparation_losses.every((r) => r.preparation_id === prep.id));
+  const prepRow = tables.preparations.find((r) => r.id === prep.id);
+  check('last_reset_at sérialisé', prepRow.last_reset_at === '2024-06-01T00:00:00.000Z');
+
+  const back = tablesToState({
+    recipes: tables.recipes, recipe_items: tables.recipe_items,
+    preparations: tables.preparations, preparation_losses: tables.preparation_losses,
+  });
+  const p = back.preparations.find((x) => x.id === prep.id);
+  check('lastResetAt désérialisé', p.lastResetAt === '2024-06-01T00:00:00.000Z');
+  check('losses désérialisées (2, mêmes quantités)', p.losses.length === 2 && p.losses.some((l) => l.qty === 150) && p.losses.some((l) => l.qty === 50));
+  check('preparationWasted() cohérent après un aller-retour sync', preparationWasted(p) === 200);
+});
+
+test('P1.8 — TABLES : preparation_losses présente (vérification des compteurs côté push())', () => {
+  check('"preparation_losses" dans TABLES', TABLES.includes('preparation_losses'));
 });
 
 /* ---------------------------------------------------------------- bilan */

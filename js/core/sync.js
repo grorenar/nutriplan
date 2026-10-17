@@ -285,6 +285,9 @@ const preparationRow = (p) => ({
   // qu'aucun reset n'a encore eu lieu depuis la création (comportement dérivé
   // habituel, cf. preparationAvailable()/derive.js).
   remaining_at_reset: p.remainingAtReset ?? null,
+  // P1 : fenêtre de comptage des pertes (« Jeter les restes ») — même
+  // convention que remaining_at_reset : null tant qu'aucun reset n'a eu lieu.
+  last_reset_at: p.lastResetAt ?? null,
 });
 
 const preparationFromRow = (row) => ({
@@ -295,7 +298,27 @@ const preparationFromRow = (row) => ({
   createdAt: row.created_at,
   recipeSnapshot: row.recipe_snapshot,
   remainingAtReset: row.remaining_at_reset === null || row.remaining_at_reset === undefined ? null : Number(row.remaining_at_reset),
+  lastResetAt: row.last_reset_at || null,
+  losses: [], // rempli séparément depuis preparation_losses (preparationLossesFromRows)
 });
+
+/**
+ * Une perte (« Jeter les restes », P1) est, comme une préparation, un
+ * événement réel figé : jamais modifiée après coup, jamais effacée (trace
+ * conservée) — table séparée, même motif que recipe_items/recipeItemRow.
+ */
+const preparationLossRow = (l, preparationId) => ({
+  id: l.id,
+  preparation_id: preparationId,
+  qty: l.qty,
+  at: l.at,
+});
+
+function preparationLossesFromRows(rows, preparationId) {
+  return rows
+    .filter((r) => r.preparation_id === preparationId)
+    .map((r) => ({ id: r.id, qty: Number(r.qty) || 0, at: r.at }));
+}
 
 export function stateToTables(s) {
   const settings = {
@@ -373,12 +396,14 @@ export function stateToTables(s) {
   const recipes = s.recipes.map(recipeRow);
   const recipe_items = s.recipes.flatMap((r) => r.items.map((ri) => recipeItemRow(ri, r.id)));
   const preparations = s.preparations.map(preparationRow);
+  const preparation_losses = s.preparations.flatMap((p) => (p.losses || []).map((l) => preparationLossRow(l, p.id)));
 
   return {
     foods: s.foods.map(foodRow),
     recipes,
     recipe_items,
     preparations,
+    preparation_losses,
     targets,
     settings: [settings],
     meals,
@@ -401,7 +426,11 @@ export function tablesToState(t) {
     recipe.items = recipeItemsFromRows(t.recipe_items || [], row.id);
     return recipe;
   });
-  s.preparations = (t.preparations || []).map(preparationFromRow);
+  s.preparations = (t.preparations || []).map((row) => {
+    const prep = preparationFromRow(row);
+    prep.losses = preparationLossesFromRows(t.preparation_losses || [], row.id);
+    return prep;
+  });
 
   const cfg = t.settings?.[0];
   if (cfg) {
@@ -466,6 +495,7 @@ export const TABLES = [
   'recipes',
   'recipe_items',
   'preparations',
+  'preparation_losses',
   'targets',
   'settings',
   'meals',

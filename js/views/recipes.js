@@ -13,10 +13,14 @@ import {
 } from '../core/nutrition.js';
 import { unitLabel, unitHint } from './editor.js';
 import { esc, num, normalize, toast, deepCopy } from '../core/util.js';
+import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
 
 let editing = null; // id de recette, ou 'new'
 let formDraft = null; // copie de travail, jamais écrite dans l'état avant "Enregistrer"
 let ingQuery = '';
+let formBaseline = null;   // P2 : instantané du brouillon à l'ouverture, pour détecter une modification non sauvegardée
+let confirmingClose = false; // P2 : le dialogue « Modifications non sauvegardées » est affiché
+let escBound = false;      // P2 : évite d'empiler plusieurs écouteurs Échap entre deux rendus
 
 const foodsMapOf = (s) => Object.fromEntries(s.foods.map((f) => [f.id, f]));
 
@@ -263,7 +267,8 @@ function formBodyHtml(r, s, byId) {
     <div class="row" style="margin-top:18px">
       <button class="btn btn--primary" data-save>Enregistrer</button>
       ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${r.id}">Supprimer</button>`}
-    </div>`;
+    </div>
+    ${confirmingClose ? unsavedConfirmModal() : ''}`;
 }
 
 /**
@@ -287,12 +292,55 @@ function resetForm() {
   editing = null;
   formDraft = null;
   ingQuery = '';
+  formBaseline = null;
+  confirmingClose = false;
+  if (escBound) { document.removeEventListener('keydown', onEscapeKey); escBound = false; }
+}
+
+/** Ouvre le formulaire sur une recette donnée ('new' ou un id) et capture l'instantané P2. */
+function openForm(root, s, id) {
+  resetForm();
+  editing = id;
+  formBaseline = deepCopy(currentDraft(s)); // avant toute frappe : instantané de référence
+  render(root);
+}
+
+/**
+ * Tentative de fermeture (X, clic extérieur, Échap) — P2. Compare le
+ * brouillon courant à son instantané d'ouverture ; ne ferme directement que
+ * si rien n'a changé. Un enregistrement réussi appelle resetForm() en
+ * direct, jamais cette fonction : aucune confirmation après une sauvegarde.
+ *
+ * Les champs [data-r] n'écrivent dans le brouillon qu'au `change` (blur) —
+ * un clic extérieur déclenche bien un blur AVANT ce handler dans tous les
+ * navigateurs testés, mais rien ne le garantit dans l'absolu (ex. mousedown
+ * sur une cible non focusable). On force donc explicitement le blur du champ
+ * actif s'il appartient au tiroir, pour que le brouillon soit à jour avant
+ * toute comparaison — sans ça, une saisie jamais "quittée" pourrait être
+ * silencieusement ignorée.
+ */
+function attemptClose(root) {
+  if (confirmingClose) return;
+  const active = document.activeElement;
+  if (active?.closest?.('.drawer__body')) active.blur();
+  if (isDirty(formBaseline, currentDraft(getState()))) { confirmingClose = true; render(root); return; }
+  resetForm();
+  render(root);
+}
+
+function onEscapeKey(e) {
+  if (e.key !== 'Escape' || !editing) return;
+  const root = document.getElementById('view');
+  // tant que le dialogue de confirmation est déjà ouvert, Échap revient à
+  // « Non, retour » (l'action sûre par défaut) plutôt que de rester sans effet.
+  if (confirmingClose) { confirmingClose = false; render(root); return; }
+  attemptClose(root);
 }
 
 function wireList(root, s) {
-  root.querySelector('[data-new]')?.addEventListener('click', () => { resetForm(); editing = 'new'; render(root); });
+  root.querySelector('[data-new]')?.addEventListener('click', () => openForm(root, s, 'new'));
   root.querySelectorAll('[data-edit]').forEach((b) =>
-    b.addEventListener('click', (e) => { resetForm(); editing = e.currentTarget.dataset.edit; render(root); })
+    b.addEventListener('click', (e) => openForm(root, s, e.currentTarget.dataset.edit))
   );
 }
 
@@ -304,10 +352,14 @@ function wireList(root, s) {
  * nœuds DOM d'un refreshDrawerBody() à l'autre).
  */
 function wireDrawerChrome(root) {
-  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { resetForm(); render(root); });
+  // P2 : X et clic extérieur passent par attemptClose() — une confirmation
+  // n'est demandée que si le brouillon diffère réellement de l'instantané
+  // d'ouverture.
+  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => attemptClose(root));
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.formBackdrop !== undefined) { resetForm(); render(root); }
+    if (e.target.dataset.formBackdrop !== undefined) attemptClose(root);
   });
+  if (!escBound) { document.addEventListener('keydown', onEscapeKey); escBound = true; }
 }
 
 /** Contenu de .drawer__body : recâblé à chaque renderFull() ET refreshDrawerBody(). */
@@ -472,5 +524,14 @@ function wireDrawerBody(root, s) {
     update((s2) => { s2.recipes = s2.recipes.filter((x) => x.id !== id); });
     resetForm();
     render(root);
+  });
+
+  // P2 : dialogue « Modifications non sauvegardées »
+  root.querySelector('[data-unsaved-stay]')?.addEventListener('click', () => { confirmingClose = false; render(root); });
+  root.querySelector('[data-unsaved-discard]')?.addEventListener('click', () => { resetForm(); render(root); });
+  root.querySelector('[data-unsaved-backdrop]')?.addEventListener('mousedown', (e) => {
+    // le fond du dialogue lui-même revient à « Non, retour » (action sûre
+    // par défaut), jamais à une fermeture silencieuse.
+    if (e.target.dataset.unsavedBackdrop !== undefined) { confirmingClose = false; render(root); }
   });
 }

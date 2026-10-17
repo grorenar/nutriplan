@@ -46,6 +46,7 @@ window.addEventListener('error', (e) => jsErrors.push(e.message));
 
 const app = await import(join(root, 'js/app.js'));
 const store = await import(join(root, 'js/core/store.js')); // même instance de module que celle utilisée par app.js
+const derive = await import(join(root, 'js/core/derive.js')); // lecture seule, pour valider les quantités affichées sans reparser le texte rendu
 document.dispatchEvent(new window.Event('DOMContentLoaded'));
 await new Promise((r) => setTimeout(r, 50));
 
@@ -54,6 +55,12 @@ const $$ = (s) => [...document.querySelectorAll(s)];
 const click = (el) => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 const change = (el, v) => { el.value = v; el.dispatchEvent(new window.Event('change', { bubbles: true })); };
 const type = (el, v) => { el.value = v; el.dispatchEvent(new window.Event('input', { bubbles: true })); };
+// dispatché directement SUR l'élément backdrop lui-même (jamais sur un
+// descendant) : e.target doit être le backdrop pour que son handler
+// (`e.target.dataset.xBackdrop !== undefined`) le reconnaisse comme "clic
+// extérieur" — c'est le même mousedown qu'un vrai clic hors du panneau.
+const mousedown = (el) => el.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
+const escapeKey = () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 const wait = () => new Promise((r) => setTimeout(r, 20));
 
 console.log('\n— Démarrage');
@@ -581,14 +588,24 @@ await wait();
 check('un item "recette" (référence molle, sans préparation) est ajouté',
   /recette/.test($$('#drawer .item').find((el) => /Chili con carne/.test(el.textContent))?.textContent || ''));
 check('libellé "pas encore préparée"', /pas encore préparée/.test($('#drawer .drawer__body').textContent));
-
-// matérialisation : création d'une préparation de 1000 g
-const qtyInput = $('#drawer [data-new-prep-qty]');
-type(qtyInput, '1000');
-click($('#drawer [data-new-prep]'));
+click($('#drawer [data-close]'));
 await wait();
-check('toast de confirmation de création', /Préparation.*créée/.test(document.getElementById('toasts')?.textContent || ''));
-check('la préparation apparaît avec son disponible (1000 g / 1000 g)',
+
+// matérialisation (P1 : désormais via l'écran Préparations, plus depuis
+// l'éditeur de repas — on seed directement via store.js, comme le fait déjà
+// le bloc « Mode zéro reste » juste en dessous pour « Riz simple »).
+check('« Créer une préparation » bien retiré de l’éditeur de repas (P1.E)', !document.querySelector('[data-new-prep]'));
+store.update((s) => {
+  const r = s.recipes.find((x) => x.name === 'Chili con carne');
+  s.preparations.push(store.newPreparation(r, 1000));
+});
+await wait();
+
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]')[2]);
+await wait();
+check('la préparation matérialisée apparaît avec son disponible (1000 g / 1000 g)',
   /Disponible : 1000 g \/ 1000 g préparés/.test($('#drawer .drawer__body').textContent));
 
 // utilisation dans CE repas
@@ -1230,6 +1247,215 @@ check('item préparation ajouté au repas choisi (100 g pour chaque personne, mo
 click($('[data-view="preparations"]'));
 await wait();
 check('disponible réduit en conséquence (400 − 100×2 = 200 g)', /200 g/.test($('#view').textContent));
+
+console.log('\n— P1 : écran « Préparations » — création depuis une recette, affectations éditables, pertes');
+const p1Saved = () => JSON.parse(localStorage.getItem('nutriplan.state.v1'));
+
+click($('[data-view="recipes"]'));
+await wait();
+click($('[data-new]'));
+await wait();
+change($('[data-r="name"]'), 'Curry P1 test');
+change($('[data-r="kind"]'), 'weight');
+await wait();
+type($('[data-ing-search]'), 'riz basmati');
+click($$('[data-ing-add]').find((b) => /Riz basmati/i.test(b.textContent)));
+await wait();
+click($('[data-save]'));
+await wait();
+
+click($('[data-view="preparations"]'));
+await wait();
+check('bouton "Nouvelle préparation" présent', !!$('[data-open-create]'));
+click($('[data-open-create]'));
+await wait();
+check('panneau de création ouvert (sélecteur de recette)', !!$('[data-create-recipe]'));
+// sélectionne explicitement la recette qu'on vient de créer
+const recipeSelect = $('[data-create-recipe]');
+const curryOption = [...recipeSelect.options].find((o) => /Curry P1 test/.test(o.textContent));
+change(recipeSelect, curryOption.value);
+await wait();
+check('ingrédients de référence affichés avant toute saisie de quantité', /Riz basmati/.test($('.drawer__body').textContent));
+change($('[data-create-qty]'), '500');
+await wait();
+check('aperçu des quantités nécessaires affiché après saisie (réutilise deployItems(), aucun second calcul)',
+  /nécessaires pour/.test($('.drawer__body').textContent) && /Riz basmati/.test($('.drawer__body').textContent));
+click($('[data-create-confirm]'));
+await wait();
+check('préparation créée et visible comme un stock (Préparé/Affecté/Disponible)',
+  /Préparé/.test($('#view').textContent) && /Curry P1 test/.test($('#view').textContent));
+check('500 g annoncés comme préparés', /500 g/.test($('#view').textContent));
+
+const p1PrepId = p1Saved().preparations.find((p) => p.label === 'Curry P1 test').id;
+
+// distribue une partie sur un repas, puis vérifie l'édition en place (P1.B)
+click($$('[data-open-distribute]').find((b) => b.dataset.openDistribute === p1PrepId));
+await wait();
+change($('[data-wizard-amount]'), '200');
+await wait();
+click($$('[data-pick-meal]')[0]);
+await wait();
+check('bouton Répartir activé', !$('[data-wizard-submit]').disabled);
+click($('[data-wizard-submit]'));
+await wait();
+
+const toggleBtn = $$('[data-toggle-assignments]').find((b) => b.dataset.toggleAssignments === p1PrepId);
+check('bouton "Voir les affectations" proposé après répartition', !!toggleBtn);
+click(toggleBtn);
+await wait();
+const assignmentQtyInput = $('[data-assignment-qty]');
+check('affectation listée avec une quantité modifiable', !!assignmentQtyInput);
+const p1ItemCountOf = (s) => s.meals.reduce((n, m) => n + m.items.filter((it) => it.preparationId === p1PrepId).length, 0);
+const p1ItemCountBefore = p1ItemCountOf(p1Saved());
+change(assignmentQtyInput, '120');
+await wait();
+check('toast de mise à jour (édition en place, aucun doublon)', /mise à jour/i.test(document.getElementById('toasts')?.textContent || ''));
+const p1ItemCountAfter = p1ItemCountOf(p1Saved());
+check('aucun item supplémentaire créé (même nombre d’items qu’avant l’édition)', p1ItemCountAfter === p1ItemCountBefore);
+check('la quantité totale de l’affectation reflète bien la nouvelle valeur (120 g)',
+  p1Saved().meals.some((m) => m.items.some((it) => it.preparationId === p1PrepId && Math.round((it.qty.thomas || 0) + (it.qty.julie || 0)) === 120)));
+
+console.log('\n— P1 : « Jeter les restes » — perte partielle, sur-engagement bloqué');
+const discardBtn = $$('[data-open-discard]').find((b) => b.dataset.openDiscard === p1PrepId);
+click(discardBtn);
+await wait();
+check('panneau "Jeter les restes" ouvert', !!$('[data-discard-qty]'));
+const prepBeforeDiscard = p1Saved().preparations.find((p) => p.id === p1PrepId);
+const dispoBeforeDiscard = derive.preparationAvailable(p1Saved(), prepBeforeDiscard);
+change($('[data-discard-qty]'), String(Math.round(dispoBeforeDiscard + 100))); // au-delà du disponible
+await wait();
+check('bouton de confirmation désactivé : refuse de jeter plus que le disponible', $('[data-discard-confirm]').disabled);
+change($('[data-discard-qty]'), '50');
+await wait();
+check('bouton de confirmation activé pour une quantité valide', !$('[data-discard-confirm]').disabled);
+click($('[data-discard-confirm]')); // confirm() stubbé à true en tête de fichier
+await wait();
+check('toast de confirmation de la perte', /perte enregistrée/i.test(document.getElementById('toasts')?.textContent || ''));
+check('la perte est tracée (préparation, quantité, date) et affichée', /Jeté/.test($('#view').textContent));
+const prepAfterPartialDiscard = p1Saved().preparations.find((p) => p.id === p1PrepId);
+check('un seul enregistrement de perte, avec la bonne quantité et une date', prepAfterPartialDiscard.losses.length === 1 && prepAfterPartialDiscard.losses[0].qty === 50 && !!prepAfterPartialDiscard.losses[0].at);
+check('le disponible a bien diminué de la quantité jetée (et seulement elle)',
+  Math.round(derive.preparationAvailable(p1Saved(), prepAfterPartialDiscard)) === Math.round(dispoBeforeDiscard - 50));
+check('l’affectation déjà en place n’a pas été touchée par le jet des restes', p1ItemCountAfter === p1ItemCountOf(p1Saved()));
+
+console.log('\n— P1 : l’éditeur de repas ne crée plus de préparation (retiré, P1.E)');
+click($('[data-view="planning"]'));
+await wait();
+click($$('.meal-card button').find((b) => /Modifier/i.test(b.textContent)));
+await wait();
+check('« Créer une préparation » retiré de l’éditeur de repas', !$('[data-new-prep]') && !$('[data-new-prep-recipe]') && !$('[data-new-prep-qty]'));
+click($('#drawer [data-close]'));
+await wait();
+
+console.log('\n— P2 : confirmation de fermeture d’un formulaire non sauvegardé — Aliments (création)');
+click($('[data-view="foods"]'));
+await wait();
+type($('[data-q]'), ''); // réinitialise le filtre de recherche laissé par un test antérieur (« haricots verts »)
+await wait();
+click($('[data-new]'));
+await wait();
+// nombre de toasts AVANT (pas leur texte : un toast bien plus ancien peut
+// s'auto-supprimer tout seul pendant ce test — cf. util.js, retrait après
+// 3,1 s — ce qui n'a rien à voir avec cette action et rendrait la
+// comparaison par texte non fiable ; seul un NOUVEAU toast nous concerne ici).
+const toastCountBeforeClose = document.getElementById('toasts')?.children.length || 0;
+type($('[data-f="name"]'), 'Aliment Clipping Test P2');
+mousedown($('[data-form-backdrop]'));
+await wait();
+check('dialogue affiché après clic extérieur avec saisie', !!$('[data-unsaved-stay]'));
+check('aucune notification parallèle (un seul mécanisme de confirmation)',
+  (document.getElementById('toasts')?.children.length || 0) <= toastCountBeforeClose);
+check('formulaire toujours ouvert, saisie conservée', $('[data-f="name"]')?.value === 'Aliment Clipping Test P2');
+
+click($('[data-unsaved-stay]'));
+await wait();
+check('"Non, retour" : formulaire conservé avec la saisie', $('[data-f="name"]')?.value === 'Aliment Clipping Test P2');
+
+mousedown($('[data-form-backdrop]'));
+await wait();
+click($('[data-unsaved-discard]'));
+await wait();
+check('"Oui, tant pis" : formulaire fermé', !$('[data-f="name"]'));
+check('aucun aliment créé (modifications abandonnées)', !/Aliment Clipping Test P2/.test($('#view').textContent));
+
+console.log('\n— P2 : formulaire vierge / Échap / sauvegarde réussie — Aliments');
+click($('[data-new]'));
+await wait();
+mousedown($('[data-form-backdrop]'));
+await wait();
+check('formulaire VIERGE : fermeture immédiate sans dialogue', !$('[data-f="name"]') && !$('[data-unsaved-stay]'));
+
+click($('[data-new]'));
+await wait();
+type($('[data-f="name"]'), 'Aliment Sauvegarde Reussie P2');
+click($('[data-save]'));
+await wait();
+check('sauvegarde réussie : formulaire fermé sans dialogue', !$('[data-f="name"]') && !$('[data-unsaved-stay]'));
+check('aliment bien enregistré', /Aliment Sauvegarde Reussie P2/.test($('#view').textContent));
+
+const foodEditBtn = $$('[data-edit]').find((b) => b.closest('tr')?.textContent.includes('Aliment Sauvegarde Reussie P2'));
+click(foodEditBtn);
+await wait();
+mousedown($('[data-form-backdrop]'));
+await wait();
+check('édition SANS modification : fermeture directe (valeurs initiales jamais vues comme un changement)', !$('[data-unsaved-stay]') && !$('[data-f="name"]'));
+
+click(foodEditBtn);
+await wait();
+type($('[data-f="brand"]'), 'MarqueTestP2');
+escapeKey();
+await wait();
+check('Échap avec modification réelle : dialogue affiché', !!$('[data-unsaved-stay]'));
+escapeKey(); // Échap sur le dialogue == « Non, retour » (action sûre par défaut)
+await wait();
+check('Échap sur le dialogue = "Non, retour" : formulaire toujours ouvert', !!$('[data-f="brand"]'));
+check('saisie conservée après ce retour', $('[data-f="brand"]')?.value === 'MarqueTestP2');
+
+click($('[data-form-cancel]'));
+await wait();
+check('bouton X avec modification : dialogue affiché', !!$('[data-unsaved-stay]'));
+click($('[data-unsaved-discard]'));
+await wait();
+check('bouton X -> "Oui, tant pis" : ferme sans enregistrer la modification', !$('[data-f="brand"]'));
+check('la marque n’a PAS été enregistrée', !/MarqueTestP2/.test($('#view').textContent));
+
+console.log('\n— P2 : confirmation de fermeture d’un formulaire non sauvegardé — Recettes (création/édition)');
+click($('[data-view="recipes"]'));
+await wait();
+click($('[data-new]'));
+await wait();
+change($('[data-r="name"]'), 'Recette Clipping Test P2');
+mousedown($('[data-form-backdrop]'));
+await wait();
+check('dialogue affiché après clic extérieur avec saisie (recette)', !!$('[data-unsaved-stay]'));
+check('formulaire toujours ouvert, saisie conservée (recette)', $('[data-r="name"]')?.value === 'Recette Clipping Test P2');
+
+click($('[data-unsaved-discard]'));
+await wait();
+check('"Oui, tant pis" ferme sans créer la recette', !$('[data-r="name"]'));
+check('recette NON créée', !/Recette Clipping Test P2/.test($('#view').textContent));
+
+click($('[data-new]'));
+await wait();
+mousedown($('[data-form-backdrop]'));
+await wait();
+check('formulaire recette VIERGE : fermeture immédiate sans dialogue', !$('[data-r="name"]') && !$('[data-unsaved-stay]'));
+
+// régression : le correctif « clipping » (panneau jamais recréé pendant la
+// saisie) doit tenir avec la nouvelle garde P2 par-dessus.
+click($('[data-new]'));
+await wait();
+const panelRef = $('.drawer__panel');
+const r2NameInput2 = $('[data-r="name"]');
+r2NameInput2.value = 'X';
+r2NameInput2.dispatchEvent(new window.Event('change', { bubbles: true }));
+await wait();
+check('le panneau n’est pas recréé par une saisie suivie d’un blur (régression clipping)', $('.drawer__panel') === panelRef);
+escapeKey();
+await wait();
+check('Échap avec modification (recette) : dialogue affiché', !!$('[data-unsaved-stay]'));
+click($('[data-unsaved-discard]'));
+await wait();
 
 console.log('\n— Persistance locale');
 const saved = JSON.parse(localStorage.getItem('nutriplan.state.v1'));

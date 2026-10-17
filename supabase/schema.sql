@@ -111,6 +111,23 @@ create table if not exists preparations (
 );
 create index if not exists preparations_recipe_idx on preparations (user_id, recipe_id);
 
+-- Une perte (« Jeter les restes », P1) est, comme une préparation, un
+-- événement RÉEL figé : jamais modifiée après coup, jamais supprimée (trace
+-- conservée — "conserver une trace de la perte : préparation concernée,
+-- quantité jetée et date"). "on delete cascade" : l'application ne supprime
+-- jamais une préparation aujourd'hui, mais si elle le faisait un jour, son
+-- historique de pertes n'aurait plus de sens à conserver seul.
+create table if not exists preparation_losses (
+  user_id         uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  id              text not null,
+  preparation_id  text not null,
+  qty             numeric not null default 0,   -- grammes, toujours positif
+  at              timestamptz not null default now(),
+  primary key (user_id, id),
+  foreign key (user_id, preparation_id) references preparations(user_id, id) on delete cascade
+);
+create index if not exists preparation_losses_prep_idx on preparation_losses (user_id, preparation_id);
+
 create table if not exists targets (
   user_id    uuid not null default auth.uid() references auth.users(id) on delete cascade,
   id         text not null,                          -- "thomas:lunch"
@@ -299,6 +316,11 @@ update meals set name_auto = false where name is not null and name <> '';
 -- (preparationAvailable() retombe sur prepared_quantity − usages).
 alter table preparations add column if not exists remaining_at_reset numeric;
 
+-- Jeter les restes (P1) : fenêtre de comptage des pertes, même convention que
+-- remaining_at_reset — nullable, aucun backfill nécessaire (preparationWasted()
+-- retombe sur created_at pour une préparation jamais resetée depuis P1).
+alter table preparations add column if not exists last_reset_at timestamptz;
+
 -- Recettes/préparations (étape 5) : un item peut désormais référencer une
 -- recette (mode "molle", calcul inverse) ou une préparation (utilisation
 -- ferme, tire sur son stock) au lieu d'un aliment.
@@ -351,7 +373,7 @@ do $$
 declare t text;
 begin
   foreach t in array array[
-    'foods','recipes','recipe_items','preparations','targets','settings','meals','meal_items',
+    'foods','recipes','recipe_items','preparations','preparation_losses','targets','settings','meals','meal_items',
     'breakfast_options','breakfast_items','snack_options','snack_items',
     'shopping_items','batch_items'
   ] loop
@@ -393,7 +415,7 @@ declare
   -- à la SUPPRESSION (ordre inverse de ce tableau) pour respecter le
   -- "on delete restrict" plutôt que d'échouer dessus.
   tables text[] := array[
-    'foods','recipes','recipe_items','preparations','targets','settings','meals','meal_items',
+    'foods','recipes','recipe_items','preparations','preparation_losses','targets','settings','meals','meal_items',
     'breakfast_options','breakfast_items','snack_options','snack_items',
     'shopping_items','batch_items'
   ];

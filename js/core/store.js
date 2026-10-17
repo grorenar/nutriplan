@@ -137,6 +137,11 @@ export function normalizePreparation(p) {
     // avec null, jamais une autre valeur : aucun changement de comportement
     // tant qu'aucun reset n'a eu lieu depuis la mise à jour.
     remainingAtReset: null,
+    // P1 : historique des pertes (« Jeter les restes ») — jamais effacé, même
+    // après un reset (cf. preparationWasted()/derive.js). Une préparation
+    // antérieure à P1 est normalisée sans aucune perte, comportement inchangé.
+    losses: [],
+    lastResetAt: null,
     ...p,
   };
 }
@@ -156,6 +161,15 @@ export const newPreparation = (recipe, preparedQuantity, label = '') => ({
   createdAt: new Date().toISOString(),
   recipeSnapshot: deepCopy({ kind: recipe.kind, baseGrams: recipe.baseGrams, items: recipe.items }),
   remainingAtReset: null, // P4 : stock restant figé au dernier reset (null = jamais reseté)
+  losses: [], // P1 : historique des pertes (« Jeter les restes »), jamais effacé
+  lastResetAt: null, // P1 : fenêtre de comptage des pertes, avancée par resetCycle()
+});
+
+/** Un enregistrement de perte (« Jeter les restes », P1) : toujours en GRAMMES, jamais effacé. */
+export const newPreparationLoss = (qty) => ({
+  id: uid('loss'),
+  qty: Math.max(0, Number(qty) || 0),
+  at: new Date().toISOString(),
 });
 
 /** Compteurs d'utilisation d'une option dans le cycle, par personne. */
@@ -553,7 +567,16 @@ export function resetCycle() {
     // d'un remainingAtReset déjà présent (baseline = remainingAtReset ??
     // preparedGramsOf(...)), donc chaque reset re-fige simplement "ce qu'il
     // reste maintenant", quel que soit le nombre de resets précédents.
-    for (const p of s.preparations) p.remainingAtReset = preparationAvailable(s, p);
+    for (const p of s.preparations) {
+      p.remainingAtReset = preparationAvailable(s, p);
+      // P1 : avance la fenêtre de comptage des pertes (« Jeter les restes »)
+      // — preparationAvailable() ci-dessus a DÉJÀ soustrait les pertes depuis
+      // le précédent lastResetAt, donc ce nouveau remainingAtReset les reflète
+      // déjà : les recompter après ce point les déduirait deux fois. L'avancer
+      // maintenant garantit qu'une perte future ne compte qu'une seule fois,
+      // et l'historique (p.losses) n'est jamais effacé (trace conservée).
+      p.lastResetAt = new Date().toISOString();
+    }
     s.meals = [];
     s.shopping = { purchased: {} };
     s.batch = { overrides: {} };

@@ -161,7 +161,23 @@ export function preparationAvailable(state, preparation) {
   // préparation `kind:'portion'`, preparedQuantity est en PORTIONS — la
   // comparer directement à preparationUsed() (grammes) serait faux.
   const baseline = preparation.remainingAtReset ?? preparedGramsOf(preparation);
-  return baseline - preparationUsed(state, preparation.id);
+  return baseline - preparationUsed(state, preparation.id) - preparationWasted(preparation);
+}
+
+/**
+ * Quantité jetée (« Jeter les restes », P1) depuis le dernier `resetCycle()`
+ * — jamais la somme de TOUT l'historique : `resetCycle()` fige déjà le
+ * disponible restant (pertes comprises, puisque `preparationAvailable()` les
+ * soustrait) dans `remainingAtReset`, puis avance `lastResetAt` ; resommer
+ * les pertes d'AVANT ce point les décompterait une seconde fois. L'historique
+ * complet (`preparation.losses`) n'est jamais effacé (trace conservée), seule
+ * la fenêtre prise en compte ici avance à chaque reset.
+ */
+export function preparationWasted(preparation) {
+  const since = preparation.lastResetAt || preparation.createdAt || '';
+  return (preparation.losses || [])
+    .filter((l) => l.at >= since)
+    .reduce((sum, l) => sum + (Number(l.qty) || 0), 0);
 }
 
 /**
@@ -182,6 +198,39 @@ export function zeroWasteSlotsFor(state, preparationId) {
     }
   }
   return slots;
+}
+
+/**
+ * Affectations actuelles d'une préparation (P1) : une ligne par item qui la
+ * référence, qu'il vienne d'un repas classique ou d'une option de catalogue
+ * — même source que `preparationUsed()` (`cycleSources()`), pour ne jamais
+ * diverger de la quantité réellement décomptée. Chaque ligne porte assez
+ * d'information pour localiser et modifier l'item EN PLACE (jamais en
+ * créer un second) : `kind`/`mealId`/`optionId`/`itemId`.
+ */
+export function preparationAssignments(state, preparationId, startWeekday) {
+  const out = [];
+  for (const source of cycleSources(state)) {
+    for (const it of source.items) {
+      if (it.preparationId !== preparationId) continue;
+      const qtyByPerson = { thomas: Number(it.qty?.thomas) || 0, julie: Number(it.qty?.julie) || 0 };
+      if (source.meal) {
+        out.push({
+          kind: 'meal', itemId: it.id, mealId: source.meal.id, optionId: null, slot: null,
+          label: `${dayName(startWeekday, source.dayIndex)} — ${MEAL_TYPES[source.mealType]}`,
+          qtyByPerson,
+        });
+      } else {
+        const typeKey = source.kind === 'breakfast' ? 'breakfast' : (source.option.targetSlot === 'evening' ? 'snack_evening' : 'snack_afternoon');
+        out.push({
+          kind: source.kind, itemId: it.id, mealId: null, optionId: source.option.id, slot: source.option.targetSlot || null,
+          label: `${MEAL_TYPES[typeKey]} — « ${source.option.name || 'Sans nom'} »`,
+          qtyByPerson,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */

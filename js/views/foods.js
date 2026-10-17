@@ -5,6 +5,7 @@ import { CATEGORIES, STATES, computeYield } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid, euros } from '../core/util.js';
 import { findSimilarFoods } from '../core/similarity.js';
 import { similarConfirmModal } from './confirm-similar.js';
+import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
 
 let query = '';
 let cat = 'all';
@@ -12,6 +13,9 @@ let editing = null; // id d'aliment ou 'new'
 let similarWarning = null; // { list, pending } — popup de confirmation de doublon
 let formDraft = null;      // saisie en cours, préservée entre deux rendus du formulaire
 let yieldCalc = null;      // { raw, cooked, result, error } — aide au calcul du rendement
+let formBaseline = null;   // P2 : instantané du formulaire à l'ouverture, pour détecter une modification non sauvegardée
+let confirmingClose = false; // P2 : le dialogue « Modifications non sauvegardées » est affiché
+let escBound = false;      // P2 : évite d'empiler plusieurs écouteurs Échap entre deux rendus
 
 /** Ouvre directement la fiche d'un aliment (appelé depuis l'écran Courses). */
 export function openFoodForm(id) {
@@ -19,6 +23,8 @@ export function openFoodForm(id) {
   similarWarning = null;
   formDraft = null;
   yieldCalc = null;
+  formBaseline = null; // recapturé au prochain render() via wire()
+  confirmingClose = false;
 }
 
 export function render(root) {
@@ -54,8 +60,17 @@ export function render(root) {
     ${editing ? formPanel(s) : ''}
     ${editing && yieldCalc ? yieldPanel() : ''}
     ${similarWarning ? similarModal() : ''}
+    ${editing && confirmingClose ? unsavedConfirmModal() : ''}
   `;
   wire(root);
+  // P2 : capturé une seule fois, juste après le premier rendu du formulaire —
+  // readForm() applique déjà toutes ses normalisations des deux côtés de la
+  // future comparaison (voir confirm-unsaved.js), donc un formulaire ouvert
+  // sans aucune frappe ne se signale jamais comme modifié.
+  if (editing && formBaseline === null) {
+    const base = formDraft || (editing === 'new' ? similarWarning?.pending || blank() : s.foods.find((x) => x.id === editing));
+    if (base) formBaseline = readForm(root, base);
+  }
 }
 
 function rowOf(f) {
@@ -242,6 +257,48 @@ function resetForm() {
   similarWarning = null;
   formDraft = null;
   yieldCalc = null;
+  formBaseline = null;
+  confirmingClose = false;
+  if (escBound) { document.removeEventListener('keydown', onEscapeKey); escBound = false; }
+}
+
+/**
+ * Tentative de fermeture (clic extérieur, X, Échap) — P2. Compare l'état
+ * courant du formulaire à son instantané d'ouverture ; ne ferme directement
+ * que si rien n'a changé. Un enregistrement réussi appelle resetForm() en
+ * direct, jamais cette fonction : aucune confirmation après une sauvegarde.
+ */
+function attemptClose(root) {
+  if (confirmingClose) return; // déjà en train de demander confirmation
+  const base = formDraft || (editing === 'new' ? similarWarning?.pending || blank() : getState().foods.find((x) => x.id === editing));
+  const current = base ? readForm(root, base) : null;
+  if (isDirty(formBaseline, current)) {
+    // capture la saisie AVANT de rouvrir le dialogue par-dessus : les champs
+    // [data-f] n'ont pas d'écouteur 'change' propre (readForm() ne lit le DOM
+    // qu'à la demande) — sans ceci, le prochain render() reconstruirait le
+    // formulaire depuis le brouillon resté vierge et effacerait la saisie
+    // visible à l'écran, qui redeviendrait donc "non modifiée" au clic suivant.
+    formDraft = current;
+    confirmingClose = true;
+    render(root);
+    return;
+  }
+  resetForm();
+  render(root);
+}
+
+function onEscapeKey(e) {
+  if (e.key !== 'Escape' || !editing) return;
+  const root = document.getElementById('view');
+  // tant que le dialogue de confirmation est déjà ouvert, Échap revient à
+  // « Non, retour » (l'action sûre par défaut) plutôt que de rester sans effet.
+  if (confirmingClose) { confirmingClose = false; render(root); return; }
+  // un sous-panneau (calcul du rendement, doublon détecté) se ferme d'abord —
+  // jamais fermer le formulaire principal par-dessous sans que l'utilisateur
+  // l'ait demandé explicitement.
+  if (yieldCalc) { yieldCalc = null; render(root); return; }
+  if (similarWarning) { formDraft = { ...similarWarning.pending }; similarWarning = null; render(root); return; }
+  attemptClose(root);
 }
 
 /** Mémorise la saisie en cours avant un rendu qui recrée le formulaire. */
@@ -284,7 +341,16 @@ function wire(root) {
     c.addEventListener('click', (e) => { cat = e.currentTarget.dataset.cat; render(root); })
   );
 
-  root.querySelector('[data-new]')?.addEventListener('click', () => { resetForm(); editing = 'new'; render(root); });
+  root.querySelector('[data-new]')?.addEventListener('click', () => {
+    resetForm();
+    editing = 'new';
+    // P2 : fige le brouillon tout de suite (blank() génère un id aléatoire à
+    // chaque appel) — sans cela, la prochaine lecture de comparaison (dirty
+    // check) regénérerait un id différent et signalerait à tort un
+    // formulaire vierge comme modifié.
+    formDraft = blank();
+    render(root);
+  });
 
   root.querySelectorAll('[data-edit]').forEach((b) =>
     b.addEventListener('click', (e) => { const id = e.currentTarget.dataset.edit; resetForm(); editing = id; render(root); })
@@ -341,9 +407,23 @@ function wire(root) {
     root.querySelector('[data-save]')?.click();
   });
 
-  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => { resetForm(); render(root); });
+  // P2 : X et clic extérieur passent désormais par attemptClose() — une
+  // confirmation n'est demandée que si le formulaire a réellement changé.
+  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => attemptClose(root));
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.formBackdrop !== undefined && !yieldCalc && !similarWarning) { resetForm(); render(root); }
+    if (e.target.dataset.formBackdrop !== undefined && !yieldCalc && !similarWarning) attemptClose(root);
+  });
+
+  // P2 : Échap câblé une seule fois par ouverture de formulaire (jamais
+  // réempilé entre deux rendus successifs du même formulaire).
+  if (editing && !escBound) { document.addEventListener('keydown', onEscapeKey); escBound = true; }
+
+  root.querySelector('[data-unsaved-stay]')?.addEventListener('click', () => { confirmingClose = false; render(root); });
+  root.querySelector('[data-unsaved-discard]')?.addEventListener('click', () => { resetForm(); render(root); });
+  root.querySelector('[data-unsaved-backdrop]')?.addEventListener('mousedown', (e) => {
+    // le fond du dialogue de confirmation lui-même revient à « Non, retour »
+    // (action sûre par défaut), jamais à une fermeture silencieuse.
+    if (e.target.dataset.unsavedBackdrop !== undefined) { confirmingClose = false; render(root); }
   });
 
   root.querySelector('[data-save]')?.addEventListener('click', (e) => {
@@ -387,7 +467,7 @@ function wire(root) {
       [...s.breakfasts, ...s.snacks].some((o) => o.items.some((i) => i.foodId === id));
     if (!confirm(used ? 'Cet aliment est utilisé dans des repas. Le supprimer quand même ?' : 'Supprimer cet aliment ?')) return;
     update((st) => { st.foods = st.foods.filter((x) => x.id !== id); });
-    editing = null;
+    resetForm();
     render(root);
   });
 }

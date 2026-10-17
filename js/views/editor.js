@@ -6,7 +6,7 @@
 import {
   getState, update, foodsById, newItem, newFreeItem, catalogKey,
   SECTIONS, SECTION_LABEL, DEFAULT_SECTION, sectionsUsed,
-  recipesById, preparationsById, newRecipeMealItem, newPreparationItem, newPreparation,
+  recipesById, preparationsById, newRecipeMealItem, newPreparationItem,
   autoMealName,
 } from '../core/store.js';
 import {
@@ -687,14 +687,7 @@ function renderRecipesPanel(state, recipesMap, preparationsMap) {
     <div class="card__head"><h3>Recettes & préparations</h3></div>
     ${recipeRows}
     ${preparations.length ? `<div style="margin-top:8px">${prepRows}</div>` : '<small>Aucune préparation matérialisée pour l’instant.</small>'}
-    <div class="row" style="margin-top:12px">
-      <select data-new-prep-recipe style="flex:1;min-width:150px">
-        ${recipes.map((r) => `<option value="${r.id}">${esc(r.name)} (${r.kind === 'portion' ? 'portion' : 'poids'})</option>`).join('')}
-      </select>
-      <input type="number" min="1" step="1" data-new-prep-qty placeholder="Quantité préparée (g, ou nb de portions)" style="flex:1;min-width:150px">
-      <button class="btn" data-new-prep>Créer une préparation</button>
-    </div>
-    <small>Quantité RÉELLEMENT obtenue après cuisson (en grammes pour une recette au poids, en NOMBRE DE PORTIONS pour une recette portion) — jamais recalculée depuis les ingrédients.</small>
+    <small style="display:block;margin-top:10px">Crée une nouvelle préparation depuis l'écran « Préparations » (production, stock et répartition y sont désormais centralisés).</small>
   </div>`;
 }
 
@@ -975,20 +968,6 @@ function wire(root, entity) {
     });
   });
 
-  root.querySelector('[data-new-prep]')?.addEventListener('click', () => {
-    const recipeSel = root.querySelector('[data-new-prep-recipe]');
-    const qtyEl = root.querySelector('[data-new-prep-qty]');
-    const recipe = getState().recipes.find((r) => r.id === recipeSel?.value);
-    const qty = Number(qtyEl?.value);
-    if (!recipe) { toast('Choisis une recette', 'error'); return; }
-    if (!(qty > 0)) { toast('Indique la quantité réellement obtenue (g)', 'error'); return; }
-    update((s) => {
-      const r = s.recipes.find((x) => x.id === recipe.id);
-      if (r) s.preparations.push(newPreparation(r, qty));
-    });
-    toast(`Préparation « ${recipe.name} » créée (${qty} g)`);
-    renderEditor();
-  });
 
   root.querySelectorAll('[data-zero-waste-apply]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
