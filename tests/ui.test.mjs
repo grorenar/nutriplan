@@ -1359,10 +1359,18 @@ await wait();
 // 3,1 s — ce qui n'a rien à voir avec cette action et rendrait la
 // comparaison par texte non fiable ; seul un NOUVEAU toast nous concerne ici).
 const toastCountBeforeClose = document.getElementById('toasts')?.children.length || 0;
+// régression : le panneau (.drawer__panel) ne doit JAMAIS être recréé ni à
+// l'ouverture du dialogue de confirmation, ni à sa fermeture via « Non,
+// retour » — avant correctif, foods.js reconstruisait tout #view à chaque
+// render(), rejouant l'animation d'entrée du tiroir sur ces deux actions
+// (même cause que le clipping déjà corrigé dans recipes.js, jamais
+// reproduit côté Aliments jusqu'ici).
+const foodsPanelBeforeDialog = $('.drawer__panel');
 type($('[data-f="name"]'), 'Aliment Clipping Test P2');
 mousedown($('[data-form-backdrop]'));
 await wait();
 check('dialogue affiché après clic extérieur avec saisie', !!$('[data-unsaved-stay]'));
+check('le panneau n’est PAS recréé par l’ouverture du dialogue de confirmation', $('.drawer__panel') === foodsPanelBeforeDialog);
 check('aucune notification parallèle (un seul mécanisme de confirmation)',
   (document.getElementById('toasts')?.children.length || 0) <= toastCountBeforeClose);
 check('formulaire toujours ouvert, saisie conservée', $('[data-f="name"]')?.value === 'Aliment Clipping Test P2');
@@ -1370,6 +1378,7 @@ check('formulaire toujours ouvert, saisie conservée', $('[data-f="name"]')?.val
 click($('[data-unsaved-stay]'));
 await wait();
 check('"Non, retour" : formulaire conservé avec la saisie', $('[data-f="name"]')?.value === 'Aliment Clipping Test P2');
+check('le panneau n’est PAS recréé par « Non, retour » (identité DOM stable)', $('.drawer__panel') === foodsPanelBeforeDialog);
 
 mousedown($('[data-form-backdrop]'));
 await wait();
@@ -1402,14 +1411,17 @@ check('édition SANS modification : fermeture directe (valeurs initiales jamais 
 
 click(foodEditBtn);
 await wait();
+const foodEditPanelRef = $('.drawer__panel'); // édition, pas création : vérifie aussi ce cas précis
 type($('[data-f="brand"]'), 'MarqueTestP2');
 escapeKey();
 await wait();
 check('Échap avec modification réelle : dialogue affiché', !!$('[data-unsaved-stay]'));
+check('édition : le panneau n’est pas recréé par l’ouverture du dialogue (Échap)', $('.drawer__panel') === foodEditPanelRef);
 escapeKey(); // Échap sur le dialogue == « Non, retour » (action sûre par défaut)
 await wait();
 check('Échap sur le dialogue = "Non, retour" : formulaire toujours ouvert', !!$('[data-f="brand"]'));
 check('saisie conservée après ce retour', $('[data-f="brand"]')?.value === 'MarqueTestP2');
+check('édition : le panneau n’est pas recréé par « Non, retour » (Échap)', $('.drawer__panel') === foodEditPanelRef);
 
 click($('[data-form-cancel]'));
 await wait();

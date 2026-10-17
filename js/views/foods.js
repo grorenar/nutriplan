@@ -29,6 +29,21 @@ export function openFoodForm(id) {
 
 export function render(root) {
   const s = getState();
+
+  // Le formulaire est déjà ouvert (.drawer__panel existe déjà dans le DOM) :
+  // on ne met à jour QUE son contenu et les sur-couches (rendement, doublon,
+  // confirmation), jamais .drawer/.drawer__panel eux-mêmes — voir
+  // refreshOpenForm() pour la raison (rejeu de l'animation d'entrée, cf.
+  // correctif « clipping » de recipes.js, même cause ici).
+  if (editing && root.querySelector('.drawer__panel')) {
+    refreshOpenForm(root, s);
+    return;
+  }
+
+  renderFull(root, s);
+}
+
+function renderFull(root, s) {
   const q = normalize(query);
   let list = [...s.foods].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
   if (cat === 'fav') list = list.filter((f) => f.favorite);
@@ -58,19 +73,52 @@ export function render(root) {
     </div>
     <small>${list.length} aliment(s) affiché(s) sur ${s.foods.length}. Valeurs pour 100 g dans l'état de référence.</small>
     ${editing ? formPanel(s) : ''}
-    ${editing && yieldCalc ? yieldPanel() : ''}
-    ${similarWarning ? similarModal() : ''}
-    ${editing && confirmingClose ? unsavedConfirmModal() : ''}
+    <div id="food-overlays">${overlaysHtml(s)}</div>
   `;
-  wire(root);
-  // P2 : capturé une seule fois, juste après le premier rendu du formulaire —
-  // readForm() applique déjà toutes ses normalisations des deux côtés de la
-  // future comparaison (voir confirm-unsaved.js), donc un formulaire ouvert
-  // sans aucune frappe ne se signale jamais comme modifié.
-  if (editing && formBaseline === null) {
-    const base = formDraft || (editing === 'new' ? similarWarning?.pending || blank() : s.foods.find((x) => x.id === editing));
-    if (base) formBaseline = readForm(root, base);
-  }
+  wireList(root);
+  if (editing) { wireDrawerChrome(root); wireDrawerBody(root); wireOverlays(root); }
+  captureBaselineIfNeeded(root, s);
+}
+
+/**
+ * Met à jour UNIQUEMENT le contenu du formulaire déjà ouvert (.drawer__body)
+ * et les sur-couches (#food-overlays : rendement, doublon, confirmation de
+ * fermeture) — .drawer/.drawer__panel/.drawer__head ne sont JAMAIS recréés
+ * pendant que le formulaire reste ouvert, qu'il s'agisse d'afficher ou de
+ * fermer le dialogue « Modifications non sauvegardées », d'ouvrir l'aide au
+ * rendement, ou de toute autre interaction pendant l'édition.
+ */
+function refreshOpenForm(root, s) {
+  const body = root.querySelector('.drawer__body');
+  if (!body) { renderFull(root, s); return; }
+  const f = currentFormData(s);
+  if (!f) { renderFull(root, s); return; }
+  body.innerHTML = formBodyHtml(f);
+  let overlays = root.querySelector('#food-overlays');
+  if (!overlays) { renderFull(root, s); return; }
+  overlays.innerHTML = overlaysHtml(s);
+  wireDrawerBody(root);
+  wireOverlays(root);
+  captureBaselineIfNeeded(root, s);
+}
+
+function overlaysHtml(s) {
+  return `${editing && yieldCalc ? yieldPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}`;
+}
+
+/** L'aliment affiché dans le formulaire actuellement ouvert (brouillon ou fiche existante). */
+function currentFormData(s) {
+  return formDraft || (editing === 'new' ? similarWarning?.pending || blank() : s.foods.find((x) => x.id === editing));
+}
+
+// P2 : capturé une seule fois, juste après le premier rendu du formulaire —
+// readForm() applique déjà toutes ses normalisations des deux côtés de la
+// future comparaison (voir confirm-unsaved.js), donc un formulaire ouvert
+// sans aucune frappe ne se signale jamais comme modifié.
+function captureBaselineIfNeeded(root, s) {
+  if (!editing || formBaseline !== null) return;
+  const base = currentFormData(s);
+  if (base) formBaseline = readForm(root, base);
 }
 
 function rowOf(f) {
@@ -103,21 +151,23 @@ const blank = () => ({
 });
 
 function formPanel(s) {
-  // la saisie en cours est conservée entre deux rendus (avertissement doublon,
-  // ouverture de l'aide au calcul du rendement…)
-  const f =
-    formDraft ||
-    (editing === 'new' ? similarWarning?.pending || blank() : s.foods.find((x) => x.id === editing));
+  const f = currentFormData(s);
   if (!f) return '';
-  const n = (v) => (v === null || v === undefined ? '' : v);
   return `<div class="drawer" data-form-backdrop>
     <div class="drawer__panel" style="width:min(560px,100%)">
       <div class="drawer__head"><div class="row">
         <h3 style="flex:1">${editing === 'new' ? 'Nouvel aliment' : 'Modifier l\'aliment'}</h3>
         <button class="btn btn--ghost" data-form-cancel>Fermer</button>
       </div></div>
-      <div class="drawer__body">
-        <div class="grid grid--3">
+      <div class="drawer__body">${formBodyHtml(f)}</div>
+    </div>
+  </div>`;
+}
+
+/** Contenu de .drawer__body — réutilisé tel quel par refreshOpenForm(). */
+function formBodyHtml(f) {
+  const n = (v) => (v === null || v === undefined ? '' : v);
+  return `<div class="grid grid--3">
           <label class="field" style="grid-column:1/-1">Nom
             <input type="text" data-f="name" value="${esc(f.name)}"></label>
           <label class="field">Marque (facultatif)
@@ -187,10 +237,7 @@ function formPanel(s) {
           <button class="btn btn--primary" data-save="${f.id}">Enregistrer</button>
           ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${f.id}">Supprimer</button>`}
         </div>
-        <small style="display:block;margin-top:10px">Les valeurs livrées par défaut sont génériques. Pour un produit de marque, recopie les valeurs de l'emballage.</small>
-      </div>
-    </div>
-  </div>`;
+        <small style="display:block;margin-top:10px">Les valeurs livrées par défaut sont génériques. Pour un produit de marque, recopie les valeurs de l'emballage.</small>`;
 }
 
 /** Aide au calcul du rendement après cuisson (coefficient = cuit ÷ cru). */
@@ -327,7 +374,8 @@ function readForm(root, base) {
   return out;
 }
 
-function wire(root) {
+/** Table/recherche/filtres — jamais recréés pendant qu'un formulaire reste ouvert. */
+function wireList(root) {
   const qEl = root.querySelector('[data-q]');
   qEl?.addEventListener('input', (e) => {
     query = e.target.value;
@@ -356,33 +404,6 @@ function wire(root) {
     b.addEventListener('click', (e) => { const id = e.currentTarget.dataset.edit; resetForm(); editing = id; render(root); })
   );
 
-  // --- aide au calcul du rendement après cuisson
-  root.querySelector('[data-yield-open]')?.addEventListener('click', () => {
-    captureDraft(root);
-    yieldCalc = { raw: '', cooked: '', result: null, error: null };
-    render(root);
-  });
-  const closeYield = () => { yieldCalc = null; render(root); };
-  root.querySelector('[data-yield-cancel]')?.addEventListener('click', closeYield);
-  root.querySelector('[data-yield-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.yieldBackdrop !== undefined) closeYield();
-  });
-  root.querySelector('[data-yield-run]')?.addEventListener('click', () => {
-    const raw = root.querySelector('[data-yield-raw]').value;
-    const cooked = root.querySelector('[data-yield-cooked]').value;
-    const res = computeYield(raw, cooked);
-    yieldCalc = { raw, cooked, result: res.ok ? res.factor : null, error: res.ok ? null : res.error };
-    render(root);
-  });
-  root.querySelector('[data-yield-apply]')?.addEventListener('click', () => {
-    const factor = yieldCalc.result;
-    captureDraft(root);
-    formDraft = { ...formDraft, cookedFactor: factor };
-    yieldCalc = null;
-    render(root);
-    toast(`Rendement appliqué : ${num(factor, 2)}`);
-  });
-
   root.querySelectorAll('[data-fav]').forEach((b) =>
     b.addEventListener('click', (e) => {
       const id = e.currentTarget.dataset.fav;
@@ -392,40 +413,28 @@ function wire(root) {
       });
     })
   );
+}
 
-  // --- popup bloquante de doublon
-  root.querySelector('[data-similar-cancel]')?.addEventListener('click', () => {
-    // Annuler : la popup se ferme, l'aliment n'est PAS créé, la saisie est conservée.
-    formDraft = { ...similarWarning.pending };
-    similarWarning = null;
-    render(root);
-  });
-  root.querySelector('[data-similar-confirm]')?.addEventListener('click', () => {
-    similarWarning = { ...similarWarning, confirmed: true };
-    formDraft = { ...similarWarning.pending };
-    render(root);
-    root.querySelector('[data-save]')?.click();
-  });
-
-  // P2 : X et clic extérieur passent désormais par attemptClose() — une
-  // confirmation n'est demandée que si le formulaire a réellement changé.
+/**
+ * Chrome du tiroir (bouton Fermer, clic sur le fond, Échap) : vit dans
+ * .drawer et .drawer__head, jamais recréés par refreshOpenForm() — ne se
+ * câble donc qu'une fois, à l'ouverture (sinon : écouteurs dupliqués à
+ * chaque ouverture/fermeture de la confirmation ou du calcul de rendement).
+ */
+function wireDrawerChrome(root) {
+  // P2 : X et clic extérieur passent par attemptClose() — une confirmation
+  // n'est demandée que si le formulaire a réellement changé.
   root.querySelector('[data-form-cancel]')?.addEventListener('click', () => attemptClose(root));
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.formBackdrop !== undefined && !yieldCalc && !similarWarning) attemptClose(root);
   });
-
   // P2 : Échap câblé une seule fois par ouverture de formulaire (jamais
   // réempilé entre deux rendus successifs du même formulaire).
-  if (editing && !escBound) { document.addEventListener('keydown', onEscapeKey); escBound = true; }
+  if (!escBound) { document.addEventListener('keydown', onEscapeKey); escBound = true; }
+}
 
-  root.querySelector('[data-unsaved-stay]')?.addEventListener('click', () => { confirmingClose = false; render(root); });
-  root.querySelector('[data-unsaved-discard]')?.addEventListener('click', () => { resetForm(); render(root); });
-  root.querySelector('[data-unsaved-backdrop]')?.addEventListener('mousedown', (e) => {
-    // le fond du dialogue de confirmation lui-même revient à « Non, retour »
-    // (action sûre par défaut), jamais à une fermeture silencieuse.
-    if (e.target.dataset.unsavedBackdrop !== undefined) { confirmingClose = false; render(root); }
-  });
-
+/** Contenu de .drawer__body : recâblé à chaque renderFull() ET refreshOpenForm(). */
+function wireDrawerBody(root) {
   root.querySelector('[data-save]')?.addEventListener('click', (e) => {
     const id = e.currentTarget.dataset.save;
     const s = getState();
@@ -469,5 +478,57 @@ function wire(root) {
     update((st) => { st.foods = st.foods.filter((x) => x.id !== id); });
     resetForm();
     render(root);
+  });
+}
+
+/** #food-overlays (rendement, doublon, confirmation) : recâblé à chaque render de cette zone. */
+function wireOverlays(root) {
+  // --- aide au calcul du rendement après cuisson
+  root.querySelector('[data-yield-open]')?.addEventListener('click', () => {
+    captureDraft(root);
+    yieldCalc = { raw: '', cooked: '', result: null, error: null };
+    render(root);
+  });
+  const closeYield = () => { yieldCalc = null; render(root); };
+  root.querySelector('[data-yield-cancel]')?.addEventListener('click', closeYield);
+  root.querySelector('[data-yield-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.yieldBackdrop !== undefined) closeYield();
+  });
+  root.querySelector('[data-yield-run]')?.addEventListener('click', () => {
+    const raw = root.querySelector('[data-yield-raw]').value;
+    const cooked = root.querySelector('[data-yield-cooked]').value;
+    const res = computeYield(raw, cooked);
+    yieldCalc = { raw, cooked, result: res.ok ? res.factor : null, error: res.ok ? null : res.error };
+    render(root);
+  });
+  root.querySelector('[data-yield-apply]')?.addEventListener('click', () => {
+    const factor = yieldCalc.result;
+    captureDraft(root);
+    formDraft = { ...formDraft, cookedFactor: factor };
+    yieldCalc = null;
+    render(root);
+    toast(`Rendement appliqué : ${num(factor, 2)}`);
+  });
+
+  // --- popup bloquante de doublon
+  root.querySelector('[data-similar-cancel]')?.addEventListener('click', () => {
+    // Annuler : la popup se ferme, l'aliment n'est PAS créé, la saisie est conservée.
+    formDraft = { ...similarWarning.pending };
+    similarWarning = null;
+    render(root);
+  });
+  root.querySelector('[data-similar-confirm]')?.addEventListener('click', () => {
+    similarWarning = { ...similarWarning, confirmed: true };
+    formDraft = { ...similarWarning.pending };
+    render(root);
+    root.querySelector('[data-save]')?.click();
+  });
+
+  root.querySelector('[data-unsaved-stay]')?.addEventListener('click', () => { confirmingClose = false; render(root); });
+  root.querySelector('[data-unsaved-discard]')?.addEventListener('click', () => { resetForm(); render(root); });
+  root.querySelector('[data-unsaved-backdrop]')?.addEventListener('mousedown', (e) => {
+    // le fond du dialogue de confirmation lui-même revient à « Non, retour »
+    // (action sûre par défaut), jamais à une fermeture silencieuse.
+    if (e.target.dataset.unsavedBackdrop !== undefined) { confirmingClose = false; render(root); }
   });
 }
