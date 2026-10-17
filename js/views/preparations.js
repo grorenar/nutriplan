@@ -32,13 +32,24 @@ let wizard = null;   // { preparationId, amount, mealIds: Set<string>, catalog: 
 let quickUse = null; // { preparationId, mealId, qty }
 let lastResult = null;
 let creating = null;    // { recipeId, qty } — P1.A, création depuis une recette
-let discarding = null;  // { preparationId, qty } — P1.C, « Jeter les restes »
+let discardConfirm = null; // { preparationId } — jet de LA TOTALITÉ du disponible, un seul dialogue (2 clics)
+let discarding = null;  // { preparationId, qty } — jet d'une quantité PARTIELLE, flux distinct et volontairement séparé
+let exhaustedOpen = false; // la section "préparations épuisées" (disponible = 0) est-elle dépliée ?
 const assignmentsOpen = new Set(); // ids de préparation dont la liste d'affectations est dépliée
 
 export function render(root) {
   const s = getState();
   const recipesMap = recipesById();
-  const preps = s.preparations;
+  // Une préparation épuisée (disponible = 0, même seuil que les boutons déjà
+  // désactivés plus bas — aucune nouvelle tolérance : les quantités saisies
+  // sont toujours des grammes/portions entiers, jamais de résidu flottant à
+  // filtrer) ne doit plus apparaître dans la liste active, mais rien n'est
+  // supprimé : elle reste consultable (affectations comprises) dans la
+  // section repliée ci-dessous, réévaluée à CHAQUE rendu (jamais un drapeau
+  // stocké) — donc jamais réaffichée par erreur après un reset/une synchro.
+  const active = [];
+  const exhausted = [];
+  for (const p of s.preparations) (preparationAvailable(s, p) > 0 ? active : exhausted).push(p);
 
   root.innerHTML = `
     <div class="row" style="margin-bottom:12px">
@@ -48,16 +59,34 @@ export function render(root) {
     </div>
     ${lastResult ? resultCard(lastResult) : ''}
     ${creating ? createPanel(s) : ''}
+    ${discardConfirm ? discardConfirmModal(s) : ''}
     ${discarding ? discardPanel(s) : ''}
     ${wizard ? distributeWizard(s, recipesMap) : ''}
     ${quickUse ? quickUseCard(s, recipesMap) : ''}
     ${
-      preps.length
-        ? preps.map((p) => prepCard(p, s, recipesMap)).join('')
-        : `<div class="empty">Aucune préparation. Crée-en une à partir d'une recette avec le bouton « Nouvelle préparation » ci-dessus.</div>`
+      active.length
+        ? active.map((p) => prepCard(p, s, recipesMap)).join('')
+        : exhausted.length
+          ? '<div class="empty">Toutes les préparations ont été entièrement affectées ou jetées. Vois-les ci-dessous, ou crée-en une nouvelle.</div>'
+          : `<div class="empty">Aucune préparation. Crée-en une à partir d'une recette avec le bouton « Nouvelle préparation » ci-dessus.</div>`
     }
+    ${exhausted.length ? exhaustedSection(exhausted, s, recipesMap) : ''}
   `;
   wire(root, s);
+}
+
+/**
+ * Section repliée des préparations épuisées (disponible = 0) : jamais
+ * supprimées, jamais perdues de vue — juste reléguées hors de la liste
+ * active. prepCard() y désactive déjà tous les boutons d'action (Répartir,
+ * +Utiliser, Jeter), mais « Voir les affectations » y reste utilisable pour
+ * vérifier/retirer une affectation existante si besoin.
+ */
+function exhaustedSection(exhausted, s, recipesMap) {
+  return `<div style="margin-top:16px">
+    <button class="btn btn--sm btn--ghost" data-toggle-exhausted>${exhaustedOpen ? 'Masquer' : 'Voir'} les préparations épuisées (${exhausted.length})</button>
+    ${exhaustedOpen ? `<div style="margin-top:10px">${exhausted.map((p) => prepCard(p, s, recipesMap)).join('')}</div>` : ''}
+  </div>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -93,11 +122,12 @@ function prepCard(p, s, recipesMap) {
       ${jete > 0 ? `<div><small>Jeté</small><b>${unitLabelFor(p, jete)}</b></div>` : ''}
       <div><small>Disponible</small><b class="${epuisee ? 'muted' : ''}">${unitLabelFor(p, Math.max(0, disponible))}</b></div>
     </div>
-    ${epuisee ? '<small class="muted">Entièrement affectée : conservée dans la liste, mais plus proposée pour une nouvelle répartition.</small>' : ''}
+    ${epuisee ? '<small class="muted">Entièrement affectée ou jetée : conservée, mais plus proposée pour une nouvelle répartition.</small>' : ''}
     <div class="row" style="margin-top:10px">
       <button class="btn btn--primary" data-open-distribute="${p.id}" ${epuisee ? 'disabled' : ''}>Répartir</button>
       <button class="btn btn--sm" data-open-quick-use="${p.id}" ${epuisee ? 'disabled' : ''}>+ Utiliser dans un repas</button>
-      <button class="btn btn--sm" data-open-discard="${p.id}" ${disponible <= 0 ? 'disabled' : ''}>Jeter les restes</button>
+      <button class="btn btn--sm btn--danger" data-open-discard-confirm="${p.id}" ${epuisee ? 'disabled' : ''}>Jeter les restes</button>
+      <button class="btn btn--sm btn--ghost" data-open-discard-partial="${p.id}" ${epuisee ? 'disabled' : ''}>Jeter une quantité partielle…</button>
       ${assignments.length ? `<button class="btn btn--sm btn--ghost" data-toggle-assignments="${p.id}">${open ? 'Masquer' : 'Voir'} les affectations (${assignments.length})</button>` : ''}
     </div>
     ${open ? assignmentsSection(p, assignments) : ''}
@@ -206,7 +236,35 @@ function createPanel(s) {
 }
 
 /* ------------------------------------------------------------------ */
-/* « Jeter les restes » (P1.C)                                         */
+/* « Jeter les restes » — jet total en un seul dialogue (2 clics)       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Confirmation UNIQUE du jet de la totalité du disponible : le clic sur
+ * « Jeter les restes » ouvre directement ce dialogue (aucun écran
+ * intermédiaire), et la quantité affichée comme celle réellement jetée sont
+ * toutes deux calculées via preparationAvailable() au moment du rendu —
+ * jamais figées à l'ouverture — pour rester exactes si le stock a changé
+ * entre-temps (autre onglet, synchronisation, affectation concurrente).
+ */
+function discardConfirmModal(s) {
+  const p = s.preparations.find((x) => x.id === discardConfirm.preparationId);
+  if (!p) return '';
+  const disponible = preparationAvailable(s, p);
+  return `<div class="modal" data-discard-confirm-backdrop role="dialog" aria-modal="true" aria-label="Jeter les restes ?">
+    <div class="modal__panel">
+      <h3 style="margin-bottom:8px">Jeter les restes ?</h3>
+      <p>Vous allez jeter les ${unitLabelFor(p, Math.max(0, disponible))} restants de « ${esc(p.label)} ». Cette action est irréversible.</p>
+      <div class="row" style="margin-top:14px;justify-content:flex-end">
+        <button class="btn" data-discard-confirm-cancel>Annuler</button>
+        <button class="btn btn--danger" data-discard-confirm-ok>Confirmer le jet</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* « Jeter une quantité partielle » — flux distinct, volontairement à part */
 /* ------------------------------------------------------------------ */
 
 function discardPanel(s) {
@@ -218,16 +276,13 @@ function discardPanel(s) {
   return `<div class="drawer" data-discard-backdrop>
     <div class="drawer__panel" style="width:min(420px,100%)">
       <div class="drawer__head"><div class="row">
-        <h3 style="flex:1">Jeter les restes — « ${esc(p.label)} »</h3>
+        <h3 style="flex:1">Jeter une quantité partielle — « ${esc(p.label)} »</h3>
         <button class="btn btn--ghost" data-discard-cancel>Fermer</button></div>
         <small>Disponible : ${unitLabelFor(p, disponible)}</small>
       </div>
       <div class="drawer__body">
         <label class="field">Quantité à jeter (g)
           <input type="number" min="0" max="${Math.max(0, Math.round(disponible))}" step="1" data-discard-qty value="${discarding.qty || ''}"></label>
-        <div class="row" style="margin-top:8px">
-          <button class="btn btn--sm" data-discard-all>Jeter tout le disponible (${num(disponible, 0)} g)</button>
-        </div>
         ${
           !valid && discarding.qty !== ''
             ? `<small class="sync-error" style="display:block;margin-top:8px">${
@@ -239,7 +294,7 @@ function discardPanel(s) {
         }
         <div class="row" style="margin-top:14px">
           <button class="btn btn--ghost" data-discard-cancel>Annuler</button>
-          <button class="btn btn--danger" data-discard-confirm ${valid ? '' : 'disabled'}>Confirmer la perte</button>
+          <button class="btn btn--danger" data-discard-partial-confirm ${valid ? '' : 'disabled'}>Confirmer la perte</button>
         </div>
       </div>
     </div>
@@ -544,12 +599,49 @@ function wire(root, s) {
     render(root);
   });
 
-  // --- Jeter les restes (P1.C)
-  root.querySelectorAll('[data-open-discard]').forEach((btn) => {
+  // --- Jeter les restes : jet total, UN SEUL dialogue (clic -> confirmation directe)
+  root.querySelectorAll('[data-open-discard-confirm]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
-      const id = e.currentTarget.dataset.openDiscard;
-      const p = getState().preparations.find((x) => x.id === id);
+      const id = e.currentTarget.dataset.openDiscardConfirm;
+      if (!getState().preparations.some((x) => x.id === id)) return;
+      discardConfirm = { preparationId: id };
+      render(root);
+    });
+  });
+  const closeDiscardConfirm = () => { discardConfirm = null; render(root); };
+  root.querySelector('[data-discard-confirm-cancel]')?.addEventListener('click', closeDiscardConfirm);
+  root.querySelector('[data-discard-confirm-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.discardConfirmBackdrop !== undefined) closeDiscardConfirm();
+  });
+  root.querySelector('[data-discard-confirm-ok]')?.addEventListener('click', () => {
+    const st0 = getState();
+    const p0 = st0.preparations.find((x) => x.id === discardConfirm.preparationId);
+    if (!p0) { discardConfirm = null; render(root); return; }
+    // revérifié ICI, pas la valeur affichée à l'ouverture : le stock a pu
+    // changer entre-temps (autre action, synchronisation).
+    const qty = preparationAvailable(st0, p0);
+    if (!(qty > 1e-6)) {
+      // plus rien à jeter : aucune perte inutile enregistrée.
+      discardConfirm = null;
+      render(root);
+      return;
+    }
+    update((s2) => {
+      const p = s2.preparations.find((x) => x.id === p0.id);
       if (!p) return;
+      p.losses = p.losses || [];
+      p.losses.push(newPreparationLoss(qty));
+    });
+    toast('Reste jeté');
+    discardConfirm = null;
+    render(root);
+  });
+
+  // --- Jeter une quantité partielle : flux distinct, inchangé à part son déclencheur
+  root.querySelectorAll('[data-open-discard-partial]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.openDiscardPartial;
+      if (!getState().preparations.some((x) => x.id === id)) return;
       discarding = { preparationId: id, qty: '' };
       render(root);
     });
@@ -563,13 +655,7 @@ function wire(root, s) {
     discarding.qty = e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0);
     render(root);
   });
-  root.querySelector('[data-discard-all]')?.addEventListener('click', () => {
-    const p = getState().preparations.find((x) => x.id === discarding.preparationId);
-    if (!p) return;
-    discarding.qty = Math.max(0, Math.round(preparationAvailable(getState(), p)));
-    render(root);
-  });
-  root.querySelector('[data-discard-confirm]')?.addEventListener('click', () => {
+  root.querySelector('[data-discard-partial-confirm]')?.addEventListener('click', () => {
     const st0 = getState();
     const p0 = st0.preparations.find((x) => x.id === discarding.preparationId);
     if (!p0) return;
@@ -588,6 +674,12 @@ function wire(root, s) {
     });
     toast('Perte enregistrée');
     discarding = null;
+    render(root);
+  });
+
+  // --- Section repliée des préparations épuisées
+  root.querySelector('[data-toggle-exhausted]')?.addEventListener('click', () => {
+    exhaustedOpen = !exhaustedOpen;
     render(root);
   });
 

@@ -1315,20 +1315,20 @@ check('aucun item supplémentaire créé (même nombre d’items qu’avant l’
 check('la quantité totale de l’affectation reflète bien la nouvelle valeur (120 g)',
   p1Saved().meals.some((m) => m.items.some((it) => it.preparationId === p1PrepId && Math.round((it.qty.thomas || 0) + (it.qty.julie || 0)) === 120)));
 
-console.log('\n— P1 : « Jeter les restes » — perte partielle, sur-engagement bloqué');
-const discardBtn = $$('[data-open-discard]').find((b) => b.dataset.openDiscard === p1PrepId);
+console.log('\n— P1 : « Jeter une quantité partielle » — flux distinct, sur-engagement bloqué');
+const discardBtn = $$('[data-open-discard-partial]').find((b) => b.dataset.openDiscardPartial === p1PrepId);
 click(discardBtn);
 await wait();
-check('panneau "Jeter les restes" ouvert', !!$('[data-discard-qty]'));
+check('panneau "Jeter une quantité partielle" ouvert (flux distinct du jet total)', !!$('[data-discard-qty]'));
 const prepBeforeDiscard = p1Saved().preparations.find((p) => p.id === p1PrepId);
 const dispoBeforeDiscard = derive.preparationAvailable(p1Saved(), prepBeforeDiscard);
 change($('[data-discard-qty]'), String(Math.round(dispoBeforeDiscard + 100))); // au-delà du disponible
 await wait();
-check('bouton de confirmation désactivé : refuse de jeter plus que le disponible', $('[data-discard-confirm]').disabled);
+check('bouton de confirmation désactivé : refuse de jeter plus que le disponible', $('[data-discard-partial-confirm]').disabled);
 change($('[data-discard-qty]'), '50');
 await wait();
-check('bouton de confirmation activé pour une quantité valide', !$('[data-discard-confirm]').disabled);
-click($('[data-discard-confirm]')); // confirm() stubbé à true en tête de fichier
+check('bouton de confirmation activé pour une quantité valide', !$('[data-discard-partial-confirm]').disabled);
+click($('[data-discard-partial-confirm]')); // confirm() stubbé à true en tête de fichier
 await wait();
 check('toast de confirmation de la perte', /perte enregistrée/i.test(document.getElementById('toasts')?.textContent || ''));
 check('la perte est tracée (préparation, quantité, date) et affichée', /Jeté/.test($('#view').textContent));
@@ -1337,6 +1337,50 @@ check('un seul enregistrement de perte, avec la bonne quantité et une date', pr
 check('le disponible a bien diminué de la quantité jetée (et seulement elle)',
   Math.round(derive.preparationAvailable(p1Saved(), prepAfterPartialDiscard)) === Math.round(dispoBeforeDiscard - 50));
 check('l’affectation déjà en place n’a pas été touchée par le jet des restes', p1ItemCountAfter === p1ItemCountOf(p1Saved()));
+const dispoAfterPartialDiscard = derive.preparationAvailable(p1Saved(), prepAfterPartialDiscard);
+check('la préparation reste visible dans la liste active (stock encore positif)', $$('[data-open-discard-confirm]').some((b) => b.dataset.openDiscardConfirm === p1PrepId));
+
+console.log('\n— P1 : « Jeter les restes » — jet total en un seul dialogue (2 clics), masquage des préparations épuisées');
+const fullDiscardBtn = () => $$('[data-open-discard-confirm]').find((b) => b.dataset.openDiscardConfirm === p1PrepId);
+check('clic 1 : bouton "Jeter les restes" présent et distinct du jet partiel', !!fullDiscardBtn());
+click(fullDiscardBtn());
+await wait();
+check('une seule confirmation apparaît directement, aucun panneau intermédiaire',
+  !!$('[data-discard-confirm-ok]') && !$('[data-discard-qty]'));
+check('le dialogue précise la préparation et la quantité réellement disponible',
+  new RegExp(`${Math.round(dispoAfterPartialDiscard)} g`).test($('.modal__panel')?.textContent || ''), $('.modal__panel')?.textContent);
+check('le message précise le caractère irréversible', /irréversible/.test($('.modal__panel')?.textContent || ''));
+
+// Annuler : aucune donnée modifiée
+const beforeCancelSnapshot = JSON.stringify(p1Saved().preparations.find((p) => p.id === p1PrepId));
+click($('[data-discard-confirm-cancel]'));
+await wait();
+check('"Annuler" ferme le dialogue sans modifier les données', !$('.modal__panel'));
+check('stock strictement inchangé après annulation', JSON.stringify(p1Saved().preparations.find((p) => p.id === p1PrepId)) === beforeCancelSnapshot);
+
+// clic 2 : confirmer le jet total
+click(fullDiscardBtn());
+await wait();
+click($('[data-discard-confirm-ok]'));
+await wait();
+check('toast de confirmation', /jeté/i.test(document.getElementById('toasts')?.textContent || ''));
+const prepAfterFullDiscard = p1Saved().preparations.find((p) => p.id === p1PrepId);
+check('disponible retombé à 0 (toute la quantité restante a été jetée, pas plus)',
+  Math.abs(derive.preparationAvailable(p1Saved(), prepAfterFullDiscard)) < 1e-6);
+check('la perte totale est tracée en plus de la perte partielle précédente (historique jamais écrasé)', prepAfterFullDiscard.losses.length === 2);
+check('la préparation n’est PAS supprimée des données (conservée, juste masquée)',
+  p1Saved().preparations.some((p) => p.id === p1PrepId));
+
+// épuisée : masquée de la liste active, mais reste consultable (pas de suppression silencieuse)
+check('préparation épuisée masquée de la liste active', !fullDiscardBtn());
+const exhaustedToggle = $('[data-toggle-exhausted]');
+check('section "préparations épuisées" proposée', !!exhaustedToggle);
+click(exhaustedToggle);
+await wait();
+check('préparation épuisée retrouvable dans la section repliée (données non perdues)', !!fullDiscardBtn());
+check('ses actions restent désactivées (non resélectionnable pour une nouvelle distribution)', fullDiscardBtn().disabled);
+check('ses affectations restent consultables (bouton "Voir les affectations" toujours présent)',
+  !!$$('[data-toggle-assignments]').find((b) => b.dataset.toggleAssignments === p1PrepId));
 
 console.log('\n— P1 : l’éditeur de repas ne crée plus de préparation (retiré, P1.E)');
 click($('[data-view="planning"]'));
