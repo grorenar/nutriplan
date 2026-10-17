@@ -68,24 +68,56 @@ function currentDraft(s) {
   return formDraft;
 }
 
-function ingredientPicker(state) {
+/** HTML de la seule liste de résultats (réutilisée telle quelle par updateIngredientResults()). */
+function ingredientResults(state) {
   const q = normalize(ingQuery);
   let list = state.foods;
   if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
   list = list.slice(0, 30);
+  return list.length
+    ? list.map((f) => `<button data-ing-add="${f.id}">
+        <strong>${esc(f.name)}</strong>${isWholeUnitFood(f) ? ' <span class="tag">non fractionnable</span>' : ''}
+        <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal / 100 g</div>
+      </button>`).join('')
+    : `<div style="padding:12px" class="muted">Aucun ingrédient ne correspond.</div>`;
+}
+
+function ingredientPicker(state) {
   return `<div class="row" style="margin-top:10px">
     <input type="text" data-ing-search value="${esc(ingQuery)}" placeholder="Rechercher un ingrédient…" style="flex:1;min-width:180px">
   </div>
   <div class="picker__results" style="position:static;border:1px solid var(--line);border-radius:var(--radius-sm);max-height:200px;margin-top:6px">
-    ${
-      list.length
-        ? list.map((f) => `<button data-ing-add="${f.id}">
-            <strong>${esc(f.name)}</strong>${isWholeUnitFood(f) ? ' <span class="tag">non fractionnable</span>' : ''}
-            <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal / 100 g</div>
-          </button>`).join('')
-        : `<div style="padding:12px" class="muted">Aucun ingrédient ne correspond.</div>`
-    }
+    ${ingredientResults(state)}
   </div>`;
+}
+
+function wireIngredientAddButtons(root) {
+  root.querySelectorAll('[data-ing-add]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const foodId = e.currentTarget.dataset.ingAdd;
+      const food = getState().foods.find((f) => f.id === foodId);
+      if (!food) return;
+      const draft = currentDraft(getState());
+      const check = canAddIngredientToRecipe(draft, food);
+      if (!check.ok) { toast(check.reason, 'error'); return; }
+      const previousSum = portionGramsOf(draft);
+      draft.items.push(newRecipeItem(foodId, initialQuantity(food), food.referenceState));
+      syncAutoBaseGrams(draft, previousSum);
+      render(root);
+    });
+  });
+}
+
+/**
+ * Met à jour UNIQUEMENT la liste des résultats : la fenêtre (et son animation
+ * d'entrée) ne se rejoue pas, le champ de recherche garde son focus et son
+ * curseur — même motif que updateResults()/pickerResults() dans editor.js.
+ */
+function updateIngredientResults(root) {
+  const box = root.querySelector('.picker__results');
+  if (!box) return;
+  box.innerHTML = ingredientResults(getState());
+  wireIngredientAddButtons(root);
 }
 
 function formPanel(s, byId) {
@@ -271,30 +303,17 @@ function wire(root, s) {
     });
   });
 
+  // La recherche ne reconstruit QUE la liste des résultats : le champ garde le
+  // focus et la fenêtre (son animation d'entrée comprise) ne se réaffiche pas
+  // à chaque frappe — même motif que [data-search] dans editor.js. Un plein
+  // render(root) ici recréait tout le panneau à chaque caractère tapé, ce qui
+  // rejouait l'animation CSS d'entrée du tiroir (slide-in) en boucle.
   root.querySelector('[data-ing-search]')?.addEventListener('input', (e) => {
     ingQuery = e.target.value;
-    render(root);
-    const el = root.querySelector('[data-ing-search]');
-    el?.focus();
-    el?.setSelectionRange(el.value.length, el.value.length);
+    updateIngredientResults(root);
   });
 
-  root.querySelectorAll('[data-ing-add]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      const foodId = e.currentTarget.dataset.ingAdd;
-      const food = getState().foods.find((f) => f.id === foodId);
-      if (!food) return;
-      const draft = currentDraft(getState());
-      const check = canAddIngredientToRecipe(draft, food);
-      if (!check.ok) { toast(check.reason, 'error'); return; }
-      // quantité initiale cohérente avec l'aliment (comme dans l'éditeur de
-      // repas) : 1 unité pour un non fractionnable, la référence de catégorie sinon.
-      const previousSum = portionGramsOf(draft);
-      draft.items.push(newRecipeItem(foodId, initialQuantity(food), food.referenceState));
-      syncAutoBaseGrams(draft, previousSum);
-      render(root);
-    });
-  });
+  wireIngredientAddButtons(root);
 
   root.querySelectorAll('[data-ing-unit-toggle]').forEach((btn) => {
     btn.addEventListener('click', (e) => {

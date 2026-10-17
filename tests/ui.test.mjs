@@ -731,6 +731,32 @@ check('toast de confirmation', /Recette enregistrée/.test(document.getElementBy
 check('la recette apparaît dans la liste', /Riz aux légumes/.test($('#view').textContent));
 check('type et référence affichés', /Au poids/.test($('#view').textContent) && /800 g/.test($('#view').textContent));
 
+console.log('\n— Écran Recettes : recherche d’ingrédient, frappe caractère par caractère (régression « clipping »)');
+// Reproduit une VRAIE saisie clavier (un événement `input` par caractère,
+// contrairement à type()/change() qui posent la valeur finale en un seul
+// coup) : avant correctif, [data-ing-search] appelait render(root) — qui
+// reconstruit tout #view, y compris .drawer__panel — à chaque caractère,
+// rejouant son animation CSS d'entrée (slide-in) en boucle et faisant perdre
+// le focus/curseur du champ de recherche à chaque frappe.
+click($('[data-new]'));
+await wait();
+const panelBeforeTyping = $('.drawer__panel');
+const searchBeforeTyping = $('[data-ing-search]');
+searchBeforeTyping.focus();
+for (const ch of 'riz') {
+  searchBeforeTyping.value += ch;
+  searchBeforeTyping.dispatchEvent(new window.Event('input', { bubbles: true }));
+}
+check('le panneau du formulaire n’est PAS recréé à chaque frappe (pas de rejeu de l’animation d’entrée)',
+  $('.drawer__panel') === panelBeforeTyping);
+check('le champ de recherche n’est PAS recréé à chaque frappe (identité DOM stable)',
+  $('[data-ing-search]') === searchBeforeTyping);
+check('le focus reste sur le champ de recherche après plusieurs frappes', document.activeElement === searchBeforeTyping);
+check('les résultats sont bien filtrés par la saisie frappée caractère par caractère',
+  $$('[data-ing-add]').some((b) => /Riz/i.test(b.textContent)));
+click($('[data-form-cancel]'));
+await wait();
+
 console.log('\n— Écran Recettes : recette « portion », ingrédient non fractionnable en unité naturelle');
 click($('[data-new]'));
 await wait();
