@@ -471,6 +471,30 @@ function wireDrawerBody(root) {
   root.querySelector('[data-delete]')?.addEventListener('click', (e) => {
     const id = e.currentTarget.dataset.delete;
     const s = getState();
+    // Un aliment référencé dans une recette est un cas DIFFÉRENT d'un simple
+    // usage dans un repas/catalogue (ci-dessous) : la composition d'une
+    // recette est une donnée de référence réutilisée partout (macros,
+    // courses, batch, préparations déjà matérialisées via recipeSnapshot) —
+    // la supprimer silencieusement fausserait ces calculs durablement, sans
+    // qu'aucun écran ne le signale jamais. Bloqué, comme la suppression
+    // d'une recette l'est déjà quand une préparation en dépend (recipes.js).
+    const recipesUsing = s.recipes.filter((r) => r.items.some((it) => it.foodId === id));
+    if (recipesUsing.length) {
+      const names = recipesUsing.map((r) => `« ${r.name} »`).join(', ');
+      toast(`Impossible : cet aliment est utilisé dans ${recipesUsing.length > 1 ? 'les recettes' : 'la recette'} ${names}. Retire-le de ${recipesUsing.length > 1 ? 'leur composition' : 'sa composition'} avant de le supprimer.`, 'error');
+      return;
+    }
+    // Un aliment peut avoir déjà disparu d'une recette LIVE (retiré/remplacé
+    // depuis) tout en restant présent dans le recipeSnapshot figé d'une
+    // préparation déjà matérialisée (snapshot volontairement indépendant de
+    // la recette source, cf. preparationAsVirtualFood() ci-dessus) : même
+    // risque de macros silencieusement faussées pour cette préparation.
+    const prepsUsing = s.preparations.filter((p) => p.recipeSnapshot?.items?.some((it) => it.foodId === id));
+    if (prepsUsing.length) {
+      const names = prepsUsing.map((p) => `« ${p.label} »`).join(', ');
+      toast(`Impossible : cet aliment fait partie de la composition figée de ${prepsUsing.length > 1 ? 'préparations existantes' : 'la préparation'} ${names}. Supprime d’abord ${prepsUsing.length > 1 ? 'ces préparations' : 'cette préparation'} si tu veux retirer cet aliment.`, 'error');
+      return;
+    }
     const used =
       s.meals.some((m) => m.items.some((i) => i.foodId === id)) ||
       [...s.breakfasts, ...s.snacks].some((o) => o.items.some((i) => i.foodId === id));

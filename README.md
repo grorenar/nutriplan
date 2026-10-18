@@ -22,12 +22,14 @@ js/core/store.js          état applicatif, localStorage, export/import
 js/core/derive.js         batch cooking, liste de courses, budget, suggestions
 js/core/similarity.js     détection d'aliments similaires (avertissement uniquement)
 js/core/sync.js           Supabase : auth + envoi/récupération atomiques
-js/views/*.js             une vue par écran + l'éditeur de repas partagé
+js/views/*.js             une vue par écran (dont recipes.js, preparations.js) + l'éditeur de
+                          repas partagé (editor.js) + les dialogues de confirmation réutilisables
+                          (confirm-unsaved.js, confirm-similar.js)
 supabase/schema.sql       schéma PostgreSQL + RLS par compte + fonction transactionnelle
-tests/engine.test.mjs     moteur nutritionnel, batch, courses (aucune dépendance)
+tests/engine.test.mjs     moteur nutritionnel, batch, courses, recettes/préparations (aucune dépendance)
 tests/volume.test.mjs     analyse du volume d'un repas (aucune dépendance)
 tests/sync.test.mjs       schéma + transaction + RLS, sur un PostgreSQL local
-tests/autosync.test.mjs   synchronisation automatique (client Supabase simulé)
+tests/autosync.test.mjs   synchronisation automatique (client Supabase simulé, aucune dépendance)
 tests/ui.test.mjs         parcours complet de l'interface (jsdom)
 ```
 
@@ -44,22 +46,36 @@ foods[]            id, name, category, brand, kcal, protein, carbs, fat, fiber,
                    unitEntry, price, packageWeight, batchAllowed, shelfLifeDays,
                    requiresCooking, favorite,
                    cookingMethod, cookingTemp, cookingTime, prepTime, equipment, instructions
+recipes[]          id, name, kind(weight|portion), baseGrams, items[] (recette, cf. items[] ci-dessous),
+                   batchAllowed, shelfLifeDays, cookingMethod, cookingTemp, cookingTime, prepTime,
+                   equipment, instructions
+preparations[]     id, recipeId, label, preparedQuantity, createdAt, recipeSnapshot (copie figée
+                   de la recette au moment de la création — jamais mise à jour si la recette
+                   change ensuite), remainingAtReset (stock figé au dernier reset de cycle,
+                   null = jamais reseté), lastResetAt (fenêtre de comptage des pertes),
+                   losses[] ({id, qty, at} — jamais effacé, historique de « Jeter les restes »)
 settings           targets{thomas|julie}{day|breakfast|lunch|snack_afternoon|dinner|snack_evening}
                    tolerance, cycle{startWeekday,duration}, budget, batch{enabled,maxDays}, autoAdjust
-meals[]            id, dayIndex, mealType(lunch|dinner), name, sameComposition, items[]
+meals[]            id, dayIndex, mealType(lunch|dinner), name, nameAuto (true = `name` régénéré
+                   depuis la composition à chaque modification ; false = nom saisi, jamais écrasé),
+                   sameComposition, items[]
 breakfasts[]       id, name, sameComposition, uses{thomas,julie}, items[]
 snacks[]           id, name, sameComposition, targetSlot, items[],
                    uses{thomas:{afternoon,evening}, julie:{afternoon,evening}}
-items[]            id, foodId|null, free{name,quantity}|null, state,
+items[]            id, foodId|null, recipeId|null (référence directe à une recette, sans
+                   préparation), preparationId|null (utilisation ferme d'une préparation en stock,
+                   avec zeroWaste optionnel), free{name,quantity}|null, state,
                    qty{thomas,julie}, locked{thomas,julie}
 shopping.purchased {foodId: bool}        ← simple case "acheté", aucun stock
-batch.overrides    {"session:foodId": grammes préparés}
+batch.overrides    {"session:foodId": grammes préparés} ou {"session:recipe:recipeId": grammes}
+                   pour une recette préparée en batch (cf. §4, écran Batch cooking)
 ```
 
-Côté PostgreSQL, la même chose est normalisée dans `supabase/schema.sql`
-(`foods`, `targets`, `settings`, `meals`, `meal_items`, `breakfast_options`, `breakfast_items`,
-`snack_options`, `snack_items`, `shopping_items`, `batch_items`). Un ingrédient donne une ligne
-par personne (colonne `person`), conformément au schéma demandé.
+Côté PostgreSQL, la même chose est normalisée dans `supabase/schema.sql` — 15 tables au total :
+`foods`, `recipes`, `recipe_items`, `preparations`, `preparation_losses`, `targets`, `settings`,
+`meals`, `meal_items`, `breakfast_options`, `breakfast_items`, `snack_options`, `snack_items`,
+`shopping_items`, `batch_items` (liste authoritative : `TABLES` dans `js/core/sync.js`). Un
+ingrédient donne une ligne par personne (colonne `person`), conformément au schéma demandé.
 
 Toutes les valeurs nutritionnelles sont stockées **pour 100 g**, dans l'état de référence de
 l'aliment. Tous les calculs internes sont en grammes.
@@ -191,13 +207,15 @@ n'apparaît que dans l'éditeur de repas, jamais dans le planning.
 
 | Écran | Contenu |
 |---|---|
-| Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication, bouton « Optimiser le cycle » (suggestions uniquement) |
-| Aliments | banque complète, recherche, favoris, création/modification/suppression |
+| Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication (nom et `nameAuto` copiés ensemble), « Vider ce repas » (remet le repas à l'état vraiment vide, `nameAuto` repasse à `true`), bouton « Optimiser le cycle » (suggestions uniquement) |
+| Aliments | banque complète, recherche, favoris, création/modification/suppression — la suppression est bloquée si l'aliment est encore référencé dans une recette (composition live ou `recipeSnapshot` figé d'une préparation existante), avec un avertissement (non bloquant) s'il est seulement utilisé dans des repas/catalogues |
+| Recettes | composition à partir de la banque alimentaire, type `weight` (poids continu, échelle `baseGrams`) ou `portion` (unité indivisible), consignes de cuisson/conservation, `batchAllowed` ; la suppression est bloquée tant qu'une préparation existe pour cette recette, ou qu'elle est encore référencée directement (sans préparation) dans un repas ou un catalogue |
+| Préparations et distribution | matérialisation d'une recette en stock réel (quantité préparée, figée dans `recipeSnapshot`), répartition éditable vers les repas, mode zéro reste, jet total ou partiel du reliquat (historique des pertes jamais effacé), suppression définitive d'une préparation (avec avertissement si du stock reste, bloquée tant que des affectations existent) ; une préparation épuisée (stock à 0) est masquée de la liste active sans jamais être supprimée des données |
 | Petits-déjeuners | catalogue indépendant, sans jour ni date ; compteur d'utilisations **par personne**, avec contrôle de couverture du cycle |
 | Collations | **catalogue unique** : une collation a une composition unique, 16 h et Soir ne sont que des affectations de consommation (compteurs par personne et par créneau) |
-| Batch cooking | classement fondé sur deux propriétés explicites de l'aliment — `batchAllowed` puis `requiresCooking`, jamais sur l'état de référence — et plan opératoire par session : **à préparer en batch** (méthode, température, durée, rendement, quantités crues et cuites, consignes), **à cuire le jour même**, **à assembler le jour même**, puis le détail de chaque gamelle personne par personne |
+| Batch cooking | classement fondé sur deux propriétés explicites de l'aliment — `batchAllowed` puis `requiresCooking`, jamais sur l'état de référence — et plan opératoire par session : **à préparer en batch** (méthode, température, durée, rendement, quantités crues et cuites, consignes), **recettes à préparer en batch** (détail des ingrédients à l'échelle de la quantité réellement préparée, répartition prévue vers les gamelles de la session), **à cuire le jour même**, **à assembler le jour même**, puis le détail de chaque gamelle personne par personne |
 | Courses | tout le cycle (déjeuners, dîners et options de catalogue utilisées) : besoin vs quantité à acheter, surplus, prix, cases à cocher, budget ; les aliments sans prix sont listés par leur nom et cliquables pour ouvrir leur fiche |
-| Paramètres | objectifs, cycle, budget, batch, export/import JSON, réinitialisation du cycle, compte |
+| Paramètres | objectifs, cycle, budget, batch, export/import JSON, sauvegarde locale automatique et restauration, réinitialisation du cycle, compte |
 
 Le bouton **Imprimer** (en haut à droite) permet de choisir les sections : planning, batch,
 courses, détails nutritionnels, catalogues.
@@ -331,8 +349,9 @@ possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
 ## 8. Tests
 
 ```bash
-node tests/engine.test.mjs    # moteur, batch, courses, unités, cru/cuit — sans dépendance
+node tests/engine.test.mjs    # moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
 node tests/volume.test.mjs    # analyse du volume d'un repas — sans dépendance
+node tests/autosync.test.mjs  # synchronisation automatique, client Supabase simulé — sans dépendance
 npm i jsdom && node tests/ui.test.mjs   # parcours réel de l'interface
 ```
 
@@ -347,8 +366,14 @@ node tests/sync.test.mjs
 
 ## 9. Sauvegarde
 
-Paramètres → Données → **Exporter en JSON** produit un fichier complet (banque, objectifs,
-planning, catalogues, paramètres). **Importer un JSON** le restaure intégralement.
+Paramètres → Données → **Exporter en JSON** produit un fichier complet (banque, recettes,
+préparations, objectifs, planning, catalogues, paramètres). **Importer un JSON** le restaure
+intégralement, après confirmation (l'import remplace l'état courant) et un rapport des doublons
+potentiels détectés (même mécanisme que la création d'un aliment, §7).
+
+**Sauvegarde locale automatique.** Avant que toute récupération depuis le cloud (§5.3) ne remplace
+l'état local, l'application en conserve une copie dans le `localStorage` de l'appareil. Paramètres
+→ Compte → « Restaurer la sauvegarde locale » revient à cet état précédent, après confirmation.
 
 ## 10. Données livrées
 

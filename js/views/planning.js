@@ -136,7 +136,14 @@ function wire(root) {
       if (!confirm('Vider ce repas ?')) return;
       update((s) => {
         const m = s.meals.find((x) => x.id === id);
-        if (m) { m.items = []; m.name = ''; }
+        // Vider le repas le ramène à un état vraiment vide — équivalent à
+        // newMeal() — donc nameAuto repasse à true : un nom manuellement tapé
+        // puis explicitement vidé DANS L'ÉDITEUR reste figé (règle existante,
+        // data-name), mais « Vider ce repas » depuis le planning est un reset
+        // complet, pas un simple effacement du champ nom ; sans ce repli, un
+        // repas qui avait un nom manuel resterait bloqué sans auto-nommage
+        // pour toujours, même une fois recomposé.
+        if (m) { m.items = []; m.name = ''; m.nameAuto = true; }
       });
     })
   );
@@ -177,6 +184,13 @@ function wire(root) {
         const dst = s.meals.find((m) => m.id === tid);
         if (!dst) continue;
         dst.name = src.name;
+        // nameAuto doit suivre le nom : un nom tapé à la main (nameAuto:false)
+        // copié tel quel ne doit jamais être regénéré au prochain changement
+        // de composition du repas de destination ; un nom auto-généré reste
+        // libre d'être recalculé sur SA PROPRE composition (déjà le cas, une
+        // fois copiée) dès la prochaine modification de dst, sans jamais
+        // dépendre de la source après coup.
+        dst.nameAuto = src.nameAuto;
         dst.sameComposition = src.sameComposition;
         dst.items = src.items.map((it) => ({
           ...JSON.parse(JSON.stringify(it)),

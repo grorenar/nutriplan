@@ -520,6 +520,17 @@ function wireDrawerBody(root, s) {
       toast('Impossible : des préparations existent encore pour cette recette.', 'error');
       return;
     }
+    // Même garde pour la référence « molle » (recipeId SANS preparationId,
+    // calcul inverse — cf. newRecipeMealItem) : une recette ajoutée directement
+    // à un repas ou un catalogue, sans jamais passer par une préparation,
+    // laisserait sinon une référence orpheline silencieuse une fois supprimée.
+    const directUses = [];
+    for (const m of st.meals) if (m.items.some((it) => it.recipeId === id && !it.preparationId)) directUses.push(m.name || 'un repas');
+    for (const o of [...st.breakfasts, ...st.snacks]) if (o.items.some((it) => it.recipeId === id && !it.preparationId)) directUses.push(o.name || 'un catalogue');
+    if (directUses.length) {
+      toast(`Impossible : cette recette est encore utilisée directement dans ${directUses.length > 1 ? `${directUses.length} repas/catalogues` : directUses[0]}. Retire-la de là avant de la supprimer.`, 'error');
+      return;
+    }
     if (!confirm('Supprimer cette recette ?')) return;
     update((s2) => { s2.recipes = s2.recipes.filter((x) => x.id !== id); });
     resetForm();

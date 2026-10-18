@@ -1816,6 +1816,161 @@ check('bloc de détail des ingrédients présent pour cette recette', !!batchDet
 check('ingrédient mis à l’échelle affiché (500 g, 500/1000 de la référence)', /500 g.*Steak haché|Steak haché.*500 g/.test(batchDetails.textContent.replace(/\s+/g, ' ')));
 check('répartition prévue vers la gamelle correspondante affichée', /Répartition prévue/.test($('#view').textContent));
 
+console.log('\n— Chantier P0 : suppression d’un aliment référencé dans une recette (composition live)');
+click($('[data-view="foods"]'));
+await wait();
+click($('[data-new]'));
+await wait();
+type($('[data-f="name"]'), 'Pomme P0 Test');
+click($('[data-save]'));
+await wait();
+const pommeP0 = store.getState().foods.find((f) => f.name === 'Pomme P0 Test');
+let recetteP0Id;
+store.update((s) => {
+  const r = store.newRecipe('Compote P0 Test', 'weight');
+  r.items = [store.newRecipeItem(pommeP0.id, 500, 'cru')];
+  r.baseGrams = 500;
+  s.recipes.push(r);
+  recetteP0Id = r.id;
+});
+await wait();
+const pommeRow = () => $$('tr').find((tr) => tr.textContent.includes('Pomme P0 Test'));
+click(pommeRow().querySelector('[data-edit]'));
+await wait();
+click($('[data-delete]'));
+await wait();
+// contenu du DERNIER toast (pas un delta de compte : sur une suite aussi
+// longue, les timers d'expiration des toasts précédents peuvent retirer des
+// éléments pendant l'exécution, rendant un delta de children.length instable).
+const lastToastText = () => [...document.querySelectorAll('#toasts .toast')].at(-1)?.textContent || '';
+check('suppression bloquée : un toast explicite nomme la recette qui l’utilise', /Compote P0 Test/.test(lastToastText()));
+check('l’aliment existe toujours', store.getState().foods.some((f) => f.id === pommeP0.id));
+
+console.log('\n— Chantier P0 : suppression d’un aliment présent UNIQUEMENT dans le recipeSnapshot figé d’une préparation');
+let farineP0, prepP0Id;
+store.update((s) => {
+  const farine = {
+    id: 'food_farine_p0_test', name: 'Farine P0 Test', category: 'feculent', referenceState: 'cru',
+    kcal: 364, protein: 10, carbs: 76, fat: 1, fiber: 3, cookedFactor: 1,
+    brand: '', unitName: '', gramsPerUnit: 0, fractionable: true, price: null, packageWeight: null,
+    batchAllowed: false, favorite: false, lastUsed: null, shelfLifeDays: null, requiresCooking: false,
+    cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+  };
+  s.foods.push(farine);
+  farineP0 = farine;
+  const r = store.newRecipe('Pain P0 Test', 'weight');
+  r.items = [store.newRecipeItem(farine.id, 300, 'cru')];
+  r.baseGrams = 300;
+  s.recipes.push(r);
+  const prep = store.newPreparation(r, 300);
+  prepP0Id = prep.id;
+  s.preparations.push(prep);
+  // la recette LIVE évolue ensuite (la farine n'y figure plus) — seul le
+  // recipeSnapshot de la préparation, volontairement figé, la référence encore.
+  r.items = [store.newRecipeItem(pommeP0.id, 300, 'cru')];
+});
+await wait();
+check('la recette live ne référence plus la farine (remplacée)', !store.getState().recipes.find((r) => r.name === 'Pain P0 Test').items.some((it) => it.foodId === farineP0.id));
+check('le recipeSnapshot de la préparation la référence toujours (figé à la création)', store.getState().preparations.find((p) => p.id === prepP0Id).recipeSnapshot.items.some((it) => it.foodId === farineP0.id));
+click($('[data-view="foods"]'));
+await wait();
+const farineRow = () => $$('tr').find((tr) => tr.textContent.includes('Farine P0 Test'));
+click(farineRow().querySelector('[data-edit]'));
+await wait();
+click($('[data-delete]'));
+await wait();
+check('suppression bloquée par le recipeSnapshot figé d’une préparation (pas seulement les recettes live)',
+  /Pain P0 Test/.test(lastToastText()));
+check('l’aliment existe toujours', store.getState().foods.some((f) => f.id === farineP0.id));
+
+console.log('\n— Chantier P0 : suppression d’une recette référencée directement (sans préparation) dans un repas');
+let recetteP0bId, mealP0Id;
+store.update((s) => {
+  const r = store.newRecipe('Salade P0 Test', 'weight');
+  r.items = [store.newRecipeItem(pommeP0.id, 200, 'cru')];
+  r.baseGrams = 200;
+  s.recipes.push(r);
+  recetteP0bId = r.id;
+  const meal = s.meals.find((m) => m.dayIndex === 0 && m.mealType === 'dinner');
+  meal.items.push({ ...store.newRecipeMealItem(r.id, 200), qty: { thomas: 200, julie: 0 } });
+  mealP0Id = meal.id;
+});
+await wait();
+click($('[data-view="recipes"]'));
+await wait();
+const saladeRow = () => $$('tr').find((tr) => tr.textContent.includes('Salade P0 Test'));
+click(saladeRow().querySelector('[data-edit]'));
+await wait();
+click($('[data-delete]'));
+await wait();
+check('suppression bloquée : référence directe (sans préparation) dans un repas détectée',
+  /encore utilisée directement/.test(lastToastText()));
+check('la recette existe toujours', store.getState().recipes.some((r) => r.id === recetteP0bId));
+// on retire la référence, puis la suppression doit réussir
+store.update((s) => {
+  const meal = s.meals.find((m) => m.id === mealP0Id);
+  meal.items = meal.items.filter((it) => it.recipeId !== recetteP0bId);
+});
+await wait();
+click(saladeRow().querySelector('[data-edit]'));
+await wait();
+click($('[data-delete]')); // globalThis.confirm est mocké à `() => true` en tête de fichier
+await wait();
+check('une fois la référence retirée, la suppression de la recette réussit', !store.getState().recipes.some((r) => r.id === recetteP0bId));
+
+console.log('\n— Chantier P0 : duplication d’un repas — nameAuto suit le nom copié');
+let srcManualId, dstEmptyId, srcAutoId, dstEmpty2Id;
+store.update((s) => {
+  const r = store.newRecipe('Risotto P0 Dup', 'weight');
+  r.items = [store.newRecipeItem(pommeP0.id, 300, 'cru')];
+  r.baseGrams = 300;
+  s.recipes.push(r);
+
+  const empties = s.meals.filter((m) => m.items.length === 0);
+  const srcManual = empties[0];
+  srcManual.items = [{ ...store.newRecipeMealItem(r.id, 300), qty: { thomas: 300, julie: 0 } }];
+  srcManual.name = 'Déjeuner de Thomas (nom manuel)';
+  srcManual.nameAuto = false;
+  srcManualId = srcManual.id;
+  dstEmptyId = empties[1].id;
+
+  const srcAuto = empties[2];
+  srcAuto.items = [{ ...store.newRecipeMealItem(r.id, 300), qty: { thomas: 300, julie: 0 } }];
+  srcAuto.name = 'Risotto P0 Dup';
+  srcAuto.nameAuto = true;
+  srcAutoId = srcAuto.id;
+  dstEmpty2Id = empties[3].id;
+});
+await wait();
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-dup]').find((b) => b.dataset.dup === srcManualId));
+await wait();
+click($$('[data-target]').find((cb) => cb.dataset.target === dstEmptyId));
+await wait();
+click($('[data-dup-confirm]'));
+await wait();
+const dstManual = () => store.getState().meals.find((m) => m.id === dstEmptyId);
+check('un nom manuel (nameAuto:false) copié reste nameAuto:false dans la destination', dstManual().nameAuto === false);
+check('le nom copié est identique à la source', dstManual().name === 'Déjeuner de Thomas (nom manuel)');
+
+click($$('[data-dup]').find((b) => b.dataset.dup === srcAutoId));
+await wait();
+click($$('[data-target]').find((cb) => cb.dataset.target === dstEmpty2Id));
+await wait();
+click($('[data-dup-confirm]'));
+await wait();
+const dstAuto = () => store.getState().meals.find((m) => m.id === dstEmpty2Id);
+check('un nom auto-généré (nameAuto:true) copié reste nameAuto:true dans la destination (régénérable sur SA composition)', dstAuto().nameAuto === true);
+
+console.log('\n— Chantier P0 : « Vider ce repas » réinitialise nameAuto à true (équivalent newMeal())');
+click($$('[data-clear]').find((b) => b.dataset.clear === dstEmptyId));
+await wait();
+const dstCleared = () => store.getState().meals.find((m) => m.id === dstEmptyId);
+check('repas vidé : items vides', dstCleared().items.length === 0);
+check('repas vidé : nom vide', dstCleared().name === '');
+check('repas vidé : nameAuto repasse à true (un nom manuel ne reste jamais bloqué après un vidage complet)', dstCleared().nameAuto === true);
+
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));
 console.log(`${passed} vérifications réussies, ${failures.length} échec(s).`);
