@@ -124,7 +124,7 @@ function mutate(fn, { adjust = true, force = false, pinned = [] } = {}) {
     // est encore piloté automatiquement (nameAuto) : un nom saisi ou
     // volontairement vidé par l'utilisateur n'est jamais régénéré.
     if (ctx.kind === 'meal' && e.nameAuto) {
-      e.name = autoMealName(e.items, foodsByIdFrom(s));
+      e.name = autoMealName(e.items, foodsByIdFrom(s), recipesByIdFrom(s), preparationsByIdFrom(s));
     }
   });
   renderEditor();
@@ -639,7 +639,16 @@ function renderPicker(state, entity, recipesMap, preparationsMap) {
   ${renderRecipesPanel(state, recipesMap, preparationsMap)}`;
 }
 
-/** Recettes/préparations — `kind:'weight'` et `kind:'portion'` toutes deux disponibles. */
+/**
+ * Recettes/préparations — `kind:'weight'` et `kind:'portion'` toutes deux disponibles.
+ * Priorité d'affichage demandée : d'abord les recettes dont une préparation a
+ * encore du stock (disponible > 0), présentées comme des cartes d'action
+ * directe (+ Utiliser / Répartir en zéro reste) ; les autres recettes — sans
+ * préparation du tout, ou dont toutes les préparations sont épuisées — sont
+ * reléguées dans un menu déroulant compact plutôt qu'une ligne par recette,
+ * pour ne pas noyer les préparations réellement utilisables sous une liste
+ * de cartes à « Disponible : 0 g ».
+ */
 function renderRecipesPanel(state, recipesMap, preparationsMap) {
   const recipes = Object.values(recipesMap);
   if (!recipes.length) {
@@ -648,45 +657,64 @@ function renderRecipesPanel(state, recipesMap, preparationsMap) {
       <small>Aucune recette créée pour l'instant. Crée-en une dans l'écran Recettes.</small>
     </div>`;
   }
-  const recipeRows = recipes
-    .map((r) => `<div class="item" style="padding:6px 0">
-        <div class="item__main">
-          <div class="item__name">${esc(r.name)} <span class="pill">${r.kind === 'portion' ? 'portion' : 'au poids'}</span></div>
-          <div class="item__meta">${r.kind === 'portion' ? `1 portion = ${num(portionGramsOf(r), 0)} g` : `${num(r.baseGrams, 0)} g de référence`}</div>
-        </div>
-        <div class="item__tools">
-          <button class="btn btn--sm" data-add-recipe="${r.id}">+ Recette (sans préparation)</button>
-        </div>
-      </div>`)
-    .join('');
 
   const preparations = Object.values(preparationsMap);
-  const prepRows = preparations
-    .map((p) => {
-      const disponible = preparationAvailable(state, p);
-      const recipeName = recipesMap[p.recipeId]?.name || '?';
-      const slots = zeroWasteSlotsFor(state, p.id);
-      return `<div class="item" style="padding:6px 0">
-        <div class="item__main">
-          <div class="item__name">${esc(p.label)} <span class="tag">${esc(recipeName)}</span></div>
-          <div class="item__meta">${stockLabel(p, disponible)}</div>
-          ${slots.length ? `<small>${slots.length} créneau(x) en mode zéro reste pour cette préparation</small>` : ''}
-        </div>
-        <div class="item__tools">
-          <button class="btn btn--sm" data-use-preparation="${p.id}" ${disponible <= 0 ? 'disabled' : ''}>+ Utiliser</button>
-          <button class="btn btn--sm" data-zero-waste-apply="${p.id}" ${slots.length < 2 ? 'disabled' : ''}
-                  title="${slots.length < 2 ? 'Coche « mode zéro reste » sur au moins 2 créneaux (repas) référençant cette préparation' : ''}">
-            Répartir en zéro reste
-          </button>
-        </div>
-      </div>`;
-    })
+  const availableByRecipe = {};
+  for (const p of preparations) {
+    const disponible = preparationAvailable(state, p);
+    const slots = zeroWasteSlotsFor(state, p.id);
+    // Une préparation reste présentée comme « utilisable », même à disponible
+    // ≤ 0, tant qu'elle a des créneaux marqués « mode zéro reste » (P4/étape 8) :
+    // ce mode existe justement pour les cas où la somme naïve des affectations
+    // atteint ou dépasse le disponible — la masquer la rendrait inaccessible
+    // au moment précis où on a besoin de cliquer « Répartir en zéro reste ».
+    if (disponible > 0 || slots.length > 0) (availableByRecipe[p.recipeId] ||= []).push({ p, disponible, slots });
+  }
+
+  const recipesWithStock = recipes.filter((r) => availableByRecipe[r.id]?.length);
+  const recipesWithoutStock = recipes.filter((r) => !availableByRecipe[r.id]?.length);
+
+  const prepRows = recipesWithStock
+    .map((r) => availableByRecipe[r.id]
+      .map(({ p, disponible, slots }) => {
+        return `<div class="item" style="padding:6px 0">
+          <div class="item__main">
+            <div class="item__name">${esc(p.label)} <span class="tag">${esc(r.name)}</span></div>
+            <div class="item__meta">${stockLabel(p, disponible)}</div>
+            ${slots.length ? `<small>${slots.length} créneau(x) en mode zéro reste pour cette préparation</small>` : ''}
+          </div>
+          <div class="item__tools">
+            <button class="btn btn--sm" data-use-preparation="${p.id}" ${disponible <= 0 ? 'disabled' : ''}>+ Utiliser</button>
+            <button class="btn btn--sm" data-zero-waste-apply="${p.id}" ${slots.length < 2 ? 'disabled' : ''}
+                    title="${slots.length < 2 ? 'Coche « mode zéro reste » sur au moins 2 créneaux (repas) référençant cette préparation' : ''}">
+              Répartir en zéro reste
+            </button>
+            <button class="btn btn--sm btn--ghost" data-add-recipe="${r.id}"
+                    title="Ajoute la recette directement, sans puiser dans la préparation en stock">+ Recette (sans préparation)</button>
+          </div>
+        </div>`;
+      })
+      .join(''))
     .join('');
+
+  const dropdown = recipesWithoutStock.length
+    ? `<div class="row" style="margin-top:8px;align-items:center;gap:8px">
+        <select data-add-recipe-select style="flex:1;min-width:180px">
+          ${recipesWithoutStock
+            .map((r) => `<option value="${r.id}">${esc(r.name)} — ${r.kind === 'portion' ? `1 portion = ${num(portionGramsOf(r), 0)} g` : `${num(r.baseGrams, 0)} g de référence`}</option>`)
+            .join('')}
+        </select>
+        <button class="btn btn--sm" data-add-recipe-from-select>+ Ajouter</button>
+      </div>`
+    : '';
 
   return `<div class="card" style="margin-top:16px">
     <div class="card__head"><h3>Recettes & préparations</h3></div>
-    ${recipeRows}
-    ${preparations.length ? `<div style="margin-top:8px">${prepRows}</div>` : '<small>Aucune préparation matérialisée pour l’instant.</small>'}
+    ${recipesWithStock.length ? prepRows : '<small>Aucune préparation disponible pour l’instant.</small>'}
+    ${recipesWithoutStock.length ? `<div style="margin-top:12px">
+        <small style="display:block;margin-bottom:6px">Recettes sans préparation disponible :</small>
+        ${dropdown}
+      </div>` : ''}
     <small style="display:block;margin-top:10px">Crée une nouvelle préparation depuis l'écran « Préparations » (production, stock et répartition y sont désormais centralisés).</small>
   </div>`;
 }
@@ -711,6 +739,24 @@ function onAddFood(e) {
     en.items.push(item);
     const f = s.foods.find((x) => x.id === foodId);
     if (f) f.lastUsed = new Date().toISOString();
+  });
+}
+
+/** Ajoute une recette au repas en cours sans passer par une préparation en stock. */
+function addRecipeToMeal(recipeId) {
+  const recipe = getState().recipes.find((r) => r.id === recipeId);
+  if (!recipe) return;
+  // quantité initiale = 1 portion pour une recette portion, la référence pour une recette au poids
+  const qty = recipe.kind === 'portion'
+    ? portionGramsOf(recipe)
+    : Math.max(1, Math.round(Number(recipe.baseGrams) || 0));
+  mutate((en) => {
+    const it = newRecipeMealItem(recipeId, qty);
+    it.section = addSection;
+    if (!en.sameComposition && addFor !== 'both') {
+      for (const p of PERSONS) it.qty[p] = p === addFor ? qty : 0;
+    }
+    en.items.push(it);
   });
 }
 
@@ -927,23 +973,12 @@ function wire(root, entity) {
   });
 
   root.querySelectorAll('[data-add-recipe]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      const recipeId = e.currentTarget.dataset.addRecipe;
-      const recipe = getState().recipes.find((r) => r.id === recipeId);
-      if (!recipe) return;
-      // quantité initiale = 1 portion pour une recette portion, la référence pour une recette au poids
-      const qty = recipe.kind === 'portion'
-        ? portionGramsOf(recipe)
-        : Math.max(1, Math.round(Number(recipe.baseGrams) || 0));
-      mutate((en) => {
-        const it = newRecipeMealItem(recipeId, qty);
-        it.section = addSection;
-        if (!en.sameComposition && addFor !== 'both') {
-          for (const p of PERSONS) it.qty[p] = p === addFor ? qty : 0;
-        }
-        en.items.push(it);
-      });
-    });
+    btn.addEventListener('click', (e) => addRecipeToMeal(e.currentTarget.dataset.addRecipe));
+  });
+
+  root.querySelector('[data-add-recipe-from-select]')?.addEventListener('click', () => {
+    const recipeId = root.querySelector('[data-add-recipe-select]')?.value;
+    if (recipeId) addRecipeToMeal(recipeId);
   });
 
   root.querySelectorAll('[data-use-preparation]').forEach((btn) => {

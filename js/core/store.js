@@ -481,7 +481,7 @@ const AUTO_NAME_GROUPS = ['feculent', 'proteine', 'legume'];
  * est simplement omis (aucun placeholder). Si aucun des trois groupes n'est
  * identifiable, retourne une chaîne vide.
  */
-export function autoMealName(items, byId) {
+export function autoMealName(items, byId, recipesById = {}, preparationsById = {}) {
   const totals = new Map(); // foodId -> { food, qty }
   for (const it of items) {
     if (!it.foodId) continue;
@@ -501,7 +501,26 @@ export function autoMealName(items, byId) {
     }
     if (best) parts.push(best.food.name);
   }
-  return parts.join(' - ');
+  if (parts.length) return parts.join(' - ');
+
+  // Repli de dernier recours, jamais prioritaire sur la composition ci-dessus
+  // (qui n'aboutit à rien ici, faute de féculent/protéine/légume identifiable) :
+  // si une recette ou une préparation est présente dans le repas, son nom sert
+  // de nom automatique — mieux qu'un repas "Sans nom" quand une seule recette
+  // en fait tout le contenu.
+  const recipeTotals = new Map(); // nom de recette -> qty cumulée
+  for (const it of items) {
+    const recipeId = it.recipeId || preparationsById[it.preparationId]?.recipeId;
+    const name = recipesById[recipeId]?.name;
+    if (!name) continue;
+    const qty = (Number(it.qty?.thomas) || 0) + (Number(it.qty?.julie) || 0);
+    recipeTotals.set(name, (recipeTotals.get(name) || 0) + qty);
+  }
+  let bestName = '', bestQty = -1;
+  for (const [name, qty] of recipeTotals) {
+    if (qty > bestQty) { bestName = name; bestQty = qty; }
+  }
+  return bestName;
 }
 
 /**

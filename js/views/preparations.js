@@ -35,6 +35,7 @@ let creating = null;    // { recipeId, qty } — P1.A, création depuis une rece
 let discardConfirm = null; // { preparationId } — jet de LA TOTALITÉ du disponible, un seul dialogue (2 clics)
 let discarding = null;  // { preparationId, qty } — jet d'une quantité PARTIELLE, flux distinct et volontairement séparé
 let exhaustedOpen = false; // la section "préparations épuisées" (disponible = 0) est-elle dépliée ?
+let deletePrep = null; // { preparationId } — suppression DÉFINITIVE de la préparation elle-même
 const assignmentsOpen = new Set(); // ids de préparation dont la liste d'affectations est dépliée
 
 export function render(root) {
@@ -61,6 +62,7 @@ export function render(root) {
     ${creating ? createPanel(s) : ''}
     ${discardConfirm ? discardConfirmModal(s) : ''}
     ${discarding ? discardPanel(s) : ''}
+    ${deletePrep ? deletePrepModal(s) : ''}
     ${wizard ? distributeWizard(s, recipesMap) : ''}
     ${quickUse ? quickUseCard(s, recipesMap) : ''}
     ${
@@ -129,6 +131,8 @@ function prepCard(p, s, recipesMap) {
       <button class="btn btn--sm btn--danger" data-open-discard-confirm="${p.id}" ${epuisee ? 'disabled' : ''}>Jeter les restes</button>
       <button class="btn btn--sm btn--ghost" data-open-discard-partial="${p.id}" ${epuisee ? 'disabled' : ''}>Jeter une quantité partielle…</button>
       ${assignments.length ? `<button class="btn btn--sm btn--ghost" data-toggle-assignments="${p.id}">${open ? 'Masquer' : 'Voir'} les affectations (${assignments.length})</button>` : ''}
+      <button class="btn btn--sm btn--ghost" data-open-delete-prep="${p.id}"
+        title="${assignments.length ? 'Retire d’abord ses affectations (ci-dessus) pour pouvoir la supprimer.' : ''}">Supprimer la préparation</button>
     </div>
     ${open ? assignmentsSection(p, assignments) : ''}
   </div>`;
@@ -258,6 +262,36 @@ function discardConfirmModal(s) {
       <div class="row" style="margin-top:14px;justify-content:flex-end">
         <button class="btn" data-discard-confirm-cancel>Annuler</button>
         <button class="btn btn--danger" data-discard-confirm-ok>Confirmer le jet</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/**
+ * Suppression DÉFINITIVE d'une préparation — contrairement à « Jeter les
+ * restes » (qui trace une perte mais garde la préparation), ceci retire la
+ * ligne elle-même. Seule façon de lever le blocage « impossible de
+ * supprimer une recette » (recipes.js, restriction verrouillée : une
+ * recette avec des préparations existantes n'est jamais supprimée
+ * silencieusement) une fois la préparation réellement terminée. N'affiche
+ * cet avertissement que s'il reste du stock à perdre — une préparation déjà
+ * à 0 n'a rien de plus à signaler.
+ */
+function deletePrepModal(s) {
+  const p = s.preparations.find((x) => x.id === deletePrep.preparationId);
+  if (!p) return '';
+  const disponible = preparationAvailable(s, p);
+  const hasStock = disponible > 1e-6;
+  return `<div class="modal" data-delete-prep-backdrop role="dialog" aria-modal="true" aria-label="Supprimer la préparation ?">
+    <div class="modal__panel">
+      <h3 style="margin-bottom:8px">Supprimer la préparation ?</h3>
+      <p>
+        ${hasStock ? `« ${esc(p.label)} » a encore <strong>${unitLabelFor(p, disponible)}</strong> disponibles : ils seront perdus avec la préparation. ` : `« ${esc(p.label)} » va être supprimée. `}
+        Cette action est irréversible.
+      </p>
+      <div class="row" style="margin-top:14px;justify-content:flex-end">
+        <button class="btn" data-delete-prep-cancel>Annuler</button>
+        <button class="btn btn--danger" data-delete-prep-ok>Confirmer la suppression</button>
       </div>
     </div>
   </div>`;
@@ -485,7 +519,10 @@ function wire(root, s) {
     });
   });
 
-  root.querySelector('[data-wizard-cancel]')?.addEventListener('click', () => { wizard = null; render(root); });
+  // deux boutons portent ce même attribut (Fermer en en-tête, Annuler en
+  // pied de panneau) : querySelector() seul n'aurait câblé que le premier,
+  // laissant "Annuler" totalement inerte — d'où le bug rapporté.
+  root.querySelectorAll('[data-wizard-cancel]').forEach((btn) => btn.addEventListener('click', () => { wizard = null; render(root); }));
   root.querySelector('[data-wizard-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.wizardBackdrop !== undefined) { wizard = null; render(root); }
   });
@@ -571,7 +608,9 @@ function wire(root, s) {
     render(root);
   });
   const closeCreate = () => { creating = null; render(root); };
-  root.querySelector('[data-create-cancel]')?.addEventListener('click', closeCreate);
+  // même cause que ci-dessus : Fermer (en-tête) ET Annuler (pied) partagent
+  // cet attribut — les deux doivent être câblés.
+  root.querySelectorAll('[data-create-cancel]').forEach((btn) => btn.addEventListener('click', closeCreate));
   root.querySelector('[data-create-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.createBackdrop !== undefined) closeCreate();
   });
@@ -647,7 +686,8 @@ function wire(root, s) {
     });
   });
   const closeDiscard = () => { discarding = null; render(root); };
-  root.querySelector('[data-discard-cancel]')?.addEventListener('click', closeDiscard);
+  // même cause : Fermer (en-tête) ET Annuler (pied) partagent cet attribut.
+  root.querySelectorAll('[data-discard-cancel]').forEach((btn) => btn.addEventListener('click', closeDiscard));
   root.querySelector('[data-discard-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.discardBackdrop !== undefined) closeDiscard();
   });
@@ -680,6 +720,50 @@ function wire(root, s) {
   // --- Section repliée des préparations épuisées
   root.querySelector('[data-toggle-exhausted]')?.addEventListener('click', () => {
     exhaustedOpen = !exhaustedOpen;
+    render(root);
+  });
+
+  // --- Supprimer la préparation (définitif, distinct de « Jeter les restes »)
+  root.querySelectorAll('[data-open-delete-prep]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.openDeletePrep;
+      const st = getState();
+      const p = st.preparations.find((x) => x.id === id);
+      if (!p) return;
+      // des affectations existantes ne doivent jamais disparaître en silence
+      // avec la préparation : on bloque, comme le fait déjà la suppression
+      // d'une recette ayant des préparations existantes.
+      const assignments = preparationAssignments(st, id, st.settings.cycle.startWeekday);
+      if (assignments.length) {
+        toast('Impossible : des affectations existent encore pour cette préparation. Retire-les d’abord (« Voir les affectations »).', 'error');
+        return;
+      }
+      deletePrep = { preparationId: id };
+      render(root);
+    });
+  });
+  const closeDeletePrep = () => { deletePrep = null; render(root); };
+  root.querySelector('[data-delete-prep-cancel]')?.addEventListener('click', closeDeletePrep);
+  root.querySelector('[data-delete-prep-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.deletePrepBackdrop !== undefined) closeDeletePrep();
+  });
+  root.querySelector('[data-delete-prep-ok]')?.addEventListener('click', () => {
+    const st0 = getState();
+    const p0 = st0.preparations.find((x) => x.id === deletePrep.preparationId);
+    if (!p0) { deletePrep = null; render(root); return; }
+    // revérifié ICI, pas seulement à l'ouverture : une affectation a pu être
+    // ajoutée entre-temps (autre action, synchronisation) — jamais de
+    // suppression qui orphelinerait un item de repas.
+    const assignments = preparationAssignments(st0, p0.id, st0.settings.cycle.startWeekday);
+    if (assignments.length) {
+      toast('Impossible : des affectations existent encore pour cette préparation.', 'error');
+      deletePrep = null;
+      render(root);
+      return;
+    }
+    update((s2) => { s2.preparations = s2.preparations.filter((x) => x.id !== p0.id); });
+    toast('Préparation supprimée');
+    deletePrep = null;
     render(root);
   });
 

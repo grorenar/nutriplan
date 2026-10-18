@@ -581,9 +581,14 @@ click($('[data-view="planning"]'));
 await wait();
 click($$('[data-edit]')[2]); // encore un créneau vide, distinct des deux précédents
 await wait();
-check('le panneau "Recettes & préparations" liste la recette créée',
+check('le panneau "Recettes & préparations" liste la recette créée (sans préparation : menu déroulant)',
   /Chili con carne/.test($('#drawer .drawer__body').textContent));
-click($('#drawer [data-add-recipe]'));
+const chiliSelect = $('#drawer [data-add-recipe-select]');
+check('recette sans aucune préparation existante : proposée dans le menu déroulant, pas en ligne directe', !!chiliSelect);
+const chiliOpt = [...chiliSelect.options].find((o) => /Chili con carne/.test(o.textContent));
+chiliSelect.value = chiliOpt.value;
+chiliSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+click($('#drawer [data-add-recipe-from-select]'));
 await wait();
 check('un item "recette" (référence molle, sans préparation) est ajouté',
   /recette/.test($$('#drawer .item').find((el) => /Chili con carne/.test(el.textContent))?.textContent || ''));
@@ -909,18 +914,21 @@ await wait();
 const autoBox = $('#drawer [data-auto]');
 if (autoBox.checked) { autoBox.checked = false; autoBox.dispatchEvent(new window.Event('change', { bubbles: true })); }
 await wait();
-const addPortionRecipeBtn = () => $$('#drawer [data-add-recipe]').find((b) =>
-  b.closest('.item').textContent.includes('Toast poulet St Môret'));
-check('la recette portion apparaît dans le panneau "Recettes & préparations"', !!addPortionRecipeBtn());
-click(addPortionRecipeBtn());
+// recette sans aucune préparation existante : proposée via le menu déroulant (item C)
+const portionRecipeSelect = $('#drawer [data-add-recipe-select]');
+const portionOpt = [...portionRecipeSelect.options].find((o) => /Toast poulet St Môret/.test(o.textContent));
+check('la recette portion apparaît dans le menu déroulant "Recettes & préparations"', !!portionOpt);
+portionRecipeSelect.value = portionOpt.value;
+portionRecipeSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+click($('#drawer [data-add-recipe-from-select]'));
 await wait();
 const portionRow = () => $$('#drawer .item').find((el) => /Toast poulet St Môret/.test(el.textContent) && /recette/.test(el.textContent));
 const portionQtyInput = () => portionRow().querySelectorAll('[data-qty]')[0];
 check('quantité initiale = 1 portion (jamais 143 g)', portionQtyInput().value === '1', portionQtyInput().value);
 check('unité affichée = "portion", jamais "g"', /portion/.test(portionRow().querySelector('.item__unit').textContent));
 check('pas de saisie = 1 (increment par portion entière)', portionQtyInput().step === '1', portionQtyInput().step);
-check('P2.4 — un repas composé uniquement d’une recette n’a aucun nom auto-généré (pas de catégorie alimentaire réelle)',
-  $('#drawer [data-name]').value === '', $('#drawer [data-name]').value);
+check('P2.4 — un repas composé uniquement d’une recette : son nom sert de repli (jamais de catégorie alimentaire réelle, mais jamais "Sans nom" non plus)',
+  $('#drawer [data-name]').value === 'Toast poulet St Môret', $('#drawer [data-name]').value);
 
 console.log('\n— Composition déployée pour N portions (dérivée, sans duplication de state)');
 change(portionQtyInput(), '2');
@@ -1008,9 +1016,12 @@ await wait();
 const autoBoxW = $('#drawer [data-auto]');
 if (autoBoxW.checked) { autoBoxW.checked = false; autoBoxW.dispatchEvent(new window.Event('change', { bubbles: true })); }
 await wait();
-const addSkyrBtn = () => $$('#drawer [data-add-recipe]').find((b) => b.closest('.item').textContent.includes('Skyr avoine'));
-check('la recette "Skyr avoine" apparaît dans le panneau "Recettes & préparations"', !!addSkyrBtn());
-click(addSkyrBtn());
+const skyrSelect = $('#drawer [data-add-recipe-select]');
+const skyrOpt = [...skyrSelect.options].find((o) => /Skyr avoine/.test(o.textContent));
+check('la recette "Skyr avoine" apparaît dans le menu déroulant "Recettes & préparations"', !!skyrOpt);
+skyrSelect.value = skyrOpt.value;
+skyrSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+click($('#drawer [data-add-recipe-from-select]'));
 await wait();
 const skyrRow = () => $$('#drawer .item').find((el) => /Skyr avoine/.test(el.textContent) && /recette/.test(el.textContent));
 const skyrQtyInputs = () => skyrRow().querySelectorAll('[data-qty]');
@@ -1564,6 +1575,246 @@ await wait();
 const afterReset2 = p4SavedFinal().preparations.find((p) => p.id === p4Prep2Id);
 check('deux resets successifs sans nouvel usage : remainingAtReset stable à 300 g',
   afterReset2.remainingAtReset === 300, `remainingAtReset=${afterReset2.remainingAtReset}`);
+
+console.log('\n— Préparations : bouton « Annuler » (doublon d’attribut data-*-cancel avec « Fermer »)');
+let p5Prep;
+store.update((s) => {
+  const recipe = store.newRecipe('Annuler Bug Test', 'weight');
+  recipe.items = [store.newRecipeItem(p4Beef.id, 300, 'cru')];
+  recipe.baseGrams = 300;
+  s.recipes.push(recipe);
+  const prep = store.newPreparation(recipe, 300);
+  p5Prep = prep;
+  s.preparations.push(prep);
+});
+await wait();
+click($('[data-view="preparations"]'));
+await wait();
+
+// panneau de création : « Fermer » (en-tête) et « Annuler » (pied) partagent
+// data-create-cancel — seul le second doit être testé ici (le premier est
+// déjà couvert ailleurs par les tests de fermeture de panneau).
+click($('[data-open-create]'));
+await wait();
+const createCancelBtns = $$('[data-create-cancel]');
+check('panneau de création : deux boutons portent data-create-cancel (Fermer + Annuler)', createCancelBtns.length === 2);
+click(createCancelBtns[createCancelBtns.length - 1]);
+await wait();
+check('panneau de création fermé via le bouton « Annuler » du pied', !$('[data-create-qty]'));
+
+// assistant de répartition
+click($$('[data-open-distribute]').find((b) => b.dataset.openDistribute === p5Prep.id));
+await wait();
+const wizardCancelBtns = $$('[data-wizard-cancel]');
+check('assistant de répartition : deux boutons portent data-wizard-cancel', wizardCancelBtns.length === 2);
+click(wizardCancelBtns[wizardCancelBtns.length - 1]);
+await wait();
+check('assistant fermé via le bouton « Annuler » du pied', !$('[data-wizard-amount]'));
+
+// jet partiel
+click($$('[data-open-discard-partial]').find((b) => b.dataset.openDiscardPartial === p5Prep.id));
+await wait();
+const discardCancelBtns = $$('[data-discard-cancel]');
+check('jet partiel : deux boutons portent data-discard-cancel', discardCancelBtns.length === 2);
+click(discardCancelBtns[discardCancelBtns.length - 1]);
+await wait();
+check('panneau de jet partiel fermé via le bouton « Annuler » du pied', !$('[data-discard-qty]'));
+
+console.log('\n— Préparations : suppression définitive (« Supprimer la préparation »)');
+const p5Saved = () => JSON.parse(localStorage.getItem('nutriplan.state.v1'));
+
+// cas 1 : stock à 0 -> message simple, sans ligne de perte
+click($$('[data-open-discard-confirm]').find((b) => b.dataset.openDiscardConfirm === p5Prep.id));
+await wait();
+click($('[data-discard-confirm-ok]'));
+await wait();
+check('préparation épuisée après jet total (stock à 0)',
+  derive.preparationAvailable(store.getState(), p5Saved().preparations.find((p) => p.id === p5Prep.id)) === 0);
+// la section "épuisées" peut déjà être dépliée par un test précédent (état de
+// vue persistant au niveau du module) — ne (re)basculer que si nécessaire.
+if (!$$('[data-open-delete-prep]').some((b) => b.dataset.openDeletePrep === p5Prep.id)) {
+  click($('[data-toggle-exhausted]'));
+  await wait();
+}
+const deleteBtnZero = $$('[data-open-delete-prep]').find((b) => b.dataset.openDeletePrep === p5Prep.id);
+check('bouton « Supprimer la préparation » présent sur la carte épuisée', !!deleteBtnZero);
+click(deleteBtnZero);
+await wait();
+check('modale de suppression : message simple (pas de mention de perte) quand le stock est à 0',
+  /va être supprimée/.test($('.modal__panel').textContent) && !/disponibles/.test($('.modal__panel').textContent));
+click($('[data-delete-prep-ok]'));
+await wait();
+check('préparation réellement retirée de state.preparations après confirmation',
+  !p5Saved().preparations.some((p) => p.id === p5Prep.id));
+
+// cas 2 : stock > 0 -> avertissement de perte, annulation ne modifie rien
+let p5Prep2;
+store.update((s) => {
+  const recipe = store.newRecipe('Annuler Bug Test Stock', 'weight');
+  recipe.items = [store.newRecipeItem(p4Beef.id, 400, 'cru')];
+  recipe.baseGrams = 400;
+  s.recipes.push(recipe);
+  const prep = store.newPreparation(recipe, 400);
+  p5Prep2 = prep;
+  s.preparations.push(prep);
+});
+await wait();
+click($('[data-view="preparations"]'));
+await wait();
+click($$('[data-open-delete-prep]').find((b) => b.dataset.openDeletePrep === p5Prep2.id));
+await wait();
+check('modale de suppression : avertissement affiché quand le stock est > 0',
+  /400 g/.test($('.modal__panel').textContent) && /disponibles/.test($('.modal__panel').textContent) && /seront perdus/.test($('.modal__panel').textContent));
+click($('[data-delete-prep-cancel]'));
+await wait();
+check('« Annuler » referme sans toucher aux données : la préparation existe toujours',
+  p5Saved().preparations.some((p) => p.id === p5Prep2.id));
+click($$('[data-open-delete-prep]').find((b) => b.dataset.openDeletePrep === p5Prep2.id));
+await wait();
+click($('[data-delete-prep-ok]'));
+await wait();
+check('confirmation : la préparation est supprimée malgré le stock restant (perte assumée)',
+  !p5Saved().preparations.some((p) => p.id === p5Prep2.id));
+
+// cas 3 : suppression bloquée tant que des affectations existent, puis chaîne complète avec la recette
+let p5Recipe3Id, p5Prep3;
+store.update((s) => {
+  const recipe = store.newRecipe('Chaine Suppression Test', 'weight');
+  recipe.items = [store.newRecipeItem(p4Beef.id, 250, 'cru')];
+  recipe.baseGrams = 250;
+  s.recipes.push(recipe);
+  p5Recipe3Id = recipe.id;
+  const prep = store.newPreparation(recipe, 250);
+  p5Prep3 = prep;
+  s.preparations.push(prep);
+});
+await wait();
+click($('[data-view="preparations"]'));
+await wait();
+click($$('[data-open-distribute]').find((b) => b.dataset.openDistribute === p5Prep3.id));
+await wait();
+change($('[data-wizard-amount]'), '100');
+await wait();
+click($$('[data-pick-meal]')[0]);
+await wait();
+click($('[data-wizard-submit]'));
+await wait();
+const toastCountBeforeBlockedDelete = document.getElementById('toasts')?.children.length || 0;
+click($$('[data-open-delete-prep]').find((b) => b.dataset.openDeletePrep === p5Prep3.id));
+await wait();
+check('suppression bloquée par une affectation vivante : aucune modale ouverte',
+  !$('.modal__panel'));
+check('un toast explicite apparaît pour signaler le blocage',
+  (document.getElementById('toasts')?.children.length || 0) > toastCountBeforeBlockedDelete);
+check('la préparation affectée existe toujours', p5Saved().preparations.some((p) => p.id === p5Prep3.id));
+
+// retirer l'affectation puis vérifier la chaîne complète : suppression préparation -> suppression recette devient possible
+click($('[data-toggle-assignments]'));
+await wait();
+const removeAssignBtn = $('[data-assignment-remove]');
+if (removeAssignBtn) { click(removeAssignBtn); await wait(); }
+click($('[data-view="recipes"]'));
+await wait();
+const recipeRow3 = $$('tr').find((tr) => tr.textContent.includes('Chaine Suppression Test'));
+click(recipeRow3?.querySelector('[data-edit]'));
+await wait();
+click($('[data-delete]'));
+await wait();
+check('suppression de la recette toujours bloquée tant que la préparation existe (même sans affectation)',
+  p5Saved().recipes.some((r) => r.id === p5Recipe3Id));
+const closeBtnRecipe3 = $('[data-form-cancel]') || $$('button').find((b) => /^Fermer$/.test(b.textContent.trim()));
+if (closeBtnRecipe3) click(closeBtnRecipe3);
+await wait();
+if ($('[data-unsaved-discard]')) { click($('[data-unsaved-discard]')); await wait(); }
+
+click($('[data-view="preparations"]'));
+await wait();
+click($$('[data-open-delete-prep]').find((b) => b.dataset.openDeletePrep === p5Prep3.id));
+await wait();
+click($('[data-delete-prep-ok]'));
+await wait();
+check('préparation supprimée après retrait de son affectation', !p5Saved().preparations.some((p) => p.id === p5Prep3.id));
+
+click($('[data-view="recipes"]'));
+await wait();
+const recipeRow3b = $$('tr').find((tr) => tr.textContent.includes('Chaine Suppression Test'));
+click(recipeRow3b?.querySelector('[data-edit]'));
+await wait();
+click($('[data-delete]'));
+await wait();
+check('la suppression de la recette devient possible une fois la préparation supprimée',
+  !p5Saved().recipes.some((r) => r.id === p5Recipe3Id));
+
+console.log('\n— Éditeur de repas : panneau « Recettes & préparations » — recettes avec stock en priorité, sinon menu déroulant');
+let p6RecipeNoStockId, p6RecipeWithStockId, p6MealId;
+store.update((s) => {
+  const r1 = store.newRecipe('Sans Stock CDE', 'weight');
+  r1.items = [store.newRecipeItem(p4Beef.id, 400, 'cru')];
+  r1.baseGrams = 400;
+  s.recipes.push(r1);
+  p6RecipeNoStockId = r1.id;
+
+  const r2 = store.newRecipe('Avec Stock CDE', 'weight');
+  r2.items = [store.newRecipeItem(p4Beef.id, 400, 'cru')];
+  r2.baseGrams = 400;
+  s.recipes.push(r2);
+  p6RecipeWithStockId = r2.id;
+  s.preparations.push(store.newPreparation(r2, 300));
+
+  const meal = s.meals.find((m) => m.dayIndex === 0 && m.mealType === 'lunch');
+  p6MealId = meal.id;
+});
+await wait();
+click($('[data-view="planning"]'));
+await wait();
+click($$('[data-edit]').find((b) => b.dataset.edit === p6MealId));
+await wait();
+
+check('recette AVEC stock disponible : ligne d’action directe présente (+ Utiliser)',
+  $$('#drawer [data-use-preparation]').some((btn) => btn.closest('.item').textContent.includes('Avec Stock CDE')));
+check('recette AVEC stock disponible : absente du menu déroulant « sans préparation »',
+  !$$('#drawer [data-add-recipe-select] option').some((o) => /Avec Stock CDE/.test(o.textContent)));
+const dropdownSelect = $('[data-add-recipe-select]');
+check('recette SANS stock disponible : présente dans le menu déroulant', !!dropdownSelect && [...dropdownSelect.options].some((o) => /Sans Stock CDE/.test(o.textContent)));
+check('recette SANS stock disponible : pas de ligne « + Utiliser » dédiée (pas de préparation la concernant)',
+  !$$('[data-use-preparation]').some((btn) => {
+    const prep = store.getState().preparations.find((p) => p.id === btn.dataset.usePreparation);
+    return prep?.recipeId === p6RecipeNoStockId;
+  }));
+
+const optNoStock = [...dropdownSelect.options].find((o) => /Sans Stock CDE/.test(o.textContent));
+dropdownSelect.value = optNoStock.value;
+dropdownSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+click($('[data-add-recipe-from-select]'));
+await wait();
+check('ajout via le menu déroulant : l’item recette est bien ajouté au repas',
+  store.getState().meals.find((m) => m.id === p6MealId).items.some((it) => it.recipeId === p6RecipeNoStockId));
+
+console.log('\n— Auto-nommage des repas : la recette sert de repli, jamais prioritaire sur le nommage par composition');
+check('aucun féculent/protéine/légume catégorisé dans ce repas (seule une recette le compose) : le nom de la recette sert de repli',
+  store.getState().meals.find((m) => m.id === p6MealId).name === 'Sans Stock CDE');
+click($('[data-view="planning"]'));
+await wait();
+check('le nom auto-généré (repli recette) est bien affiché sur l’écran de planning', /Sans Stock CDE/.test($('#view').textContent));
+
+console.log('\n— Écran batch : détail des ingrédients d’une recette à préparer + répartition vers les gamelles');
+store.update((s) => {
+  const r3 = store.newRecipe('Batch Detail CDE', 'weight');
+  r3.items = [store.newRecipeItem(p4Beef.id, 1000, 'cru')];
+  r3.baseGrams = 1000;
+  r3.batchAllowed = true;
+  s.recipes.push(r3);
+  const meal = s.meals.find((m) => m.dayIndex === 0 && m.mealType === 'dinner');
+  meal.items.push({ ...store.newRecipeMealItem(r3.id, 500), qty: { thomas: 500, julie: 0 } });
+});
+await wait();
+click($('[data-view="batch"]'));
+await wait();
+check('« Recettes à préparer en batch » affichée avec la nouvelle recette', /Recettes à préparer en batch/.test($('#view').textContent) && /Batch Detail CDE/.test($('#view').textContent));
+const batchDetails = $$('details').find((d) => /Détail de la recette/.test(d.textContent) && d.textContent.includes('g préparés'));
+check('bloc de détail des ingrédients présent pour cette recette', !!batchDetails);
+check('ingrédient mis à l’échelle affiché (500 g, 500/1000 de la référence)', /500 g.*Steak haché|Steak haché.*500 g/.test(batchDetails.textContent.replace(/\s+/g, ' ')));
+check('répartition prévue vers la gamelle correspondante affichée', /Répartition prévue/.test($('#view').textContent));
 
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));

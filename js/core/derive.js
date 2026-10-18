@@ -725,11 +725,41 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
         const key = `${s.index}:recipe:${recipe.id}`;
         const prepared = state.batch.overrides[key];
         const preparedRaw = prepared ?? requiredRaw;
+
+        // Détail des ingrédients NÉCESSAIRES À LA PRÉPARATION de cette recette,
+        // à l'échelle de ce qui va réellement être préparé (preparedRaw) — pas
+        // seulement la composition de référence de la fiche recette. Lecture
+        // seule, dérivée de recipe.items ; aucune nouvelle mécanique numérique
+        // (même principe d'échelle que recipeAsVirtualFood()/preparedGramsOf()).
+        const referenceBase = recipe.kind === 'portion' ? portionGramsOf(recipe) : (Number(recipe.baseGrams) || 0);
+        const scale = referenceBase > 0 ? preparedRaw / referenceBase : 0;
+        const ingredients = (recipe.items || [])
+          .map((ri) => ({
+            food: foodsById[ri.foodId],
+            qty: (Number(ri.qty) || 0) * scale,
+            state: ri.state,
+          }))
+          .filter((ing) => ing.food);
+
+        // Vers quelles gamelles de CETTE session ce besoin est réparti (lecture
+        // seule — cet écran ne modifie jamais le planning) : une recette
+        // référencée directement (recipeId, sans préparation) dans un repas.
+        const destinations = meals
+          .map((meal) => {
+            const qty = meal.items
+              .filter((it) => it.recipeId === recipe.id && !it.preparationId)
+              .reduce((sum, it) => sum + PERSONS.reduce((s2, p) => s2 + (it.qty?.[p] || 0), 0), 0);
+            return qty > 0 ? { mealId: meal.id, dayIndex: meal.dayIndex, mealType: meal.mealType, name: meal.name || '', qty } : null;
+          })
+          .filter(Boolean);
+
         return {
           key,
           recipe,
           requiredRaw,
           preparedRaw,
+          ingredients,
+          destinations,
           method: recipe.cookingMethod || '',
           temperature: recipe.cookingTemp ?? null,
           duration: recipe.cookingTime ?? null,

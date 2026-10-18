@@ -2226,6 +2226,83 @@ test('P0.2.6 — une recette non batchAllowed n’apparaît PAS dans "à prépar
     plan[0].assembleSameDay.some((r) => r.food.name === 'Riz simple'));
 });
 
+/*
+ * Détail de la recette à l'échelle de ce qui est réellement préparé, et
+ * répartition vers les gamelles de la session (écran batch, lecture seule —
+ * jamais de modification du planning depuis buildBatchPlan()).
+ */
+test('écran batch — détail des ingrédients d’une recette à préparer, à l’échelle de la quantité préparée', () => {
+  const boeuf = F('Steak haché'), haricots = F('Haricots rouges');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 600, 'cru'), newRecipeItem(haricots.id, 400, 'egoutte')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  const recipesById = { [recipe.id]: recipe };
+  const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
+  const plan = buildBatchPlan(batchTestState([mkMeal(0, 'lunch', [it])]), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  check('deux ingrédients détaillés', r.ingredients.length === 2);
+  const boeufLine = r.ingredients.find((i) => i.food.id === boeuf.id);
+  const haricotsLine = r.ingredients.find((i) => i.food.id === haricots.id);
+  check('bœuf mis à l’échelle : 600 × 500/1000 = 300 g (préparedRaw par défaut = requiredRaw)',
+    Math.abs(boeufLine.qty - 300) < 0.01);
+  check('haricots mis à l’échelle : 400 × 500/1000 = 200 g', Math.abs(haricotsLine.qty - 200) < 0.01);
+  check('état de référence de l’ingrédient conservé (cru/égoutté)', boeufLine.state === 'cru' && haricotsLine.state === 'egoutte');
+});
+
+test('écran batch — le détail des ingrédients suit la quantité réellement SAISIE (preparedRaw), pas seulement le besoin net', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  const recipesById = { [recipe.id]: recipe };
+  const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
+  const key = `0:recipe:${recipe.id}`;
+  const st = batchTestState([mkMeal(0, 'lunch', [it])], { batch: { overrides: { [key]: 800 } } });
+  const plan = buildBatchPlan(st, byId, recipesById, {});
+  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  check('preparedRaw reprend la saisie manuelle (800 g), pas le besoin net (500 g)', r.preparedRaw === 800);
+  check('ingrédient mis à l’échelle sur 800 g préparés (1000 × 800/1000 = 800 g)', Math.abs(r.ingredients[0].qty - 800) < 0.01);
+});
+
+test('écran batch — répartition vers les gamelles de la session (le "global" : total préparé -> distribué)', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  const recipesById = { [recipe.id]: recipe };
+  const itLunch = { ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 200, julie: 100 } };
+  const itDinner = { ...newRecipeMealItem(recipe.id, 200), qty: { thomas: 200, julie: 0 } };
+  const mealLunch = mkMeal(0, 'lunch', [itLunch]);
+  const mealDinner = mkMeal(1, 'dinner', [itDinner]);
+  const plan = buildBatchPlan(batchTestState([mealLunch, mealDinner]), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  check('deux gamelles destinataires identifiées', r.destinations.length === 2);
+  const lunchDest = r.destinations.find((d) => d.mealId === mealLunch.id);
+  const dinnerDest = r.destinations.find((d) => d.mealId === mealDinner.id);
+  check('quantité de la gamelle du midi = 300 g (200 + 100)', lunchDest.qty === 300);
+  check('quantité de la gamelle du soir = 200 g', dinnerDest.qty === 200);
+  check('total réparti = besoin net (300 + 200 = 500 g = requiredRaw)', lunchDest.qty + dinnerDest.qty === r.requiredRaw);
+});
+
+test('écran batch — une recette non référencée dans une gamelle de la session n’apparaît pas dans ses destinations', () => {
+  const boeuf = F('Steak haché');
+  const recipe = newRecipe('Chili', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  const recipesById = { [recipe.id]: recipe };
+  const it = { ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 300, julie: 0 } };
+  const mealWithIt = mkMeal(0, 'lunch', [it]);
+  const mealWithout = mkMeal(1, 'dinner', []);
+  const plan = buildBatchPlan(batchTestState([mealWithIt, mealWithout]), byId, recipesById, {});
+  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  check('une seule destination (le repas qui référence réellement la recette)', r.destinations.length === 1);
+  check('ce n’est pas le repas vide', r.destinations[0].mealId === mealWithIt.id);
+});
+
 /* ============================================== P0.3 — CONSERVATION / SOUS-PRÉPARATIONS (v1.5.1) */
 
 test('P0.3.1 — recette conservable pendant toute la session : pas de scission', () => {
@@ -3181,13 +3258,59 @@ test('P2.4.6 — aucun des trois groupes identifiable : nom vide', () => {
   check('nom vide, jamais un nom absurde', name === '');
 });
 
-test('P2.4.7 — recette/préparation seules : jamais prises en compte pour l’auto-nommage', () => {
+test('P2.4.7 — recette/préparation seules : jamais prises en compte pour la composition féculent/protéine/légume', () => {
   const recipe = newRecipe('Chili', 'weight');
   recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
   recipe.baseGrams = 1000;
   const items = [{ ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 300, julie: 0 } }];
+  // sans recipesById (ancienne signature à 2 arguments, encore valide) : aucun
+  // repli possible, comportement strictement inchangé pour tout appelant qui
+  // ne fournit pas ce 3e paramètre.
   const name = autoMealName(items, byId);
-  check('un item recette (sans foodId) ne produit aucun nom', name === '');
+  check('un item recette (sans foodId), sans recipesById fourni, ne produit aucun nom', name === '');
+});
+
+test('P2.4.7b — repli : une recette sélectionnée nomme le repas UNIQUEMENT si aucun féculent/protéine/légume n’a permis d’en construire un', () => {
+  const recipe = newRecipe('Chili con carne maison', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+  const items = [{ ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 300, julie: 0 } }];
+  const name = autoMealName(items, byId, recipesById);
+  check('le nom de la recette sert de repli (jamais "Sans nom")', name === 'Chili con carne maison', name);
+});
+
+test('P2.4.7c — repli recette : jamais prioritaire sur le nommage par composition (féculent/protéine/légume) existant', () => {
+  const recipe = newRecipe('Chili con carne maison', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  const recipesById = { [recipe.id]: recipe };
+  const items = [
+    { ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 300, julie: 0 } },
+    newItem(F('Pâtes complètes').id, 200),
+    newItem(F('Courgettes').id, 100),
+  ];
+  const name = autoMealName(items, byId, recipesById);
+  check('le nommage par composition reste prioritaire, le nom de la recette n’apparaît pas',
+    name === 'Pâtes complètes - Courgettes', name);
+});
+
+test('P2.4.7d — repli : fonctionne aussi pour une préparation (via sa recette source), pas seulement un item recette direct', () => {
+  const recipe = newRecipe('Curry de légumes', 'weight');
+  recipe.items = [newRecipeItem(F('Steak haché').id, 500, 'cru')];
+  recipe.baseGrams = 500;
+  const prep = newPreparation(recipe, 500);
+  const items = [{ ...newPreparationItem(prep.id, 200), qty: { thomas: 200, julie: 0 } }];
+  const name = autoMealName(items, byId, { [recipe.id]: recipe }, { [prep.id]: prep });
+  check('le nom de la RECETTE source (pas le label éventuellement distinct de la préparation) sert de repli',
+    name === 'Curry de légumes', name);
+});
+
+test('P2.4.7e — repli : aucune recette/préparation présente, toujours un nom vide (pas de régression de P2.4.6)', () => {
+  const items = [newItem(F('Fromage frais tartinable').id, 30)];
+  const recipesById = { 'r999': newRecipe('Recette sans rapport', 'weight') };
+  const name = autoMealName(items, byId, recipesById, {});
+  check('nom vide : aucune recette n’est réellement dans le repas', name === '');
 });
 
 test('P2.4.8 — migration : repas existant avec un nom non vide → nameAuto forcé à false', () => {
