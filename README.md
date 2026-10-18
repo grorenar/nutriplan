@@ -445,9 +445,10 @@ pour 100 g, poids du conditionnement (seulement pour un format simple et non amb
 plutôt que deviné), et, en section complémentaire repliable : graisses saturées, sucres, sel et
 sodium (jamais l'un déduit de l'autre), Nutri-Score, groupe NOVA, Eco-Score, liste des ingrédients,
 allergènes et traces, URL de la fiche OFF et date de récupération (traçabilité). **La catégorie
-Nutriplan n'est jamais déduite** des catégories OFF — taxonomie trop large pour une correspondance
-fiable, le choix reste toujours manuel. L'énergie n'est jamais recalculée depuis l'énergie en kJ :
-seul le champ kcal direct d'OFF est utilisé, par prudence sur l'unité.
+Nutriplan** est suggérée automatiquement quand la correspondance est fiable (voir sous-section
+dédiée ci-dessous) — jamais inventée sinon, et toujours modifiable. L'énergie n'est jamais
+recalculée depuis l'énergie en kJ : seul le champ kcal direct d'OFF est utilisé, par prudence sur
+l'unité.
 
 **Endpoints utilisés** (`js/core/off.js`, module unique encapsulant les deux) :
 - fiche produit par code-barres : `GET world.openfoodfacts.org/api/v2/product/{code}.json` (API
@@ -474,6 +475,75 @@ seul le champ kcal direct d'OFF est utilisé, par prudence sur l'unité.
 **Licence et attribution** : les données Open Food Facts sont sous licence ouverte **ODbL**
 (attribution requise), affichée dans le panneau de recherche avec un lien vers le projet. Aucune
 donnée n'est redistribuée au-delà d'un usage personnel de préremplissage.
+
+### Suggestion automatique de catégorie
+
+Module dédié et testé séparément : `js/core/off-category.js` (pur, sans dépendance à l'UI,
+déterministe — mêmes données en entrée, même résultat à chaque appel). Appelé depuis
+`mapOffProductToFoodDraft()` (`js/core/off.js`) à chaque fiche OFF récupérée (code-barres ou
+recherche texte), AVANT toute sélection par l'utilisateur — la catégorie suggérée est donc déjà
+visible sur la fiche produit, en tag, avant même de cliquer sur « Utiliser ce produit ».
+
+**Principe directeur : ne jamais inventer.** Soit la correspondance est fiable et nette, soit la
+fonction ne renvoie rien — le champ `category` est alors absent du brouillon et le formulaire garde
+sa valeur actuelle (par défaut « Autre », ou le choix déjà fait par l'utilisateur). « Autre »
+n'est donc **jamais** suggérée explicitement : elle reste la valeur par défaut du formulaire,
+jamais une déduction du module.
+
+**Deux signaux, dans cet ordre de priorité strict :**
+1. **`categories_tags`** (taxonomie structurée OFF) — signal primaire. OFF ajoute automatiquement
+   à ce champ, pour un produit donné, le tag le plus spécifique **et tous ses ancêtres** (vérifié
+   dans le code source de la taxonomie OFF, `openfoodfacts-server/taxonomies/food/categories.txt` —
+   ex. un produit classé « Beurres salés » reçoit aussi les tags ancêtres « Produits laitiers »,
+   « Matières grasses », « Pâtes à tartiner »). Une table de correspondance dédiée
+   (`OFF_TAG_TO_CATEGORY`, indexée par identifiant de taxonomie STABLE — ex. `meats`, `cheeses` —
+   plutôt que par libellé traduit, qui change de forme selon la langue) couvre ~35 identifiants
+   répartis sur les 8 catégories Nutriplan. Il suffit qu'UN SEUL tag de `categories_tags` soit une
+   clé connue pour obtenir une correspondance — ce qui couvre aussi bien un tag déjà général qu'un
+   tag très spécifique dont seul un ancêtre est répertorié (remontée automatique dans la
+   hiérarchie, sans avoir à répliquer toute la taxonomie OFF).
+2. **Le nom du produit** (mots-clés) — signal de repli, UNIQUEMENT si (1) n'a strictement rien
+   donné (aucun tag connu, champ absent, ou produit mal renseigné). Un nom évocateur ne l'emporte
+   **jamais** sur une catégorie OFF reconnue, même contradictoire (ex. « Fromage de chèvre aux
+   noix » avec `categories_tags: ['en:cheeses']` → laitier, le mot « noix » du nom est ignoré).
+
+**La marque n'est jamais utilisée seule** comme signal (pas assez discriminante : une même marque
+vend des produits de toutes catégories). **Les ingrédients ne sont pas exploités** : la composition
+d'un produit n'indique pas de façon fiable SA PROPRE catégorie (un yaourt aux fruits contient du
+lait ET du fruit, ça n'aide pas à trancher) — décision délibérée pour éviter une complexité
+disproportionnée par rapport au gain réel.
+
+**Ambiguïté — jamais de certitude artificielle.** Si les tags (ou, en repli, les mots-clés du nom)
+atteignent DEUX catégories Nutriplan différentes, aucune suggestion n'est faite (ex. « Beurres
+salés » : « Produits laitiers » + « Matières grasses » → ambigu, aucune suggestion). Même principe
+pour un libellé composite du nom : « Pommes de terre » ne doit jamais être réduit à « Pomme » (le
+mot-clé le plus spécifique, englobant, l'emporte sur le mot-clé qu'il contient).
+
+**Exclusions délibérées documentées dans le code** (pour ne pas être « redécouvertes » par erreur) :
+tags racines trop généraux (`plant-based-foods` et dérivés — couvrent légumes, fruits, légumineuses,
+noix et céréales à la fois, aucune valeur discriminante) ; `seeds` (« Graines » — couvre aussi bien
+des graines oléagineuses que céréalières, pas de correspondance fiable à un seul groupe) ; les
+boissons et desserts végétaux de type « alternative laitière » (nutritionnellement très différents
+d'un produit laitier réel, jamais classés « laitier »). Faux-ami vérifié dans le fichier source de
+la taxonomie OFF : la catégorie anglaise `en:legumes` correspond au français **« Légumineuses »**
+(légumes secs), jamais à « Légumes » au sens courant — les deux sont correctement distingués dans
+la table.
+
+**Respect du choix utilisateur** : la catégorie suggérée n'est qu'une valeur de préremplissage du
+formulaire, au même titre que le nom ou les kcal — elle passe par le même mécanisme de confirmation
+bloquante que tout le reste d'un brouillon OFF si le formulaire contenait déjà une saisie réelle
+(aucun traitement spécial nécessaire, aucun nouveau champ persistant ajouté). Reste modifiable à
+tout moment avant et après l'enregistrement. Le bouton de recherche OFF n'existe que pour un
+**nouvel** aliment (jamais en modification) : la catégorie d'un aliment déjà enregistré n'est donc
+jamais retouchée par ce mécanisme.
+
+**Tests** : `tests/off-category.test.mjs` (33 vérifications unitaires du module — correspondance
+directe, remontée vers un ancêtre, tags multiples cohérents/ambigus, tag inconnu, absence de tag,
+produit mal renseigné, casse/accents/préfixe de langue, libellés composites, faux positif
+« boeuf »/« oeuf », catégories internes proches, indices contradictoires nom/tag, déterminisme,
+auto-cohérence de la table) + scénarios bout en bout dans `tests/ui.test.mjs` (suggestion affichée
+avant sélection, préremplissage, modification manuelle conservée à l'enregistrement, aucune
+incidence en modification d'un aliment existant).
 
 ### Proxy CORS (requis pour la recherche par nom/marque)
 
@@ -528,17 +598,18 @@ jour) mais pas pour la recherche par nom/marque.
 
 ```bash
 npm ci                # une seule fois (installe jsdom, nécessaire à tests/ui.test.mjs)
-npm test              # les 5 suites ci-dessous, dans cet ordre, en une commande
+npm test              # les 6 suites ci-dessous, dans cet ordre, en une commande
 ```
 
 Équivalent détaillé, ou pour lancer une suite isolément :
 
 ```bash
-npm run test:engine     # node tests/engine.test.mjs    — moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
-npm run test:volume     # node tests/volume.test.mjs    — analyse du volume d'un repas — sans dépendance
-npm run test:autosync   # node tests/autosync.test.mjs  — synchronisation automatique, client Supabase simulé — sans dépendance
-npm run test:off        # node tests/off.test.mjs       — service Open Food Facts, `fetch` entièrement simulé — sans dépendance, sans réseau
-npm run test:ui         # node tests/ui.test.mjs        — parcours réel de l'interface (jsdom)
+npm run test:engine        # node tests/engine.test.mjs        — moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
+npm run test:volume        # node tests/volume.test.mjs        — analyse du volume d'un repas — sans dépendance
+npm run test:autosync      # node tests/autosync.test.mjs      — synchronisation automatique, client Supabase simulé — sans dépendance
+npm run test:off           # node tests/off.test.mjs           — service Open Food Facts, `fetch` entièrement simulé — sans dépendance, sans réseau
+npm run test:off-category  # node tests/off-category.test.mjs  — suggestion de catégorie OFF -> Nutriplan — module pur, sans dépendance
+npm run test:ui            # node tests/ui.test.mjs            — parcours réel de l'interface (jsdom)
 ```
 
 `tests/ui.test.mjs` démarre l'application entière (`js/app.js`) : comme `js/config.js` contient

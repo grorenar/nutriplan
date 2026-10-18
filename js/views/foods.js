@@ -277,7 +277,8 @@ function formBodyHtml(f) {
           <label class="field">Marque (facultatif)
             <input type="text" data-f="brand" value="${esc(f.brand)}"></label>
           <label class="field">Catégorie
-            <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}</select></label>
+            <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}</select>
+            ${editing === 'new' && Boolean(f.offUrl || f.offFetchedAt) ? '<small>Suggestion Open Food Facts — vérifie et modifie si besoin.</small>' : ''}</label>
           <label class="field">Code-barres (facultatif)
             <input type="text" inputmode="numeric" pattern="[0-9]*" data-f="barcode" value="${esc(f.barcode || '')}" placeholder="EAN…"></label>
         </div>
@@ -519,6 +520,7 @@ function offResultCard({ code, draft }, { standalone }) {
         ${draft.offQuantity ? `<div class="tag">${esc(draft.offQuantity)}</div>` : ''}
         ${macros ? `<div class="tag">${esc(macros)} / 100 g</div>` : '<div class="tag muted">valeurs nutritionnelles incomplètes sur Open Food Facts</div>'}
         ${draft.nutriScore ? `<span class="tag">Nutri-Score ${esc(draft.nutriScore.toUpperCase())}</span>` : ''}
+        ${draft.category ? `<span class="tag">Catégorie suggérée : ${esc(CATEGORIES.find((c) => c.id === draft.category)?.label || draft.category)}</span>` : ''}
       </div>
     </div>
     ${

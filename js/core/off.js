@@ -52,6 +52,7 @@
  */
 
 import { OFF_PROXY_URL } from '../config.js';
+import { suggestCategoryFromOff } from './off-category.js';
 
 // Avec proxy configuré : mêmes chemins que ceux attendus par
 // cloudflare-worker/off-proxy.js (/product/{code}.json, /search). Sans
@@ -224,19 +225,25 @@ const stripLangPrefix = (tag) => String(tag ?? '').replace(/^[a-z]{2,3}:/, '').r
  * Convertit une fiche produit OFF en brouillon partiel d'aliment Nutriplan.
  * Ne renvoie QUE les champs effectivement disponibles (jamais de 0 ni de
  * chaîne vide à la place d'une valeur absente) — à l'appelant de fusionner
- * avec un brouillon existant ou `blank()`. `category` n'est JAMAIS déduite
- * des catégories OFF (taxonomie trop large et sans correspondance fiable
- * avec les catégories internes de Nutriplan) : l'utilisateur la choisit
- * toujours lui-même, comme à la création manuelle.
+ * avec un brouillon existant ou `blank()`. `category` est déduite via
+ * suggestCategoryFromOff() (off-category.js, module dédié et testé
+ * séparément) UNIQUEMENT quand la correspondance est fiable et sans
+ * ambiguïté ; sinon le champ est absent du brouillon (jamais une valeur
+ * inventée ni « Autre » par défaut) et l'utilisateur la choisit lui-même,
+ * exactement comme à la création manuelle. Dans tous les cas, reste
+ * modifiable avant ET après enregistrement — ceci ne fait que préremplir la
+ * valeur par défaut du formulaire, jamais une décision figée.
  */
 export function mapOffProductToFoodDraft(p, code) {
   if (!p) return null;
   const n = p.nutriments || {};
   const name = p.product_name_fr?.trim() || p.product_name?.trim() || p.generic_name_fr?.trim() || p.generic_name?.trim() || '';
   const allergens = [...(p.allergens_tags || []), ...(p.traces_tags || [])].map(stripLangPrefix);
+  const categorySuggestion = suggestCategoryFromOff({ categoriesTags: p.categories_tags, name });
   const draft = {
     barcode: code || normalizeBarcode(p.code) || null,
     name,
+    ...(categorySuggestion ? { category: categorySuggestion.category } : {}),
     brand: firstBrand(p.brands),
     // kcal : uniquement le champ kcal direct ('energy-kcal_100g'), jamais
     // dérivé de l'énergie en kJ ('energy_100g') — cette dernière n'a pas pu

@@ -2363,8 +2363,11 @@ check('kcal prérempli', Number($('[data-f="kcal"]').value) === 539);
 check('code-barres prérempli (chaîne, pas un nombre affiché différemment)', $('[data-f="barcode"]').value === '3017620422003');
 check('sucres (valeur complémentaire OFF) préremplis', Number($('[data-f="sugars"]').value) === 56.3);
 check('fibre ABSENTE sur la fiche OFF reste vide, jamais forcée à 0', $('[data-f="fiber"]').value === '');
-type($('[data-f="category"]'), ''); // no-op, la catégorie reste au choix par défaut (jamais déduite d'OFF)
-change($('[data-f="category"]'), 'autre');
+// Ce produit n'a pas de categories_tags OFF (fiche incomplète) : aucune
+// suggestion fiable de catégorie n'est possible -> le champ reste à sa
+// valeur par défaut (« Autre »), jamais une catégorie inventée.
+check('aucune catégorie OFF fournie -> reste à la valeur par défaut, jamais inventée', $('[data-f="category"]').value === 'autre');
+change($('[data-f="category"]'), 'autre'); // toujours modifiable manuellement, comme avant
 click($('[data-save]'));
 await wait();
 const createdOff = store.getState().foods.find((f) => f.barcode === '3017620422003');
@@ -2506,6 +2509,45 @@ click($('[data-action-confirm]'));
 await wait();
 check('après confirmation explicite, les données OFF remplacent bien la saisie', $('[data-f="name"]').value === 'Produit OFF qui écraserait la saisie');
 globalThis.fetch = realFetch;
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Open Food Facts : catégorie suggérée depuis les categories_tags, toujours modifiable');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+type($('[data-off-barcode]'), '7777777777777');
+globalThis.fetch = async () => jsonRes({
+  status: 1, code: '7777777777777',
+  product: {
+    product_name: 'Yaourt nature Test Catégorie', categories_tags: ['en:yogurts', 'en:dairies'],
+    nutriments: { 'energy-kcal_100g': 60 },
+  },
+});
+click($('[data-off-barcode-go]'));
+await wait();
+check('catégorie suggérée affichée sur la fiche produit avant même sélection', /Catégorie suggérée : Produit laitier/.test($('[data-off-backdrop]').textContent));
+click($('[data-off-use]'));
+await wait();
+check('catégorie correctement préremplie dans le formulaire (laitier)', $('[data-f="category"]').value === 'laitier');
+check('indication que la catégorie est une suggestion modifiable', /Suggestion Open Food Facts/.test($('[data-form-backdrop]').textContent));
+// L'utilisateur reste libre de modifier la suggestion AVANT enregistrement —
+// et ce choix manuel doit être conservé, jamais silencieusement rétabli.
+change($('[data-f="category"]'), 'matiere_grasse');
+type($('[data-f="name"]'), 'Yaourt nature Test Catégorie (corrigé)');
+click($('[data-save]'));
+await wait();
+const createdCatOverride = store.getState().foods.find((f) => f.barcode === '7777777777777');
+check('le choix manuel de catégorie (différent de la suggestion) est bien celui enregistré', createdCatOverride?.category === 'matiere_grasse');
+globalThis.fetch = realFetch;
+
+console.log('\n— Chantier Open Food Facts : la modification d’un aliment EXISTANT n’est jamais affectée par la catégorisation automatique');
+click($('[data-edit="' + createdCatOverride.id + '"]'));
+await wait();
+check('aucun bouton de recherche Open Food Facts en modification (uniquement à la création)', !$('[data-off-open]'));
+check('la catégorie enregistrée (choix manuel précédent) reste intacte à l’ouverture', $('[data-f="category"]').value === 'matiere_grasse');
+check('aucune indication de suggestion sur un aliment déjà enregistré en modification', !/Suggestion Open Food Facts/.test($('[data-form-backdrop]').textContent));
 click($('[data-form-cancel]'));
 await wait();
 

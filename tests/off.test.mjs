@@ -126,9 +126,21 @@ test('mapOffProductToFoodDraft() : indicateurs complémentaires (Nutri-Score, NO
   check('allergènes ET traces combinés, préfixe de langue retiré', d.allergensText === 'milk, gluten');
 });
 
-test('mapOffProductToFoodDraft() : category JAMAIS déduite des catégories OFF (choix manuel conservé)', () => {
+test('mapOffProductToFoodDraft() : category déduite via suggestCategoryFromOff() quand la correspondance est fiable', () => {
   const d = mapOffProductToFoodDraft({ nutriments: {}, categories_tags: ['en:yogurts', 'en:dairies'] }, '1');
-  check('aucun champ "category" renvoyé par le mapping (l’appelant garde le choix par défaut/manuel)', !('category' in d));
+  check('catégorie Nutriplan correctement déduite (laitier)', d.category === 'laitier');
+});
+
+test('mapOffProductToFoodDraft() : category ABSENTE du brouillon quand aucune suggestion fiable (jamais inventée)', () => {
+  const d1 = mapOffProductToFoodDraft({ nutriments: {}, categories_tags: ['en:snacks'] }, '1');
+  check('tag OFF inconnu de la table -> aucun champ "category"', !('category' in d1));
+  const d2 = mapOffProductToFoodDraft({ nutriments: {} }, '1');
+  check('categories_tags absent -> aucun champ "category"', !('category' in d2));
+  // Détail OFF : "Beurres salés" porte à la fois "Produits laitiers" ET
+  // "Matières grasses" (ancêtres automatiques) — deux catégories Nutriplan
+  // différentes -> ambigu, jamais une certitude artificielle.
+  const d3 = mapOffProductToFoodDraft({ nutriments: {}, categories_tags: ['en:dairies', 'en:fats'] }, '1');
+  check('tags pointant vers deux catégories Nutriplan différentes -> ambigu, aucun champ "category"', !('category' in d3));
 });
 
 /* ---------------------------------------------------------------- fetchProductByBarcode */
