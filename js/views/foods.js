@@ -20,6 +20,34 @@ let yieldCalc = null;      // { raw, cooked, result, error } — aide au calcul 
 let formBaseline = null;   // P2 : instantané du formulaire à l'ouverture, pour détecter une modification non sauvegardée
 let confirmingClose = false; // P2 : le dialogue « Modifications non sauvegardées » est affiché
 let escBound = false;      // P2 : évite d'empiler plusieurs écouteurs Échap entre deux rendus
+let duplicateGroupsCache = { foods: null, groups: [] }; // P4 : voir getDuplicateGroups()
+
+/**
+ * findDuplicateGroups() est en O(n²) (chaque aliment comparé à tous les
+ * autres) : mesuré à plusieurs centaines de ms dès quelques centaines
+ * d'aliments. renderFull() tournant à chaque frappe dans la recherche ou
+ * changement de filtre (aucun rapport avec les doublons), le recalculer à
+ * chaque fois gèlerait l'interface sur une banque alimentaire un peu
+ * fournie. On ne recalcule que si `foods` a réellement changé (longueur ou
+ * référence d'un élément — suffisant : la banque n'est modifiée que par
+ * remplacement de tableau, push, ou remplacement d'un élément, jamais par
+ * mutation interne silencieuse d'un aliment existant pertinente ici).
+ *
+ * Le cache garde un INSTANTANÉ (copie superficielle, `.slice()`) du tableau,
+ * jamais une référence directe : `s.foods` est muté en place par certains
+ * appelants (`.push()` à la création) — garder la référence vivante rendrait
+ * l'instantané et l'état courant indiscernables (même tableau), la
+ * comparaison ne détecterait alors plus jamais un ajout.
+ */
+function getDuplicateGroups(foods) {
+  const c = duplicateGroupsCache;
+  if (c.foods && c.foods.length === foods.length && c.foods.every((f, i) => f === foods[i])) {
+    return c.groups;
+  }
+  const groups = findDuplicateGroups(foods);
+  duplicateGroupsCache = { foods: foods.slice(), groups };
+  return groups;
+}
 
 /** Ouvre directement la fiche d'un aliment (appelé depuis l'écran Courses). */
 export function openFoodForm(id) {
@@ -54,7 +82,7 @@ function renderFull(root, s) {
   else if (cat !== 'all') list = list.filter((f) => f.category === cat);
   if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
 
-  const duplicateGroups = findDuplicateGroups(s.foods);
+  const duplicateGroups = getDuplicateGroups(s.foods);
 
   root.innerHTML = `
     <div class="row" style="margin-bottom:12px">

@@ -243,6 +243,28 @@ contenu — est déjà obtenu via le navigateur. Nutriplan étant un site statiq
 payant. Décision : pas de fonction d'export PDF dédiée ; l'impression existante couvre déjà ce
 besoin.
 
+### Clavier et performance : revue ciblée (P4), état actuel
+
+Échap ferme déjà les deux gros formulaires (fiche aliment, fiche recette) ainsi que leurs
+sous-panneaux (calcul de rendement, doublon détecté, modifications non sauvegardées). Un écouteur
+Échap global a été ajouté à la confirmation bloquante générique (`confirm-action.js`, utilisée par
+les écrans Aliments, Recettes, Petits-déjeuners/Collations, Préparations, Planning et Paramètres) :
+elle se ferme désormais aussi au clavier, sans déclencher l'action. Restent sans fermeture au
+clavier, volontairement non traités dans ce lot pour ne pas se précipiter sur plusieurs machines à
+états distinctes avec des sous-paniers imbriqués (risque de régression largement supérieur au gain) :
+le tiroir de composition d'un repas/petit-déjeuner/collation (`views/editor.js`) et les panneaux
+propres à l'écran Préparations (création, jet des restes, suppression, assistant de répartition).
+Un clic reste toujours possible pour les fermer ; une revue dédiée pourrait leur ajouter Échap plus
+tard en suivant le même principe (fermer le sous-panneau le plus interne avant le conteneur
+principal), sans urgence identifiée.
+
+La détection de doublons de l'écran Aliments (`findDuplicateGroups()`, O(n²)) est maintenant mise en
+cache côté vue (`getDuplicateGroups()`, `views/foods.js`) : mesurée à plusieurs centaines de
+millisecondes dès quelques centaines d'aliments, elle ne tournait auparavant qu'à chaque frappe dans
+la recherche ou chaque clic de filtre — sans aucun rapport avec les doublons — ce qui aurait gelé
+l'interface sur une banque alimentaire conséquente. Elle ne se recalcule désormais que si la banque
+a réellement changé.
+
 ## 5. Mise en service
 
 ### 5.1 Fonctionnement immédiat (local, sans compte)

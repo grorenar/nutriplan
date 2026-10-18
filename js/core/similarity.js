@@ -41,7 +41,8 @@ export function findSimilarFoods(candidate, foods, { threshold = 0.6, limit = 4 
   const out = [];
   for (const food of foods) {
     if (food.id === candidate.id) continue;
-    let score = nameSimilarity(candidate.name, food.name);
+    const rawNameScore = nameSimilarity(candidate.name, food.name);
+    let score = rawNameScore;
     const reasons = [];
     if (score >= 0.4) reasons.push('nom proche');
     const brandMatch = sameBrand(candidate, food);
@@ -55,9 +56,12 @@ export function findSimilarFoods(candidate, foods, { threshold = 0.6, limit = 4 
       reasons.push('valeurs nutritionnelles proches');
     }
     // Un simple nom proche ne suffit pas s'il s'agit d'aliments sans rapport :
-    // on exige la même catégorie, la même marque, ou un nom quasi identique.
-    const nameScore = nameSimilarity(candidate.name, food.name);
-    const related = brandMatch || candidate.category === food.category || nameScore >= 0.85;
+    // on exige la même catégorie, la même marque, ou un nom quasi identique —
+    // la similarité de nom PURE (rawNameScore), pas gonflée par les bonus
+    // marque/poids/nutrition déjà ajoutés à `score` ci-dessus ; réutilisée
+    // plutôt que recalculée (nameSimilarity() est l'essentiel du coût de
+    // cette fonction, appelée en O(n²) par findDuplicateGroups()).
+    const related = brandMatch || candidate.category === food.category || rawNameScore >= 0.85;
     if (score >= threshold && related && reasons.length) out.push({ food, score: Math.min(1, score), reasons });
   }
   return out.sort((a, b) => b.score - a.score).slice(0, limit);

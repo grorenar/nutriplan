@@ -2261,6 +2261,48 @@ check('la référence de la recette a bien été redirigée vers l’aliment con
   store.getState().recipes.find((r) => r.id === recipeMergeId).items[0].foodId === foodKeepId);
 check('toast confirmant la fusion avec un résumé', /[Ff]usion/.test(lastToastText()));
 
+console.log('\n— Chantier P4 : écran Aliments — la section « Doublons » reste à jour après un ajout (cache de performance)');
+let laterAwayId;
+store.update((s) => {
+  const keepFoodNow = s.foods.find((f) => f.id === foodKeepId);
+  const laterAway = { ...keepFoodNow, id: 'food_p4later_away' };
+  s.foods.push(laterAway);
+  laterAwayId = laterAway.id;
+});
+await wait();
+// la banque a changé APRÈS le premier calcul des groupes (déjà déclenché par
+// le rendu initial de cet écran) : le cache (getDuplicateGroups(), foods.js)
+// doit recalculer plutôt que de renvoyer un résultat figé.
+const toggleDup2 = $('[data-toggle-duplicates]');
+if (toggleDup2 && !/Masquer/.test(toggleDup2.textContent)) { click(toggleDup2); await wait(); }
+check('un aliment ajouté APRÈS un premier calcul apparaît bien dans les groupes (cache correctement invalidé)',
+  $$('[data-merge-keep]').some((r) => r.value === laterAwayId));
+
+console.log('\n— Chantier P4 : confirmation bloquante (confirm-action.js) — fermeture au clavier (Échap)');
+let recetteP4Id;
+store.update((s) => {
+  const base = s.foods[0];
+  const r = store.newRecipe('Recette P4 Échap Test', 'weight');
+  r.items = [store.newRecipeItem(base.id, 100, 'cru')];
+  r.baseGrams = 100;
+  s.recipes.push(r); // jamais référencée ailleurs : la suppression doit proposer directement la confirmation bloquante
+  recetteP4Id = r.id;
+  s.foods = s.foods.filter((f) => f.id !== laterAwayId);
+});
+await wait();
+click($('[data-view="recipes"]'));
+await wait();
+const p4Row = () => $$('tr').find((tr) => tr.textContent.includes('Recette P4 Échap Test'));
+click(p4Row().querySelector('[data-edit]'));
+await wait();
+click($('[data-delete]'));
+await wait();
+check('confirmation bloquante affichée avant le test Échap', !!$('[data-action-confirm]'));
+escapeKey();
+await wait();
+check('Échap ferme la confirmation bloquante sans déclencher l’action', !$('[data-action-confirm]'));
+check('Échap n’a pas supprimé la recette (annulation, pas confirmation)', store.getState().recipes.some((r) => r.id === recetteP4Id));
+
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));
 console.log(`${passed} vérifications réussies, ${failures.length} échec(s).`);

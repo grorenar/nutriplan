@@ -47,6 +47,16 @@ export function actionConfirmModal({
  * si l'action est asynchrone, même convention que les boutons push/pull de
  * settings.js).
  */
+// P4 : un seul écouteur Échap pour toute l'application (jamais réinstallé à
+// chaque appel de wireActionConfirm(), lui-même rappelé à chaque rendu) — il
+// agit sur le bouton Annuler réellement présent dans le DOM au moment de la
+// frappe, quel que soit l'écran qui l'a affiché ; sans effet si aucune
+// confirmation n'est ouverte (le sélecteur ne trouve alors rien).
+let escBound = false;
+function onEscape(e) {
+  if (e.key === 'Escape') document.querySelector('[data-action-cancel]')?.click();
+}
+
 export function wireActionConfirm(root, { getPending, setPending, render }) {
   root.querySelector('[data-action-cancel]')?.addEventListener('click', () => { setPending(null); render(root); });
   root.querySelector('[data-action-backdrop]')?.addEventListener('mousedown', (e) => {
@@ -57,4 +67,5 @@ export function wireActionConfirm(root, { getPending, setPending, render }) {
     setPending(null);
     pending?.onConfirm?.();
   });
+  if (!escBound) { escBound = true; document.addEventListener('keydown', onEscape); }
 }
