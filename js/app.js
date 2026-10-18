@@ -85,6 +85,11 @@ function renderStatus() {
         label = s.meta.syncedAt
           ? 'Déconnecté de la BDD — dernière synchronisation réussie'
           : 'Déconnecté de la BDD';
+      } else if (s.meta.syncErrorKind === 'conflict') {
+        // push() a détecté qu'un autre appareil a modifié le cloud depuis la
+        // dernière synchronisation de celui-ci (assertNotStale(), sync.js) :
+        // rien n'a été écrasé, mais un envoi manuel/« forcer » est nécessaire.
+        label = 'Un autre appareil a modifié les données — à vérifier dans Paramètres';
       } else {
         label = 'Échec de synchronisation — données locales intactes';
       }

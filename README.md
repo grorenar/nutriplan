@@ -287,8 +287,13 @@ une copie : Paramètres → Compte → « Restaurer la sauvegarde locale » perm
 Toute modification est écrite dans le `localStorage` immédiatement. Si le réseau est absent,
 l'application continue de fonctionner et marque les données « à synchroniser » ; l'envoi repart
 automatiquement au retour de la connexion (ou via Paramètres → Envoyer vers le cloud).
-Comme Thomas et Julie n'utilisent jamais l'application en même temps, la synchronisation est un
-remplacement complet : aucune gestion de conflit.
+Comme Thomas et Julie utilisent rarement l'application en même temps sur deux appareils, la
+synchronisation reste volontairement un remplacement complet, jamais une fusion champ par champ.
+Un seul garde-fou existe : avant d'envoyer, l'application vérifie que cet appareil a bien vu le
+dernier état du cloud ; si un autre appareil a synchronisé entre-temps sans que celui-ci l'ait
+récupéré, l'envoi est bloqué (message explicite, rien n'est perdu ni écrasé) plutôt que de
+remplacer silencieusement les données de l'autre appareil. Paramètres → Compte → « Envoyer vers
+le cloud » propose alors de forcer l'envoi si tu es sûr de vouloir remplacer la version distante.
 
 ## 6. Catalogues et couverture du cycle
 

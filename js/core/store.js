@@ -563,14 +563,32 @@ export function catalogKey(kind) {
 /* Export / import                                                     */
 /* ------------------------------------------------------------------ */
 
+// Repère de compatibilité simple pour les fichiers exportés — PAS une clé de
+// migration complexe : le format actuel (objet d'état complet, normalisé par
+// migrate()/normalize*() à l'import comme au chargement local) absorbe déjà
+// les champs manquants ou en trop. Ce numéro sert uniquement à distinguer,
+// plus tard, un format qui romprait cette compatibilité ascendante — tant
+// qu'aucun tel format n'existe, importJSON() ne fait que le lire sans bloquer
+// sur sa valeur (un export d'avant son introduction n'a pas ce champ).
+export const EXPORT_SCHEMA_VERSION = 1;
+
 export function exportJSON() {
-  return JSON.stringify({ ...getState(), exportedAt: new Date().toISOString() }, null, 2);
+  return JSON.stringify({ ...getState(), schemaVersion: EXPORT_SCHEMA_VERSION, exportedAt: new Date().toISOString() }, null, 2);
 }
 
 export function importJSON(text) {
-  const data = JSON.parse(text);
-  if (!data || typeof data !== 'object') throw new Error('Fichier invalide');
-  if (!Array.isArray(data.foods)) throw new Error('Fichier invalide : banque alimentaire absente');
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new Error('Le fichier n’est pas un JSON valide.'); }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Fichier invalide : ce n’est pas une sauvegarde Nutriplan.');
+  if (!Array.isArray(data.foods)) throw new Error('Fichier invalide : banque alimentaire absente.');
+  // schemaVersion absent = export antérieur à son introduction, toujours
+  // compatible (migrate() le normalise) ; schemaVersion SUPÉRIEUR à celui
+  // que cette version du code connaît = fichier plus récent qu'elle, import
+  // bloqué plutôt que de risquer une donnée mal interprétée en silence.
+  if (Number.isFinite(data.schemaVersion) && data.schemaVersion > EXPORT_SCHEMA_VERSION) {
+    throw new Error(`Ce fichier vient d’une version plus récente de Nutriplan (format ${data.schemaVersion}, cette version ne connaît que le format ${EXPORT_SCHEMA_VERSION}). Mets à jour l’application avant d’importer.`);
+  }
   replaceState(data, { dirty: true });
 }
 

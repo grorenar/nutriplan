@@ -1,10 +1,14 @@
 /**
  * Synchronisation Supabase.
  *
- * Principe volontairement simple (un seul compte partagé, jamais d'usage simultané) :
+ * Principe volontairement simple (un seul compte partagé, usage simultané rare) :
  *   - PUSH : l'état local est écrit en entier (table par table, remplacement complet) ;
  *   - PULL : l'état est reconstruit depuis la base.
- * Aucune gestion de conflit complexe n'est nécessaire.
+ * Aucun moteur de fusion : jamais de reconstruction champ par champ entre deux
+ * versions. Un seul garde-fou (P1, `assertNotStale()`) avant un PUSH : si cet
+ * appareil n'a pas vu le dernier état distant (un autre appareil a poussé
+ * entre-temps), l'envoi est bloqué plutôt que d'écraser silencieusement —
+ * avec un échappatoire explicite (`push({force:true})`) pour l'utilisateur.
  *
  * Si les clés Supabase ne sont pas renseignées dans js/config.js,
  * l'application fonctionne intégralement en local.
@@ -512,10 +516,42 @@ export const TABLES = [
 /* Push / pull                                                         */
 /* ------------------------------------------------------------------ */
 
-export async function push() {
+/**
+ * Protection contre l'écrasement par un appareil à l'état ancien (P1 — le
+ * seul vrai risque concret du modèle "remplacement complet, jamais de
+ * fusion" assumé ci-dessus) : si CET appareil a déjà vu un remoteStamp par
+ * le passé (un pull ou un push précédent) et que la base a changé depuis —
+ * donc qu'un AUTRE appareil a poussé quelque chose que celui-ci n'a jamais
+ * récupéré — un push aveugle écraserait ces modifications sans trace. Rare
+ * en usage réel (jamais d'usage simultané décrit), mais la vérification est
+ * bon marché (une ligne, une colonne, déjà utilisée ailleurs) et le coût
+ * d'un écrasement silencieux est l'intégrité des données — priorité absolue.
+ * Ce n'est PAS un moteur de fusion : juste un garde-fou avant la décision
+ * destructrice, avec un échappatoire explicite (`force`) pour l'utilisateur
+ * qui sait ce qu'il fait.
+ */
+async function assertNotStale() {
+  const known = getState().meta.remoteStamp;
+  if (!known) return; // jamais synchronisé depuis cet appareil : rien à comparer
+  let actual = null;
+  try { actual = await fetchRemoteStamp(); }
+  catch { return; } // réseau capricieux : cette vérification elle-même échoue, on ne bloque pas dessus
+  if (actual && !sameStamp(actual, known)) {
+    const err = new Error(
+      'Les données du cloud ont changé depuis la dernière synchronisation de cet appareil — probablement un autre ' +
+      'appareil a envoyé des modifications entre-temps. Récupère-les d’abord pour ne pas les perdre, ou envoie quand ' +
+      'même si tu es sûr de vouloir les remplacer par la version de cet appareil.'
+    );
+    err.syncErrorKind = 'conflict';
+    throw err;
+  }
+}
+
+export async function push({ force = false } = {}) {
   const c = await getClient();
   if (!c) throw new Error('Supabase non configuré');
   if (!(await currentUser())) throw new Error('Non connecté');
+  if (!force) await assertNotStale();
 
   const payload = stateToTables(getState());
 
@@ -769,7 +805,7 @@ export async function syncNow({ editing = false } = {}) {
     return plan;
   } catch (e) {
     // les données locales restent la référence tant que la synchronisation n'a pas abouti
-    setSyncMeta({ syncError: e.message || String(e), syncErrorKind: classifySyncError(e) });
+    setSyncMeta({ syncError: e.message || String(e), syncErrorKind: e.syncErrorKind || classifySyncError(e) });
     return { action: 'error', reason: e.message || String(e) };
   } finally {
     setSyncMeta({ syncing: false });

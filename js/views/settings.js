@@ -277,6 +277,21 @@ async function renderAccount(root) {
       toast(`Envoi vérifié : ${total} lignes enregistrées`);
       render(root);
     } catch (e) {
+      // conflit détecté (assertNotStale(), sync.js) : un autre appareil a
+      // modifié le cloud depuis la dernière synchronisation de celui-ci —
+      // échappatoire explicite, jamais un écrasement silencieux par défaut.
+      if (e.syncErrorKind === 'conflict' &&
+          confirm(`${e.message}\n\nEnvoyer quand même les données de cet appareil, en remplaçant celles du cloud ?`)) {
+        try {
+          const counts = await sync.push({ force: true });
+          const total = Object.values(counts || {}).reduce((a, b) => a + Number(b), 0);
+          toast(`Envoi forcé : ${total} lignes enregistrées (données distantes remplacées)`);
+        } catch (e2) {
+          toast(`Envoi impossible : ${e2.message} — rien n'a été modifié`, 'error');
+        }
+        render(root);
+        return;
+      }
       toast(`Envoi impossible : ${e.message} — rien n'a été modifié`, 'error');
       render(root);
     }

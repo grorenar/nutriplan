@@ -195,22 +195,20 @@ await test('Retour sur l’application : rien ne se télécharge si rien n’a c
   check('deuxième aliment récupéré', !!foodNamed(getState(), 'Deuxième ajout'));
 });
 
-await test('Une modification locale en attente n’est jamais écrasée', async () => {
-  const distant = defaultState();
-  distant.foods.push({ ...distant.foods[0], id: 'f_distant', name: 'Version distante' });
-  const remote = useRemote({ tables: remoteFrom(distant) });
+await test('Une modification locale en attente n’est jamais écrasée (aucun autre appareil n’a touché le cloud entre-temps)', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
 
-  // local : une modification faite hors ligne, pas encore envoyée
+  // local : une modification faite hors ligne, pas encore envoyée — mais ce
+  // device a bien vu le DERNIER état distant réel avant de passer hors ligne
+  // (remoteStamp à jour) : rien d'autre n'a changé sur le cloud depuis.
   const local = defaultState();
   local.foods.push({ ...local.foods[0], id: 'f_local', name: 'Modification locale non envoyée' });
-  setLocal(local, { dirty: true, remoteStamp: 'ancien-horodatage' });
+  setLocal(local, { dirty: true, remoteStamp: stampOf(remote) });
 
   const result = await syncNow();
   info(`action : ${result.action} — ${result.reason}`);
   check('l’envoi est prioritaire sur la récupération', result.action === 'push');
   check('la modification locale est toujours là', !!foodNamed(getState(), 'Modification locale non envoyée'));
-  check('elle n’a pas été remplacée par la version distante',
-    !foodNamed(getState(), 'Version distante'));
   check('elle a bien été envoyée au cloud',
     remote.tables.foods.some((f) => f.name === 'Modification locale non envoyée'));
   check('état marqué synchronisé après envoi', getState().meta.dirty === false);
@@ -220,6 +218,60 @@ await test('Une modification locale en attente n’est jamais écrasée', async 
   const after = await syncNow();
   check('plus rien à faire ensuite', after.action === 'up-to-date');
   check('modification locale toujours présente', !!foodNamed(getState(), 'Modification locale non envoyée'));
+});
+
+await test('P1.3 — deux appareils modifiés avant resynchronisation : le second ne peut plus écraser le premier en silence', async () => {
+  // l'appareil A a déjà poussé « Version distante » ; l'appareil B, hors
+  // ligne depuis avant ce push, ne l'a jamais vu (son remoteStamp date d'un
+  // instant antérieur) et a fait sa propre modification locale pendant ce
+  // temps — exactement le scénario décrit dans l'audit (§4.3, cas 8).
+  // stateToTables() horodate `settings.updated_at` avec l'heure RÉELLE de
+  // l'appel (jsonb_populate_record n'applique pas les DEFAULT), jamais
+  // meta.updatedAt : deux appels rapprochés pourraient tomber sur la même
+  // milliseconde. On fixe donc les deux horodatages explicitement, comme le
+  // ferait réellement PostgreSQL à deux instants distincts.
+  const avantA = defaultState();
+  const remoteAvantA = useRemote({ tables: remoteFrom(avantA) });
+  remoteAvantA.tables.settings[0].updated_at = '2026-01-01T00:00:00.000Z';
+  const stampAvantA = stampOf(remoteAvantA);
+
+  const distant = defaultState();
+  distant.foods.push({ ...distant.foods[0], id: 'f_distant', name: 'Version distante (appareil A)' });
+  const remote = useRemote({ tables: remoteFrom(distant) }); // appareil A a déjà synchronisé
+  remote.tables.settings[0].updated_at = '2026-01-02T00:00:00.000Z'; // postérieur, déterministe
+
+  const local = defaultState();
+  local.foods.push({ ...local.foods[0], id: 'f_local', name: 'Modification locale (appareil B)' });
+  setLocal(local, { dirty: true, remoteStamp: stampAvantA }); // B ignore encore le push de A
+
+  const result = await syncNow();
+  info(`action : ${result.action} — ${result.reason}`);
+  check('la synchronisation automatique ne pousse PAS aveuglément : conflit remonté comme une erreur', result.action === 'error');
+  check('le message explique la situation (autre appareil, cloud changé)', /autre|cloud/i.test(result.reason));
+  check('classée distinctement d’une simple panne réseau/serveur', getState().meta.syncErrorKind === 'conflict');
+  check('RIEN n’a été écrit sur le cloud : la version de A n’est pas écrasée', remote.calls.rpc === 0);
+  check('la version distante de A est toujours intacte', remote.tables.foods.some((f) => f.name === 'Version distante (appareil A)'));
+  check('la modification locale de B n’est PAS perdue pour autant : toujours en state, toujours "dirty"',
+    !!foodNamed(getState(), 'Modification locale (appareil B)') && getState().meta.dirty === true);
+
+  // l'appareil B force explicitement l'envoi (décision assumée de l'utilisateur)
+  const forced = await push({ force: true });
+  check('push({force:true}) contourne le garde-fou et réussit', !!forced);
+  check('la version de B a bien remplacé celle de A sur le cloud (remplacement complet assumé)',
+    remote.tables.foods.some((f) => f.name === 'Modification locale (appareil B)') &&
+    !remote.tables.foods.some((f) => f.name === 'Version distante (appareil A)'));
+  check('état local marqué synchronisé après l’envoi forcé', getState().meta.dirty === false);
+});
+
+await test('P1.3 — appareil jamais synchronisé (remoteStamp null) : premier push jamais bloqué par le garde-fou', async () => {
+  const remote = useRemote({ tables: remoteFrom(defaultState()) });
+  const local = defaultState();
+  local.foods.push({ ...local.foods[0], id: 'f_premier', name: 'Premier envoi de cet appareil' });
+  setLocal(local, { dirty: true, remoteStamp: null }); // jamais pull/push depuis cet appareil
+
+  const result = await syncNow();
+  check('rien à comparer la première fois : le push passe normalement', result.action === 'push');
+  check('donnée bien envoyée', remote.tables.foods.some((f) => f.name === 'Premier envoi de cet appareil'));
 });
 
 await test('Retour en ligne : envoi puis alignement', async () => {

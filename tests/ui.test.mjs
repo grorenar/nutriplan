@@ -1971,6 +1971,113 @@ check('repas vidé : items vides', dstCleared().items.length === 0);
 check('repas vidé : nom vide', dstCleared().name === '');
 check('repas vidé : nameAuto repasse à true (un nom manuel ne reste jamais bloqué après un vidage complet)', dstCleared().nameAuto === true);
 
+console.log('\n— Chantier P1 : export/import JSON — cycle complet (export → modif → import → comparaison)');
+let exportedJsonP1, p1xRecipeId, p1xPrepId;
+store.update((s) => {
+  const r = store.newRecipe('Risotto P1 Export', 'weight');
+  r.items = [store.newRecipeItem(pommeP0.id, 300, 'cru')];
+  r.baseGrams = 300;
+  s.recipes.push(r);
+  p1xRecipeId = r.id;
+  const prep = store.newPreparation(r, 300);
+  p1xPrepId = prep.id;
+  s.preparations.push(prep);
+});
+await wait();
+exportedJsonP1 = store.exportJSON();
+const exportedParsed = JSON.parse(exportedJsonP1);
+check('export : schemaVersion présent', Number.isFinite(exportedParsed.schemaVersion));
+check('export : recettes et préparations incluses (pas seulement les aliments)',
+  exportedParsed.recipes.some((r) => r.id === p1xRecipeId) && exportedParsed.preparations.some((p) => p.id === p1xPrepId));
+
+// modification locale APRÈS l'export, pour vérifier que l'import restaure
+// bien l'état exporté (et efface ce qui a été fait depuis)
+let foodAjouteApresExportId;
+store.update((s) => {
+  const f = { ...s.foods[0], id: 'food_ajoute_apres_export_p1', name: 'Ajouté Après Export P1' };
+  s.foods.push(f);
+  foodAjouteApresExportId = f.id;
+  s.recipes = s.recipes.filter((r) => r.id !== p1xRecipeId);
+});
+await wait();
+check('modification locale bien appliquée avant import (aliment ajouté, recette supprimée)',
+  store.getState().foods.some((f) => f.id === foodAjouteApresExportId) && !store.getState().recipes.some((r) => r.id === p1xRecipeId));
+
+store.importJSON(exportedJsonP1);
+await wait();
+check('import : l’aliment ajouté APRÈS l’export a disparu (remplacement complet, pas une fusion)',
+  !store.getState().foods.some((f) => f.id === foodAjouteApresExportId));
+check('import : la recette présente AU MOMENT de l’export est restaurée', store.getState().recipes.some((r) => r.id === p1xRecipeId));
+check('import : la préparation est restaurée avec son recipeSnapshot intact', store.getState().preparations.find((p) => p.id === p1xPrepId)?.recipeSnapshot?.items?.length === 1);
+
+console.log('\n— Chantier P1 : export/import JSON — validation des fichiers malformés');
+check('JSON syntaxiquement invalide : erreur explicite, aucun crash', (() => {
+  try { store.importJSON('{ ceci n’est pas du JSON'); return false; }
+  catch (e) { return /JSON valide/.test(e.message); }
+})());
+check('JSON valide mais pas une sauvegarde (tableau à la racine) : erreur explicite', (() => {
+  try { store.importJSON('[1,2,3]'); return false; }
+  catch (e) { return /pas une sauvegarde/.test(e.message); }
+})());
+check('objet JSON valide mais sans "foods" : erreur explicite', (() => {
+  try { store.importJSON('{"hello":"world"}'); return false; }
+  catch (e) { return /banque alimentaire absente/.test(e.message); }
+})());
+check('schemaVersion plus récent que celui connu par le code : import refusé, rien n’est modifié', (() => {
+  const before = JSON.stringify(store.getState());
+  try {
+    store.importJSON(JSON.stringify({ foods: [], schemaVersion: 999 }));
+    return false;
+  } catch (e) {
+    return /version plus récente/.test(e.message) && JSON.stringify(store.getState()) === before;
+  }
+})());
+check('un export SANS schemaVersion (antérieur à son introduction) reste importable', (() => {
+  const { schemaVersion, ...withoutVersion } = exportedParsed;
+  store.importJSON(JSON.stringify(withoutVersion));
+  return store.getState().recipes.some((r) => r.id === p1xRecipeId);
+})());
+
+console.log('\n— Chantier P1 : sauvegarde locale de secours (backupLocal / restoreBackup)');
+check('aucune sauvegarde de secours avant le premier appel à backupLocal()', store.backupInfo() === null);
+const stateBeforeBackup = JSON.stringify(store.getState());
+check('backupLocal() réussit et retourne true', store.backupLocal() === true);
+check('backupInfo() renvoie désormais une date', typeof store.backupInfo()?.savedAt === 'string' && !isNaN(Date.parse(store.backupInfo().savedAt)));
+
+// modification locale APRÈS la sauvegarde — restoreBackup() doit l'annuler
+let markerAjouteApresBackupId;
+store.update((s) => {
+  const f = { ...s.foods[0], id: 'food_marker_apres_backup_p1', name: 'Marker Après Backup P1' };
+  s.foods.push(f);
+  markerAjouteApresBackupId = f.id;
+});
+await wait();
+check('la modification locale est bien appliquée avant restauration', store.getState().foods.some((f) => f.id === markerAjouteApresBackupId));
+store.restoreBackup();
+await wait();
+check('restoreBackup() annule la modification faite après la sauvegarde', !store.getState().foods.some((f) => f.id === markerAjouteApresBackupId));
+check('restoreBackup() restaure exactement l’état sauvegardé (hors horodatage meta)',
+  JSON.stringify({ ...store.getState(), meta: undefined }) === JSON.stringify({ ...JSON.parse(stateBeforeBackup), meta: undefined }));
+
+console.log('\n— Chantier P1 : erreurs de stockage local — ne doivent jamais faire planter l’application');
+// localStorage (jsdom comme les navigateurs) traite une AFFECTATION directe
+// de propriété (`localStorage.setItem = …`) comme un setItem('setItem', …)
+// littéral plutôt que comme un remplacement de méthode — il faut passer par
+// le prototype partagé pour réellement intercepter l'appel.
+const StorageProto = Object.getPrototypeOf(localStorage);
+const originalSetItem = StorageProto.setItem;
+StorageProto.setItem = () => { throw new Error('QuotaExceededError (simulé)'); };
+check('backupLocal() : une erreur de stockage est absorbée, retourne false (pas d’exception non interceptée)', store.backupLocal() === false);
+StorageProto.setItem = originalSetItem;
+
+console.log('\n— Chantier P1 : restoreBackup() sans sauvegarde disponible — erreur explicite, pas un crash silencieux');
+localStorage.removeItem('nutriplan.state.v1.backup');
+check('backupInfo() redevient null après suppression de la sauvegarde', store.backupInfo() === null);
+check('restoreBackup() lève une erreur explicite quand aucune sauvegarde n’existe', (() => {
+  try { store.restoreBackup(); return false; }
+  catch (e) { return /[Aa]ucune sauvegarde/.test(e.message); }
+})());
+
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));
 console.log(`${passed} vérifications réussies, ${failures.length} échec(s).`);
