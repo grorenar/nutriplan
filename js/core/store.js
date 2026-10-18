@@ -623,3 +623,73 @@ export function resetCycle() {
     ensureCycleMeals(s);
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Fusion d'aliments en doublon (P3)                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Fusionne un ou plusieurs aliments (`mergeIds`) dans `keepId` : toute
+ * référence vivante à un aliment fusionné est redirigée vers `keepId`,
+ * jamais l'inverse — les valeurs nutritionnelles, l'unité et les métadonnées
+ * de `keepId` restent telles quelles, c'est lui qui gagne. Aucune fusion
+ * automatique : cette fonction n'est jamais appelée sur la seule base d'une
+ * similarité de nom, uniquement sur un choix explicite de l'utilisateur
+ * (écran Aliments, § doublons détectés).
+ *
+ * Ne touche JAMAIS `preparations[].recipeSnapshot` : cette copie est
+ * volontairement figée au moment de la création de la préparation (décision
+ * verrouillée, cf. preparationAsVirtualFood()) — une préparation déjà
+ * matérialisée garde l'historique exact de ce qui a été réellement préparé,
+ * y compris un aliment depuis fusionné ailleurs.
+ *
+ * Retourne un résumé des références migrées, pour affichage et tests —
+ * jamais une opération silencieuse.
+ */
+export function mergeFoods(state, keepId, mergeIds) {
+  const ids = new Set(mergeIds.filter((id) => id && id !== keepId));
+  if (!ids.size || !state.foods.some((f) => f.id === keepId)) {
+    return { recipes: 0, meals: 0, breakfasts: 0, snacks: 0, shopping: 0, batch: 0, foodsRemoved: 0 };
+  }
+  const summary = { recipes: 0, meals: 0, breakfasts: 0, snacks: 0, shopping: 0, batch: 0, foodsRemoved: 0 };
+
+  for (const r of state.recipes) {
+    for (const it of r.items) if (ids.has(it.foodId)) { it.foodId = keepId; summary.recipes++; }
+  }
+  for (const m of state.meals) {
+    for (const it of m.items) if (ids.has(it.foodId)) { it.foodId = keepId; summary.meals++; }
+  }
+  for (const o of state.breakfasts) {
+    for (const it of o.items) if (ids.has(it.foodId)) { it.foodId = keepId; summary.breakfasts++; }
+  }
+  for (const o of state.snacks) {
+    for (const it of o.items) if (ids.has(it.foodId)) { it.foodId = keepId; summary.snacks++; }
+  }
+  // shopping.purchased : simple case à cocher par aliment (aucun stock) —
+  // fusionnée par OR (coché si l'un OU l'autre l'était), jamais perdue.
+  const purchased = state.shopping?.purchased || {};
+  let keptChecked = Boolean(purchased[keepId]);
+  for (const id of ids) {
+    if (id in purchased) { keptChecked = keptChecked || Boolean(purchased[id]); delete purchased[id]; summary.shopping++; }
+  }
+  if (summary.shopping) purchased[keepId] = keptChecked;
+  // batch.overrides : clés "session:foodId" (aliment) ou "session:x-y:foodId"
+  // (sous-préparation) — seul le dernier segment identifie l'aliment. En cas
+  // de conflit (une saisie existe déjà pour keepId sur la même clé), celle de
+  // keepId est conservée : jamais une valeur silencieusement écrasée par
+  // celle de l'aliment fusionné.
+  const overrides = state.batch?.overrides || {};
+  for (const [key, value] of Object.entries(overrides)) {
+    const lastSegment = key.split(':').pop();
+    if (!ids.has(lastSegment)) continue;
+    const newKey = `${key.slice(0, key.length - lastSegment.length)}${keepId}`;
+    if (!(newKey in overrides)) overrides[newKey] = value;
+    delete overrides[key];
+    summary.batch++;
+  }
+
+  const before = state.foods.length;
+  state.foods = state.foods.filter((f) => !ids.has(f.id));
+  summary.foodsRemoved = before - state.foods.length;
+  return summary;
+}

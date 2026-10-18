@@ -1,9 +1,9 @@
 /** Écran ALIMENTS — banque alimentaire entièrement modifiable. */
 
-import { getState, update } from '../core/store.js';
+import { getState, update, mergeFoods } from '../core/store.js';
 import { CATEGORIES, STATES, computeYield } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid, euros } from '../core/util.js';
-import { findSimilarFoods } from '../core/similarity.js';
+import { findSimilarFoods, findDuplicateGroups } from '../core/similarity.js';
 import { similarConfirmModal } from './confirm-similar.js';
 import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
@@ -11,6 +11,8 @@ import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 let query = '';
 let cat = 'all';
+let duplicatesOpen = false; // P3 : section « Doublons détectés » dépliée ou non
+let mergeKeep = {}; // id du premier aliment d'un groupe -> id choisi pour être conservé
 let editing = null; // id d'aliment ou 'new'
 let similarWarning = null; // { list, pending } — popup de confirmation de doublon
 let formDraft = null;      // saisie en cours, préservée entre deux rendus du formulaire
@@ -52,6 +54,8 @@ function renderFull(root, s) {
   else if (cat !== 'all') list = list.filter((f) => f.category === cat);
   if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
 
+  const duplicateGroups = findDuplicateGroups(s.foods);
+
   root.innerHTML = `
     <div class="row" style="margin-bottom:12px">
       <input type="text" data-q value="${esc(query)}" placeholder="Rechercher un aliment…" style="flex:1;min-width:200px">
@@ -62,6 +66,10 @@ function renderFull(root, s) {
         .map(([id, label]) => `<button class="chip" data-cat="${id}" aria-pressed="${cat === id}">${esc(label)}</button>`)
         .join('')}
     </div>
+    ${duplicateGroups.length ? `<div class="row" style="margin-bottom:12px">
+      <button class="btn btn--sm" data-toggle-duplicates>${duplicatesOpen ? 'Masquer' : 'Voir'} les doublons possibles (${duplicateGroups.length})</button>
+    </div>` : ''}
+    ${duplicatesOpen ? duplicatesPanel(duplicateGroups) : ''}
     <div class="card">
       <table>
         <thead><tr>
@@ -79,7 +87,39 @@ function renderFull(root, s) {
   `;
   wireList(root);
   if (editing) { wireDrawerChrome(root); wireDrawerBody(root); wireOverlays(root); }
+  // câblé une seule fois ici (jamais dans wireList()/wireOverlays()
+  // individuellement) : les deux peuvent s'exécuter dans le même passage
+  // quand editing est vrai, ce qui doublonnerait l'écouteur sur le même bouton.
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
   captureBaselineIfNeeded(root, s);
+}
+
+/**
+ * Section « Doublons détectés » (P3) — jamais de fusion automatique : chaque
+ * groupe propose un choix explicite (lequel garder), puis une confirmation
+ * bloquante avant toute fusion réelle. findDuplicateGroups() ne fait que
+ * DÉTECTER (similarity.js, inchangé) ; la fusion elle-même est nouvelle.
+ */
+function duplicatesPanel(groups) {
+  return `<div class="card" style="margin-bottom:12px;border-color:#ecd7ae;background:var(--warn-bg)">
+    <div class="card__head"><h3>Doublons possibles</h3></div>
+    <small style="display:block;margin-bottom:10px">Rien n'est fusionné automatiquement : choisis l'aliment à conserver dans chaque groupe, les autres y seront redirigés partout où ils sont utilisés (recettes, repas, catalogues, courses, batch), puis supprimés.</small>
+    ${groups.map((g) => {
+      const members = [g.food, ...g.similar.map((x) => x.food)];
+      const groupKey = g.food.id;
+      const keepId = mergeKeep[groupKey] || g.food.id;
+      return `<div class="card" style="margin-bottom:8px">
+        ${members.map((f) => `<label class="check" style="display:block;padding:4px 0">
+            <input type="radio" name="merge-keep-${esc(groupKey)}" data-merge-keep="${groupKey}" value="${f.id}" ${f.id === keepId ? 'checked' : ''}>
+            <strong>${esc(f.name)}</strong>${f.brand ? ` — ${esc(f.brand)}` : ''}
+            <span class="tag">${num(f.kcal, 0)} kcal/100g · ${esc(f.category)}${f.gramsPerUnit ? ` · ${num(f.gramsPerUnit, 0)} g/unité` : ''}</span>
+          </label>`).join('')}
+        <div class="row" style="margin-top:8px">
+          <button class="btn btn--sm btn--danger" data-merge-group="${groupKey}">Fusionner dans l'aliment coché</button>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
 }
 
 /**
@@ -101,6 +141,7 @@ function refreshOpenForm(root, s) {
   overlays.innerHTML = overlaysHtml(s);
   wireDrawerBody(root);
   wireOverlays(root);
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
   captureBaselineIfNeeded(root, s);
 }
 
@@ -416,6 +457,46 @@ function wireList(root) {
       });
     })
   );
+
+  // --- P3 : doublons détectés, fusion sur choix explicite uniquement
+  root.querySelector('[data-toggle-duplicates]')?.addEventListener('click', () => {
+    duplicatesOpen = !duplicatesOpen;
+    render(root);
+  });
+  root.querySelectorAll('[data-merge-keep]').forEach((input) =>
+    input.addEventListener('change', (e) => {
+      mergeKeep[e.currentTarget.dataset.mergeKeep] = e.currentTarget.value;
+      render(root);
+    })
+  );
+  root.querySelectorAll('[data-merge-group]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const groupKey = e.currentTarget.dataset.mergeGroup;
+      const st = getState();
+      const groups = findDuplicateGroups(st.foods);
+      const group = groups.find((g) => g.food.id === groupKey);
+      if (!group) return;
+      const members = [group.food, ...group.similar.map((x) => x.food)];
+      const keepId = mergeKeep[groupKey] || group.food.id;
+      const keepFood = members.find((f) => f.id === keepId);
+      const mergeAway = members.filter((f) => f.id !== keepId);
+      if (!keepFood || !mergeAway.length) return;
+      pendingConfirm = {
+        title: 'Fusionner ces aliments ?',
+        message: `${mergeAway.map((f) => `« ${f.name} »`).join(', ')} ${mergeAway.length > 1 ? 'seront redirigés' : 'sera redirigé'} vers « ${keepFood.name} » partout où ${mergeAway.length > 1 ? 'ils sont' : 'il est'} utilisé (recettes, repas, catalogues, courses, batch), puis ${mergeAway.length > 1 ? 'supprimés' : 'supprimé'} de la banque. Les valeurs nutritionnelles et métadonnées de « ${keepFood.name} » ne changent pas. Cette action est irréversible.`,
+        confirmLabel: 'Fusionner',
+        onConfirm: () => {
+          let summary;
+          update((s2) => { summary = mergeFoods(s2, keepId, mergeAway.map((f) => f.id)); });
+          const total = summary.recipes + summary.meals + summary.breakfasts + summary.snacks + summary.shopping + summary.batch;
+          toast(`Fusion effectuée : ${summary.foodsRemoved} aliment(s) supprimé(s), ${total} référence(s) redirigée(s)`);
+          delete mergeKeep[groupKey];
+          render(root);
+        },
+      };
+      render(root);
+    })
+  );
 }
 
 /**
@@ -567,6 +648,4 @@ function wireOverlays(root) {
     // (action sûre par défaut), jamais à une fermeture silencieuse.
     if (e.target.dataset.unsavedBackdrop !== undefined) { confirmingClose = false; render(root); }
   });
-
-  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
 }

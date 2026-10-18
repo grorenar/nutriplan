@@ -27,6 +27,7 @@ import {
   migrateState, newRecipe, newRecipeItem, defaultState, newItem, newFreeItem, sectionsUsed, SECTIONS, DEFAULT_SECTION,
   newPreparation, preparationsById, newPreparationItem, newRecipeMealItem,
   newMeal, normalizeMeal, autoMealName, normalizePreparation, newPreparationLoss,
+  mergeFoods,
 } from '../js/core/store.js';
 import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
 import { stateToTables, tablesToState, TABLES } from '../js/core/sync.js';
@@ -3763,6 +3764,110 @@ test('P1.7 — sync.js : round-trip preparation_losses + last_reset_at (table s�
 
 test('P1.8 — TABLES : preparation_losses présente (vérification des compteurs côté push())', () => {
   check('"preparation_losses" dans TABLES', TABLES.includes('preparation_losses'));
+});
+
+/* ============================================== P3.1 — FUSION D'ALIMENTS EN DOUBLON */
+
+function mergeFixture() {
+  const beef = F('Steak haché');
+  const foodA = { ...beef, id: 'food_merge_a', name: 'Steak haché doublon A' };
+  const foodB = { ...beef, id: 'food_merge_b', name: 'Steak haché doublon B' };
+  const keep = { ...beef, id: 'food_merge_keep', name: 'Steak haché (conservé)' };
+
+  const recipe = newRecipe('Chili fusion', 'weight');
+  recipe.items = [newRecipeItem(foodA.id, 500, 'cru')];
+  recipe.baseGrams = 500;
+
+  const prep = newPreparation(recipe, 500); // recipeSnapshot fige foodA.id — NE DOIT JAMAIS être réécrit
+
+  const meal = { ...newMeal(0, 'lunch'), items: [newItem(foodB.id, 150)] };
+  const breakfast = { ...newMeal(0, 'lunch'), id: 'bo1', name: 'PDJ fusion', items: [newItem(foodA.id, 40)] };
+  const snack = { ...newMeal(0, 'lunch'), id: 'so1', name: 'Collation fusion', items: [newItem(foodB.id, 20)] };
+
+  const st = {
+    foods: [keep, foodA, foodB],
+    recipes: [recipe],
+    preparations: [prep],
+    meals: [meal],
+    breakfasts: [breakfast],
+    snacks: [snack],
+    shopping: { purchased: { [foodA.id]: true, [foodB.id]: false } },
+    batch: { overrides: { [`0:${foodA.id}`]: 300, [`0:0-1:${foodB.id}`]: 120 } },
+  };
+  return { st, foodA, foodB, keep, recipe, prep, meal, breakfast, snack };
+}
+
+test('P3.1.1 — mergeFoods() redirige toutes les références vivantes vers l’aliment conservé', () => {
+  const { st, foodA, foodB, keep, recipe, meal, breakfast, snack } = mergeFixture();
+  const summary = mergeFoods(st, keep.id, [foodA.id, foodB.id]);
+  check('référence dans une recette redirigée', recipe.items[0].foodId === keep.id);
+  check('référence dans un repas redirigée', meal.items[0].foodId === keep.id);
+  check('référence dans un petit-déjeuner redirigée', breakfast.items[0].foodId === keep.id);
+  check('référence dans une collation redirigée', snack.items[0].foodId === keep.id);
+  check('résumé : 1 référence recette, 1 repas, 1 petit-déj, 1 collation',
+    summary.recipes === 1 && summary.meals === 1 && summary.breakfasts === 1 && summary.snacks === 1);
+});
+
+test('P3.1.2 — mergeFoods() : shopping.purchased fusionné par OR, jamais perdu', () => {
+  const { st, foodA, foodB, keep } = mergeFixture();
+  mergeFoods(st, keep.id, [foodA.id, foodB.id]);
+  check('coché si A OU B l’étaient (A=true, B=false → true)', st.shopping.purchased[keep.id] === true);
+  check('les anciennes clés ont disparu', !(foodA.id in st.shopping.purchased) && !(foodB.id in st.shopping.purchased));
+});
+
+test('P3.1.3 — mergeFoods() : batch.overrides réécrit sur le dernier segment (aliment), recette jamais touchée', () => {
+  const { st, foodA, foodB, keep } = mergeFixture();
+  mergeFoods(st, keep.id, [foodA.id, foodB.id]);
+  const keys = Object.keys(st.batch.overrides);
+  check('clé simple "session:foodId" réécrite avec le nouvel id', keys.includes(`0:${keep.id}`) && st.batch.overrides[`0:${keep.id}`] === 300);
+  check('clé de sous-préparation "session:plage:foodId" réécrite', keys.includes(`0:0-1:${keep.id}`) && st.batch.overrides[`0:0-1:${keep.id}`] === 120);
+  check('aucune clé fantôme de l’ancien id', !keys.some((k) => k.includes(foodA.id) || k.includes(foodB.id)));
+});
+
+test('P3.1.4 — mergeFoods() : le recipeSnapshot déjà figé d’une préparation N’EST JAMAIS réécrit', () => {
+  const { st, foodA, keep, prep } = mergeFixture();
+  mergeFoods(st, keep.id, [foodA.id]);
+  check('le snapshot garde l’id de l’aliment fusionné (historique exact de ce qui a été préparé)',
+    prep.recipeSnapshot.items[0].foodId === foodA.id);
+  check('le snapshot ne référence jamais l’id conservé à la place', prep.recipeSnapshot.items[0].foodId !== keep.id);
+});
+
+test('P3.1.5 — mergeFoods() : les aliments fusionnés sont supprimés, l’aliment conservé garde ses propres données', () => {
+  const { st, foodA, foodB, keep } = mergeFixture();
+  const summary = mergeFoods(st, keep.id, [foodA.id, foodB.id]);
+  check('2 aliments supprimés', summary.foodsRemoved === 2);
+  check('foodA absent de la banque', !st.foods.some((f) => f.id === foodA.id));
+  check('foodB absent de la banque', !st.foods.some((f) => f.id === foodB.id));
+  check('l’aliment conservé existe toujours, avec son propre nom (jamais écrasé)',
+    st.foods.some((f) => f.id === keep.id && f.name === 'Steak haché (conservé)'));
+});
+
+test('P3.1.6 — mergeFoods() : conflit de clé batch.overrides → celle de l’aliment conservé gagne, jamais écrasée', () => {
+  const { st, foodA, keep } = mergeFixture();
+  st.batch.overrides[`0:${keep.id}`] = 999; // valeur déjà saisie pour l'aliment CONSERVÉ sur la même session
+  mergeFoods(st, keep.id, [foodA.id]);
+  check('la valeur de l’aliment conservé n’est jamais écrasée par celle de l’aliment fusionné',
+    st.batch.overrides[`0:${keep.id}`] === 999);
+});
+
+test('P3.1.7 — mergeFoods() : aucun id à fusionner ou id de conservation introuvable → no-op sûr', () => {
+  const { st, foodA, keep } = mergeFixture();
+  const before = JSON.parse(JSON.stringify(st));
+  const summary1 = mergeFoods(st, keep.id, []);
+  check('liste vide : aucune donnée modifiée', JSON.stringify(st) === JSON.stringify(before));
+  check('résumé à zéro', summary1.foodsRemoved === 0);
+  const summary2 = mergeFoods(st, 'id_inexistant', [foodA.id]);
+  check('id de conservation introuvable : aucune donnée modifiée', JSON.stringify(st) === JSON.stringify(before));
+  check('résumé à zéro (2)', summary2.foodsRemoved === 0);
+});
+
+test('P3.1.8 — findDuplicateGroups() détecte bien un groupe fusionnable (bout en bout détection → fusion)', () => {
+  const { st, foodA, foodB, keep } = mergeFixture();
+  const groups = findDuplicateGroups(st.foods);
+  const group = groups.find((g) => [g.food.id, ...g.similar.map((x) => x.food.id)].includes(foodA.id));
+  check('un groupe contenant foodA est détecté', !!group);
+  const members = group ? [group.food.id, ...group.similar.map((x) => x.food.id)] : [];
+  check('le groupe contient aussi foodB et l’aliment conservé (même nom de base)', members.includes(foodB.id) && members.includes(keep.id));
 });
 
 /* ---------------------------------------------------------------- bilan */

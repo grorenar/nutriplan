@@ -1901,6 +1901,8 @@ await wait();
 check('suppression bloquée par le recipeSnapshot figé d’une préparation (pas seulement les recettes live)',
   /Pain P0 Test/.test(lastToastText()));
 check('l’aliment existe toujours', store.getState().foods.some((f) => f.id === farineP0.id));
+click($('[data-form-cancel]'));
+await wait();
 
 console.log('\n— Chantier P0 : suppression d’une recette référencée directement (sans préparation) dans un repas');
 let recetteP0bId, mealP0Id;
@@ -2208,6 +2210,56 @@ await wait();
 click($('[data-action-confirm]'));
 await wait();
 check('confirmation : objectifs rétablis par défaut', store.getState().settings.targets.thomas.day.kcal !== 1234);
+
+console.log('\n— Chantier P3 : écran Aliments — fusion de doublons détectés (parcours complet)');
+let foodKeepId, foodAwayId, recipeMergeId;
+store.update((s) => {
+  const base = s.foods[0];
+  const keep = { ...base, id: 'food_p3merge_keep', name: 'Yaourt Nature P3 Fusion', brand: 'MarqueTest' };
+  const away = { ...base, id: 'food_p3merge_away', name: 'Yaourt Nature P3 Fusion', brand: 'MarqueTest' };
+  s.foods.push(keep, away);
+  foodKeepId = keep.id;
+  foodAwayId = away.id;
+  const r = store.newRecipe('Recette P3 Fusion', 'weight');
+  r.items = [store.newRecipeItem(away.id, 150, 'cru')];
+  r.baseGrams = 150;
+  s.recipes.push(r);
+  recipeMergeId = r.id;
+});
+await wait();
+click($('[data-view="foods"]'));
+await wait();
+const toggleDup = $('[data-toggle-duplicates]');
+check('bouton "Voir les doublons possibles" affiché', !!toggleDup);
+click(toggleDup);
+await wait();
+const groupCard = () => $$('[data-merge-group]').find((b) => {
+  const card = b.closest('.card');
+  return /Yaourt Nature P3 Fusion/.test(card.textContent);
+});
+check('groupe de doublons affiché avec les deux aliments', !!groupCard());
+// coche explicitement l'aliment à conserver (celui créé en premier dans ce test)
+const keepRadio = $$('[data-merge-keep]').find((r) => r.value === foodKeepId);
+check('case à cocher pour choisir l’aliment à conserver', !!keepRadio);
+click(keepRadio);
+await wait();
+click(groupCard());
+await wait();
+check('confirmation bloquante affichée avant toute fusion', !!$('[data-action-confirm]'));
+check('rien fusionné avant confirmation : les deux aliments existent toujours', store.getState().foods.some((f) => f.id === foodAwayId));
+click($('[data-action-cancel]'));
+await wait();
+check('« Annuler » : aucune fusion, les deux aliments existent toujours', store.getState().foods.some((f) => f.id === foodAwayId) && store.getState().foods.some((f) => f.id === foodKeepId));
+
+click(groupCard());
+await wait();
+click($('[data-action-confirm]'));
+await wait();
+check('confirmation : l’aliment choisi pour être fusionné a disparu', !store.getState().foods.some((f) => f.id === foodAwayId));
+check('l’aliment conservé existe toujours', store.getState().foods.some((f) => f.id === foodKeepId));
+check('la référence de la recette a bien été redirigée vers l’aliment conservé',
+  store.getState().recipes.find((r) => r.id === recipeMergeId).items[0].foodId === foodKeepId);
+check('toast confirmant la fusion avec un résumé', /[Ff]usion/.test(lastToastText()));
 
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));
