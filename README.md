@@ -529,6 +529,18 @@ avant/arrière. Changer de caméra arrête explicitement l'ancien flux (`control
 d'en ouvrir un nouveau — jamais deux flux actifs en même temps — en réutilisant le même élément
 `<video>` (jamais recréé), pour ne provoquer aucun scintillement.
 
+**Mise au point** : une fois le flux démarré, `js/core/barcode-scanner.js` consulte les capacités de
+la caméra active (`MediaTrackCapabilities.focusMode`) et demande explicitement une mise au point
+**continue** (`focusMode: 'continuous'`) si elle est annoncée — sans cette demande, certains
+navigateurs démarrent une caméra pourtant capable d'autofocus en mode fixe. **Limite matérielle,
+pas logicielle** : beaucoup de caméras AVANT (webcam d'ordinateur, caméra selfie de téléphone
+calibrée pour la visioconférence à bout de bras) n'ont tout simplement pas de moteur de mise au
+point — aucun logiciel ne peut l'activer si le matériel ne le permet pas. La caméra arrière, prévue
+pour la photo, en dispose presque toujours ; elle reste le choix par défaut et le plus fiable pour
+scanner un emballage. Repli entièrement silencieux dans tous les autres cas (capacité absente,
+méthode non exposée par le navigateur, `applyConstraints()` refusé) : ne bloque jamais le démarrage
+de la lecture.
+
 **Cycle de vie et confidentialité** : le décodage se fait entièrement sur l'appareil (lecture d'une
 image de `<canvas>` en mémoire) — aucune image ni flux vidéo n'est jamais envoyé à un serveur, seul
 le texte décodé quitte `js/core/barcode-scanner.js`. Toutes les pistes vidéo sont explicitement

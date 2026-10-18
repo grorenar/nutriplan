@@ -160,6 +160,31 @@ function friendlyError(error) {
 }
 
 /**
+ * Demande une mise au point AUTOMATIQUE CONTINUE quand la caméra l'annonce
+ * dans ses capacités (`MediaTrackCapabilities.focusMode` incluant
+ * `'continuous'`) — jamais garanti : certaines caméras, en particulier des
+ * caméras avant (webcam d'ordinateur, caméra selfie de téléphone calibrée
+ * pour un usage visio à bout de bras), n'ont tout simplement pas de mise au
+ * point motorisée, auquel cas cet appel est un no-op silencieux (rien à
+ * activer matériellement). Utile dans le cas intermédiaire : une caméra qui
+ * SAIT faire du continu mais que le navigateur démarre par défaut en focus
+ * fixe/single-shot tant que rien ne le demande explicitement.
+ * Jamais bloquant pour la lecture : capacité absente, méthode non exposée,
+ * ou `applyConstraints()` en échec ne doivent jamais empêcher le scan de
+ * démarrer (repli silencieux, comme pour `listCameras()`).
+ */
+async function tryEnableContinuousFocus(controls) {
+  try {
+    if (typeof controls?.streamVideoCapabilitiesGet !== 'function') return;
+    const caps = controls.streamVideoCapabilitiesGet(() => true);
+    if (!caps?.focusMode?.includes?.('continuous')) return;
+    await controls.streamVideoConstraintsApply({ advanced: [{ focusMode: 'continuous' }] }, () => true);
+  } catch {
+    // best effort — une mise au point manquante ne doit jamais bloquer la lecture
+  }
+}
+
+/**
  * Démarre une lecture continue sur l'élément vidéo fourni.
  *
  * @param {object} opts
@@ -220,6 +245,8 @@ export async function startScan({ videoElement, deviceId, onDetected, onError })
     onError(friendlyError(error));
     return { stop: () => {}, getActiveDeviceId: () => null };
   }
+
+  await tryEnableContinuousFocus(controls);
 
   return {
     stop,

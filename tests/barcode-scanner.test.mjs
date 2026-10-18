@@ -61,8 +61,11 @@ const DecodeHintType = { POSSIBLE_FORMATS: 'POSSIBLE_FORMATS' };
  * `behavior(callback)` est appelé immédiatement avec le callback continu de
  * décodage — le test l'invoque lui-même pour simuler une ou plusieurs frames.
  */
-function makeFakeLib({ decodeImpl } = {}) {
-  const calls = { constructedHints: null, decodeFromVideoDeviceArgs: null, stopCount: 0 };
+function makeFakeLib({ decodeImpl, capabilities } = {}) {
+  const calls = {
+    constructedHints: null, decodeFromVideoDeviceArgs: null, stopCount: 0,
+    capabilitiesRequested: false, appliedConstraints: null,
+  };
   class FakeReader {
     constructor(hints) { calls.constructedHints = hints; }
     async decodeFromVideoDevice(deviceId, videoElement, callback) {
@@ -71,6 +74,12 @@ function makeFakeLib({ decodeImpl } = {}) {
       const controls = {
         stop: () => { calls.stopCount++; },
         streamVideoSettingsGet: () => ({ deviceId: 'device-active' }),
+        // undefined par défaut (comme un faux objet "controls" minimal ne les
+        // exposant pas) ; fourni seulement quand le test passe `capabilities`.
+        ...(capabilities !== undefined ? {
+          streamVideoCapabilitiesGet: () => { calls.capabilitiesRequested = true; return capabilities; },
+          streamVideoConstraintsApply: async (constraints) => { calls.appliedConstraints = constraints; },
+        } : {}),
       };
       calls.emit = (result, error) => callback(result, error, controls);
       return controls;
@@ -271,6 +280,62 @@ await testAsync('getActiveDeviceId() : ne lève jamais, même si la bibliothèqu
   __setTestLib(lib);
   const controls = await startScan({ videoElement: {}, onDetected: () => {}, onError: () => {} });
   check('null renvoyé plutôt qu’une exception', controls.getActiveDeviceId() === null);
+  __setTestLib(null);
+});
+
+/* ---------------------------------------------------------------- mise au point continue */
+
+await testAsync('startScan() : demande la mise au point continue quand la caméra l’annonce dans ses capacités', async () => {
+  const { lib, calls } = makeFakeLib({ capabilities: { focusMode: ['manual', 'continuous', 'single-shot'] } });
+  __setTestLib(lib);
+  const controls = await startScan({ videoElement: {}, onDetected: () => {}, onError: () => {} });
+  check('les capacités de la caméra ont bien été consultées', calls.capabilitiesRequested === true);
+  check('la contrainte focusMode "continuous" est appliquée', calls.appliedConstraints?.advanced?.[0]?.focusMode === 'continuous');
+  controls.stop();
+  __setTestLib(null);
+});
+
+await testAsync('startScan() : aucune demande de mise au point si la caméra ne l’annonce pas (ex. caméra avant sans autofocus)', async () => {
+  const { lib, calls } = makeFakeLib({ capabilities: { focusMode: ['fixed'] } });
+  __setTestLib(lib);
+  const controls = await startScan({ videoElement: {}, onDetected: () => {}, onError: () => {} });
+  check('capacités consultées mais "continuous" absent -> aucune contrainte appliquée (rien à activer matériellement)', calls.capabilitiesRequested === true && calls.appliedConstraints === null);
+  controls.stop();
+  __setTestLib(null);
+});
+
+await testAsync('startScan() : aucune capacité exposée (focusMode absent) -> ignoré proprement, jamais une exception', async () => {
+  const { lib, calls } = makeFakeLib({ capabilities: {} });
+  __setTestLib(lib);
+  const controls = await startScan({ videoElement: {}, onDetected: () => {}, onError: () => {} });
+  check('aucune contrainte appliquée, aucune exception', calls.appliedConstraints === null);
+  controls.stop();
+  __setTestLib(null);
+});
+
+await testAsync('startScan() : controls sans streamVideoCapabilitiesGet (navigateur ne l’exposant pas) -> la lecture démarre quand même normalement', async () => {
+  const { lib } = makeFakeLib(); // capabilities non fourni -> les deux méthodes sont absentes du faux controls
+  __setTestLib(lib);
+  let detected = null;
+  const controls = await startScan({ videoElement: {}, onDetected: (c) => { detected = c; }, onError: () => {} });
+  check('démarrage réussi malgré l’absence de l’API capacités', typeof controls.stop === 'function');
+  controls.stop();
+  __setTestLib(null);
+});
+
+await testAsync('startScan() : un applyConstraints() qui échoue ne bloque jamais le démarrage de la lecture', async () => {
+  const { lib, calls } = makeFakeLib({ capabilities: { focusMode: ['continuous'] } });
+  // force l'échec de la demande de mise au point, sans toucher au reste du faux controls
+  const realDecode = lib.BrowserMultiFormatOneDReader.prototype.decodeFromVideoDevice;
+  lib.BrowserMultiFormatOneDReader.prototype.decodeFromVideoDevice = async function (...args) {
+    const controls = await realDecode.apply(this, args);
+    controls.streamVideoConstraintsApply = async () => { throw new Error('applyConstraints refusé par le pilote caméra'); };
+    return controls;
+  };
+  __setTestLib(lib);
+  const controls = await startScan({ videoElement: {}, onDetected: () => {}, onError: () => {} });
+  check('la lecture démarre normalement malgré l’échec de la demande de mise au point', typeof controls.stop === 'function' && typeof controls.getActiveDeviceId === 'function');
+  controls.stop();
   __setTestLib(null);
 });
 
