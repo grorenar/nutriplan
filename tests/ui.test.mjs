@@ -2416,10 +2416,10 @@ await wait();
 click($('[data-off-open]'));
 await wait();
 globalThis.fetch = async (url) => {
-  check('endpoint de recherche texte (distinct de la fiche produit par code-barres)', /cgi\/search\.pl/.test(url) && /search_terms=/.test(url));
+  check('endpoint de recherche texte (Search-a-licious, distinct de la fiche produit par code-barres)', /search\.openfoodfacts\.org\/search/.test(url) && /q=/.test(url));
   return jsonRes({
     count: 2,
-    products: [
+    hits: [
       { code: '1111111111111', product_name: 'Yaourt OFF Test A', brands: 'MarqueA', nutriments: { 'energy-kcal_100g': 60 } },
       { code: '2222222222222', product_name: 'Yaourt OFF Test B', brands: 'MarqueB', nutriments: { 'energy-kcal_100g': 45 } },
     ],
@@ -2446,11 +2446,11 @@ await wait();
 let resolveSlow;
 let fastCalled = false;
 globalThis.fetch = async (url) => {
-  if (/search_terms=lent/.test(url)) {
-    return new Promise((resolve) => { resolveSlow = () => resolve(jsonRes({ count: 1, products: [{ code: '1', product_name: 'RÉSULTAT PÉRIMÉ', nutriments: {} }] })); });
+  if (/q=lent/.test(url)) {
+    return new Promise((resolve) => { resolveSlow = () => resolve(jsonRes({ count: 1, hits: [{ code: '1', product_name: 'RÉSULTAT PÉRIMÉ', nutriments: {} }] })); });
   }
   fastCalled = true;
-  return jsonRes({ count: 1, products: [{ code: '2', product_name: 'RÉSULTAT RÉCENT', nutriments: {} }] });
+  return jsonRes({ count: 1, hits: [{ code: '2', product_name: 'RÉSULTAT RÉCENT', nutriments: {} }] });
 };
 type($('[data-off-name]'), 'lent');
 await new Promise((r) => setTimeout(r, 600)); // déclenche la recherche "lente", encore en attente

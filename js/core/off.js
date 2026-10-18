@@ -10,14 +10,21 @@
  *     à world.openfoodfacts.org et à la documentation OFF bloqués dans ce
  *     bac à sable. v2 reste documentée, stable, et c'est celle utilisée ici ;
  *     à reconsidérer si v3 peut être vérifiée directement) ;
- *   - recherche texte : /cgi/search.pl?search_terms=…&json=1 (« Search API
- *     v2 », endpoint historique mais toujours en production). Search-a-licious
- *     (search.openfoodfacts.org) est le futur remplaçant officiellement
- *     annoncé, mais encore en bêta à l'écriture de ce module, avec un schéma
- *     de réponse non confirmé et un signalement (issue GitHub publique) d'un
- *     index de production resté désynchronisé plusieurs mois — risque jugé
- *     trop élevé pour une implémentation qui ne peut pas être testée en
- *     direct ici. Documenté dans le README (§ Open Food Facts).
+ *   - recherche texte : Search-a-licious (search.openfoodfacts.org/search).
+ *     CHANGEMENT (confirmé en usage réel après la première mise en ligne) :
+ *     l'endpoint historique /cgi/search.pl, initialement retenu ici par
+ *     prudence (Search-a-licious encore en bêta, schéma non vérifiable depuis
+ *     ce bac à sable), s'est révélé renvoyer systématiquement une erreur 503
+ *     en production — très probablement déprioritisé par OFF côté
+ *     infrastructure maintenant que Search-a-licious existe. Un 503 sans
+ *     en-tête CORS est rapporté par le navigateur comme une erreur CORS
+ *     (message trompeur : la cause réelle est le 503, visible uniquement via
+ *     l'onglet Réseau des outils de développement). Search-a-licious est donc
+ *     utilisé malgré un schéma de réponse non confirmé avec certitude :
+ *     l'analyse de la réponse (parseSearchResponse() ci-dessous) reste
+ *     volontairement tolérante (plusieurs noms de clé possibles pour le
+ *     tableau de résultats) pour s'adapter sans casser si le schéma exact
+ *     diffère légèrement de l'hypothèse retenue.
  *
  * Aucune clé API n'est nécessaire (lecture publique). OFF demande un
  * User-Agent personnalisé pour identifier l'appli cliente — un navigateur
@@ -34,7 +41,11 @@
  */
 
 const PRODUCT_BASE = 'https://world.openfoodfacts.org/api/v2/product';
-const SEARCH_BASE = 'https://world.openfoodfacts.org/cgi/search.pl';
+// Search-a-licious : pas de paramètre `fields=` connu avec certitude (schéma
+// non vérifiable depuis cet environnement) — on ne le tente pas, au risque
+// sinon qu'un paramètre mal deviné fasse échouer toute la requête ; les
+// documents complets sont filtrés après coup par mapOffProductToFoodDraft().
+const SEARCH_BASE = 'https://search.openfoodfacts.org/search';
 
 const PRODUCT_FIELDS = [
   'code', 'product_name', 'product_name_fr', 'generic_name', 'generic_name_fr',
@@ -42,13 +53,6 @@ const PRODUCT_FIELDS = [
   'image_front_url', 'image_front_small_url', 'image_url', 'url',
   'nutriments', 'nutriscore_grade', 'nova_group', 'ecoscore_grade',
   'ingredients_text', 'ingredients_text_fr', 'allergens_tags', 'traces_tags',
-].join(',');
-
-// Liste volontairement plus courte pour la recherche (plusieurs résultats à
-// la fois) : seulement ce qui est affiché dans la liste de résultats.
-const SEARCH_FIELDS = [
-  'code', 'product_name', 'product_name_fr', 'brands', 'quantity',
-  'image_front_small_url', 'nutriments', 'nutriscore_grade',
 ].join(',');
 
 /**
@@ -110,6 +114,24 @@ export async function fetchProductByBarcode(barcode, { signal } = {}) {
 }
 
 /**
+ * Extrait la liste des produits et le total d'une réponse Search-a-licious —
+ * schéma non confirmé avec certitude (cf. en-tête du fichier) : plusieurs
+ * noms de clé plausibles sont essayés dans l'ordre, et chaque élément est
+ * désenveloppé s'il est imbriqué sous `.document`/`._source` (motif courant
+ * pour un wrapper au-dessus d'un moteur Elasticsearch). Si l'un des champs
+ * s'avère un jour différent de ce qui est tenté ici, le résultat le plus
+ * probable est une liste vide (« aucun résultat ») plutôt qu'une exception —
+ * jamais un plantage de l'écran de recherche.
+ */
+function parseSearchResponse(json) {
+  const rawList = json?.hits ?? json?.results ?? json?.products ?? json?.items ?? [];
+  const list = Array.isArray(rawList) ? rawList : [];
+  const products = list.map((item) => item?.document ?? item?._source ?? item).filter(Boolean);
+  const count = Number(json?.count ?? json?.total ?? json?.total_count) || 0;
+  return { products, count };
+}
+
+/**
  * Recherche textuelle par nom et/ou marque (deux champs distincts, combinables).
  * @returns {Promise<{status:'ok', count, results:[{code,raw,draft}]} | {status:'no-results'} | {status:'error', error} | {status:'aborted'}>}
  */
@@ -117,24 +139,19 @@ export async function searchProductsByText({ name = '', brand = '' } = {}, { sig
   const terms = [name, brand].map((s) => String(s ?? '').trim()).filter(Boolean).join(' ');
   if (!terms) return { status: 'error', error: 'Indique un nom ou une marque.' };
   const params = new URLSearchParams({
-    search_terms: terms,
-    json: '1',
+    q: terms,
     page: String(page),
     page_size: String(pageSize),
-    fields: SEARCH_FIELDS,
-    // popularité d'usage plutôt que pertinence textuelle brute : les
-    // produits génériques/mal renseignés remontent moins souvent en tête.
-    sort_by: 'unique_scans_n',
-    lc: 'fr',
+    langs: 'fr',
   });
   const res = await getJson(`${SEARCH_BASE}?${params.toString()}`, signal);
   if (res.aborted) return { status: 'aborted' };
   if (!res.ok) return { status: 'error', error: res.error };
-  const products = Array.isArray(res.json?.products) ? res.json.products : [];
+  const { products, count } = parseSearchResponse(res.json);
   if (!products.length) return { status: 'no-results', count: 0, results: [] };
   return {
     status: 'ok',
-    count: Number(res.json.count) || products.length,
+    count: count || products.length,
     results: products.map((p) => {
       const code = normalizeBarcode(p.code);
       return { code, raw: p, draft: mapOffProductToFoodDraft(p, code) };

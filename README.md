@@ -455,13 +455,21 @@ seul le champ kcal direct d'OFF est utilisé, par prudence sur l'unité.
   être vérifié depuis cet environnement de développement (accès réseau à `world.openfoodfacts.org`
   et à la documentation OFF bloqués dans ce bac à sable) — v2 reste documentée, stable, et c'est
   elle qui est utilisée ; à reconsidérer si v3 peut être vérifiée en direct.
-- recherche texte : `GET world.openfoodfacts.org/cgi/search.pl?search_terms=…&json=1` — **un
-  endpoint distinct** de la fiche produit (OFF ne propose pas de recherche texte sur le même
-  endpoint). Search-a-licious (`search.openfoodfacts.org`) est le remplaçant officiellement annoncé,
-  mais encore en bêta à l'écriture de cette fonctionnalité, avec un schéma de réponse non confirmé
-  et un signalement public (issue GitHub du projet) d'un index de production resté désynchronisé
-  plusieurs mois — risque jugé trop élevé pour une implémentation qui ne pouvait pas être testée en
-  direct ici. L'endpoint historique reste officiellement en production et documenté.
+- recherche texte : `GET search.openfoodfacts.org/search?q=…` (Search-a-licious) — **un endpoint
+  distinct** de la fiche produit (OFF ne propose pas de recherche texte sur le même endpoint).
+  **Historique de cette décision** : la première version utilisait l'endpoint historique
+  `cgi/search.pl`, choisi par prudence car son schéma de réponse (`count`/`products`) est bien
+  documenté alors que celui de Search-a-licious, alors en bêta, ne pouvait pas être vérifié depuis
+  cet environnement de développement (accès réseau bloqué). **En usage réel, cet endpoint
+  historique s'est révélé renvoyer systématiquement une erreur 503** — très probablement
+  déprioritisé côté infrastructure OFF maintenant que Search-a-licious existe. Un 503 sans en-tête
+  CORS est rapporté par le navigateur comme une erreur CORS, ce qui en a masqué la cause réelle
+  jusqu'à inspection de l'onglet Réseau. Basculé vers Search-a-licious en conséquence, malgré un
+  schéma de réponse toujours non confirmé avec certitude : la lecture de la réponse
+  (`parseSearchResponse()`, `js/core/off.js`) reste volontairement tolérante (plusieurs noms de clé
+  possibles pour la liste de résultats et pour le total) afin de s'adapter sans planter l'écran de
+  recherche si le schéma exact diffère légèrement de l'hypothèse retenue — à vérifier en usage réel
+  et à ajuster si le format réel s'avère différent.
 
 **Licence et attribution** : les données Open Food Facts sont sous licence ouverte **ODbL**
 (attribution requise), affichée dans le panneau de recherche avec un lien vers le projet. Aucune

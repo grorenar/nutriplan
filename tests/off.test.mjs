@@ -191,38 +191,59 @@ await testAsync('fetchProductByBarcode() : requête annulée (AbortController)',
 
 /* ---------------------------------------------------------------- searchProductsByText */
 
-await testAsync('searchProductsByText() : recherche texte — endpoint DISTINCT de la fiche produit', async () => {
+await testAsync('searchProductsByText() : recherche texte — endpoint DISTINCT de la fiche produit (Search-a-licious)', async () => {
   let calledUrl = null;
   mockFetchOnce(async (url) => {
     calledUrl = url;
     return jsonRes({
       count: 2,
-      products: [
+      hits: [
         { code: '111', product_name: 'Yaourt nature', brands: 'MarqueA', nutriments: { 'energy-kcal_100g': 60 } },
         { code: '222', product_name: 'Yaourt nature allégé', brands: 'MarqueB', nutriments: { 'energy-kcal_100g': 45 } },
       ],
     });
   });
   const res = await searchProductsByText({ name: 'yaourt nature', brand: '' });
-  check('endpoint de recherche (cgi/search.pl), jamais le même chemin que /api/v2/product/', /cgi\/search\.pl/.test(calledUrl) && !/\/api\/v2\/product\//.test(calledUrl));
-  check('terme de recherche transmis', /search_terms=/.test(calledUrl));
+  check('endpoint Search-a-licious, jamais le même chemin que /api/v2/product/', /search\.openfoodfacts\.org\/search/.test(calledUrl) && !/\/api\/v2\/product\//.test(calledUrl));
+  check('terme de recherche transmis', /q=/.test(calledUrl));
   check('status = ok avec 2 résultats', res.status === 'ok' && res.results.length === 2);
   check('chaque résultat porte son brouillon mappé', res.results[0].draft.name === 'Yaourt nature' && res.results[1].draft.kcal === 45);
   restoreFetch();
 });
 
+await testAsync('searchProductsByText() : analyse tolérante — autre nom de clé pour la liste de résultats', async () => {
+  // le schéma exact de Search-a-licious n'a pas pu être vérifié avec
+  // certitude (cf. commentaire d'en-tête de off.js) : vérifie que la lecture
+  // reste correcte si la clé s'avère être "results" plutôt que "hits".
+  mockFetchOnce(async () => jsonRes({
+    total: 1,
+    results: [{ code: '333', product_name: 'Compote Test', nutriments: {} }],
+  }));
+  const res = await searchProductsByText({ name: 'compote' });
+  check('status = ok malgré une clé de résultats différente de "hits"', res.status === 'ok' && res.results.length === 1);
+  check('total repris depuis "total" si "count" est absent', res.count === 1);
+  restoreFetch();
+});
+
 await testAsync('searchProductsByText() : nom et marque combinables', async () => {
   let calledUrl = null;
-  mockFetchOnce(async (url) => { calledUrl = url; return jsonRes({ count: 0, products: [] }); });
+  mockFetchOnce(async (url) => { calledUrl = url; return jsonRes({ count: 0, hits: [] }); });
   await searchProductsByText({ name: 'yaourt', brand: 'Danone' });
   check('les deux champs sont présents dans la requête envoyée', calledUrl.includes('yaourt') && calledUrl.includes('Danone'));
   restoreFetch();
 });
 
 await testAsync('searchProductsByText() : recherche sans résultat', async () => {
-  mockFetchOnce(async () => jsonRes({ count: 0, products: [] }));
+  mockFetchOnce(async () => jsonRes({ count: 0, hits: [] }));
   const res = await searchProductsByText({ name: 'produit totalement inexistant xyz123' });
   check('status = no-results', res.status === 'no-results');
+  restoreFetch();
+});
+
+await testAsync('searchProductsByText() : réponse sans clé de résultats reconnue — liste vide, jamais un plantage', async () => {
+  mockFetchOnce(async () => jsonRes({ unexpected_shape: true }));
+  const res = await searchProductsByText({ name: 'test' });
+  check('status = no-results plutôt qu’une exception non interceptée', res.status === 'no-results');
   restoreFetch();
 });
 
