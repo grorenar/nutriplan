@@ -214,7 +214,7 @@ n'apparaît que dans l'éditeur de repas, jamais dans le planning.
 | Écran | Contenu |
 |---|---|
 | Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication (nom et `nameAuto` copiés ensemble), « Vider ce repas » (remet le repas à l'état vraiment vide, `nameAuto` repasse à `true`), bouton « Optimiser le cycle » (suggestions uniquement) |
-| Aliments | banque complète, recherche, favoris, création/modification/suppression — la suppression est bloquée si l'aliment est encore référencé dans une recette (composition live ou `recipeSnapshot` figé d'une préparation existante), avec un avertissement (non bloquant) s'il est seulement utilisé dans des repas/catalogues |
+| Aliments | banque complète, recherche, favoris, création/modification/suppression — la suppression est bloquée si l'aliment est encore référencé dans une recette (composition live ou `recipeSnapshot` figé d'une préparation existante), avec un avertissement (non bloquant) s'il est seulement utilisé dans des repas/catalogues ; section dépliable « Doublons possibles » (même détection que la popup de création, `findSimilarFoods`/`findDuplicateGroups`) proposant pour chaque groupe un choix explicite de l'aliment à conserver puis une confirmation bloquante avant toute fusion — jamais de fusion automatique sur la seule similarité de nom |
 | Recettes | composition à partir de la banque alimentaire, type `weight` (poids continu, échelle `baseGrams`) ou `portion` (unité indivisible), consignes de cuisson/conservation, `batchAllowed` ; la suppression est bloquée tant qu'une préparation existe pour cette recette, ou qu'elle est encore référencée directement (sans préparation) dans un repas ou un catalogue |
 | Préparations et distribution | matérialisation d'une recette en stock réel (quantité préparée, figée dans `recipeSnapshot`), répartition éditable vers les repas, mode zéro reste, jet total ou partiel du reliquat (historique des pertes jamais effacé), suppression définitive d'une préparation (avec avertissement si du stock reste, bloquée tant que des affectations existent) ; une préparation épuisée (stock à 0) est masquée de la liste active sans jamais être supprimée des données |
 | Petits-déjeuners | catalogue indépendant, sans jour ni date ; compteur d'utilisations **par personne**, avec contrôle de couverture du cycle |
@@ -225,6 +225,23 @@ n'apparaît que dans l'éditeur de repas, jamais dans le planning.
 
 Le bouton **Imprimer** (en haut à droite) permet de choisir les sections : planning, batch,
 courses, détails nutritionnels, catalogues.
+
+### Export PDF : décision de ne pas ajouter une fonction dédiée
+
+L'impression (`js/views/print.js` + `css/print.css`) construit déjà un document A4 propre et
+paginé (titres évitant une coupure de page, lignes de tableau non coupées, en-têtes répétés),
+dans un conteneur `#print` dédié masquant tout le reste de l'interface. Or la boîte de dialogue
+d'impression de tous les navigateurs courants (desktop et mobile, Chrome/Edge/Firefox/Safari)
+propose nativement une destination « Enregistrer au format PDF », qui produit exactement ce même
+document en PDF, sans aucun code supplémentaire.
+
+Ajouter une bibliothèque JS de génération PDF (ex. jsPDF) dupliquerait cette mise en forme avec un
+rendu presque certainement moins fidèle (polices, tableaux, sauts de page à refaire entièrement
+dans l'API du générateur plutôt qu'en CSS), pour un gain nul puisque le résultat — un PDF du même
+contenu — est déjà obtenu via le navigateur. Nutriplan étant un site statique sans serveur
+(GitHub Pages), une génération PDF côté serveur n'est pas non plus une option sans service externe
+payant. Décision : pas de fonction d'export PDF dédiée ; l'impression existante couvre déjà ce
+besoin.
 
 ## 5. Mise en service
 
@@ -355,7 +372,17 @@ présents qui lui ressemblent (nom proche, même marque, même poids par unité,
 avec leurs macros pour 100 g face à celles de l'élément en cours de création : « Annuler » ne crée
 rien, « Créer quand même » poursuit. C'est le seul mécanisme utilisé pour ce cas — aucun toast ni
 message en bas de fenêtre en parallèle. Le même contrôle tourne après un import JSON et liste les doublons
-possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
+possibles. Rien n'est jamais fusionné ni supprimé automatiquement à ces deux occasions (création, import).
+
+Un second mécanisme, indépendant, permet une fusion volontaire : sur l'écran Aliments, la section
+« Doublons possibles » (repliée par défaut) reprend la même détection pour regrouper les aliments
+existants qui se ressemblent. Pour chaque groupe, on choisit lequel conserver, puis une confirmation
+bloquante rappelle ce qui va être redirigé (recettes, repas, catalogues, courses, batch) avant toute
+fusion réelle — là encore, jamais automatique sur la seule similarité de nom. L'aliment conservé
+garde intégralement ses propres valeurs nutritionnelles et métadonnées ; seules les références aux
+aliments fusionnés sont redirigées vers lui, puis ceux-ci sont supprimés. Le `recipeSnapshot` déjà
+figé d'une préparation existante n'est jamais réécrit par une fusion, pour la même raison que pour
+la suppression : il garde l'historique exact de ce qui a été réellement préparé.
 
 ## 8. Tests
 
