@@ -39,4 +39,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y postgresql
           sudo service postgresql start
-      - run: npm run test:sync
+      # tests/sync.test.mjs exécute psql via `su postgres` (identique à la
+      # procédure locale du README) : sans privilège root, `su` exigerait un
+      # mot de passe que l'utilisateur postgres n'a pas sur ce runner — d'où
+      # sudo ici (PATH explicitement conservé pour retrouver npm/node).
+      - run: sudo env "PATH=$PATH" npm run test:sync

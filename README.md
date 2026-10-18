@@ -396,6 +396,35 @@ apt-get install -y postgresql && service postgresql start   # une seule fois par
 npm run test:sync       # équivalent à : node tests/sync.test.mjs
 ```
 
+Le test pilote `psql` via `su postgres` : il doit donc être lancé en root (comme ci-dessus), ou avec
+`sudo` sinon (`sudo env "PATH=$PATH" npm run test:sync`) — sans privilège root, `su` exigerait un mot
+de passe que l'utilisateur système `postgres` n'a pas par défaut.
+
+### Tests navigateur (Playwright) : décision de ne pas les intégrer pour l'instant
+
+Playwright a servi, ponctuellement et en dehors du dépôt, à vérifier des correctifs touchant le
+rendu réel (ex. le rejeu d'une animation d'entrée de tiroir, un bouton non câblé) avant d'en écrire
+l'équivalent dans `tests/ui.test.mjs`. À chaque fois, le même défaut s'est révélé vérifiable en
+jsdom sans navigateur réel : `tests/ui.test.mjs` compare déjà l'identité DOM d'un panneau avant/après
+une interaction (`$('.drawer__panel') === panneauAvant`, ex. ligne « le panneau n'est PAS recréé… »)
+pour détecter une reconstruction intempestive — la cause concrète des bugs de rejeu d'animation
+rencontrés — sans avoir besoin d'un véritable moteur de rendu CSS. La seule chose qu'un navigateur
+réel vérifie et que jsdom ne peut pas, c'est le rejeu d'une animation CSS elle-même
+(`element.getAnimations()`), qui est un défaut cosmétique, jamais une perte de donnée ni une
+référence orpheline.
+
+Au regard de l'usage réel (application strictement privative, utilisée quelques fois par semaine
+par deux personnes) et du coût d'une suite Playwright versionnée — un second runtime de test,
+~300 Mo de binaires Chromium à télécharger et maintenir à jour, un job CI plus lent et plus sujet
+aux flakiness liées au rendu — ce coût n'est aujourd'hui pas justifié par un bénéfice que
+`tests/ui.test.mjs` n'apporte pas déjà. Décision : ne pas verser Playwright au dépôt pour l'instant.
+
+Ce qui justifierait de revenir sur cette décision : un bug réel qui échapperait structurellement à
+jsdom (rendu CSS, comportement tactile mobile réel, timing d'animation ayant un effet fonctionnel
+et pas seulement visuel) et qui se reproduirait plus d'une fois. En attendant, une vérification
+ponctuelle au navigateur réel reste possible à la main (Playwright installé globalement, hors
+dépôt) sans que cela justifie de l'ajouter en dépendance versionnée ni en CI.
+
 ## 9. Sauvegarde
 
 Paramètres → Données → **Exporter en JSON** produit un fichier complet (banque, recettes,
