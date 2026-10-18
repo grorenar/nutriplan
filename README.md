@@ -475,19 +475,54 @@ seul le champ kcal direct d'OFF est utilisé, par prudence sur l'unité.
 (attribution requise), affichée dans le panneau de recherche avec un lien vers le projet. Aucune
 donnée n'est redistribuée au-delà d'un usage personnel de préremplissage.
 
+### Proxy CORS (requis pour la recherche par nom/marque)
+
+**Constat en usage réel** (grorenar.github.io) : `search.openfoodfacts.org` ne renvoie pas
+d'en-tête `Access-Control-Allow-Origin` pour une requête venant d'un site tiers. La requête aboutit
+bien côté serveur (200 OK, avec de vraies données) mais le navigateur **bloque la réponse** avant
+qu'elle n'atteigne le code de l'application — rapporté, de façon trompeuse, comme une erreur CORS
+générique. Nutriplan étant un site statique pur (GitHub Pages, sans serveur), rien côté client ne
+peut contourner cette politique : il faut un relais qui fasse la requête lui-même (serveur à
+serveur, jamais soumis au CORS du navigateur) puis ajoute l'en-tête manquant.
+
+`cloudflare-worker/off-proxy.js` est ce relais — minimal (une soixantaine de lignes), sans aucune
+donnée stockée ni clé API requise (Open Food Facts est un service public en lecture), ne
+proxie que les deux routes connues (fiche produit par code-barres, recherche) et rejette tout le
+reste. Il fait au passage ce que le navigateur interdit côté client : positionner l'en-tête
+`User-Agent` personnalisé qu'Open Food Facts recommande pour identifier l'application appelante.
+
+**Déploiement (gratuit, ~5 minutes, aucune installation locale) :**
+1. Crée un compte sur [dash.cloudflare.com](https://dash.cloudflare.com) si besoin (offre gratuite
+   suffisante : 100 000 requêtes/jour).
+2. Dans le tableau de bord : **Workers & Pages** → **Create** → **Create Worker**. Donne-lui un nom
+   (ex. `nutriplan-off-proxy`) et déploie-le tel quel une première fois.
+3. Ouvre **Edit code**, remplace tout le contenu par celui de `cloudflare-worker/off-proxy.js` (de
+   ce dépôt), puis **Deploy**.
+4. Note l'URL donnée par Cloudflare (ex.
+   `https://nutriplan-off-proxy.<ton-compte>.workers.dev`).
+5. Colle cette URL dans `js/config.js`, champ `OFF_PROXY_URL`, puis commit/push comme d'habitude.
+6. Si le site est servi depuis un domaine différent de `grorenar.github.io`, ajoute ce domaine à
+   `ALLOWED_ORIGINS` en haut de `cloudflare-worker/off-proxy.js` avant de redéployer (étape 3).
+
+Tant que `OFF_PROXY_URL` reste vide, l'application appelle Open Food Facts directement : ça
+fonctionne pour la fiche produit par code-barres (`world.openfoodfacts.org`, CORS correct à ce
+jour) mais pas pour la recherche par nom/marque.
+
 **Limitations connues, documentées plutôt que contournées :**
-- OFF demande un en-tête `User-Agent` personnalisé pour identifier l'application cliente ; un
-  navigateur **refuse** qu'une page web positionne cet en-tête sur une requête `fetch()`
-  (« forbidden header name », imposé par le navigateur lui-même) — sans serveur intermédiaire (hors
-  de portée ici, l'application reste volontairement sans backend), cette recommandation ne peut pas
-  être pleinement respectée côté client pur.
-- Aucune clé API n'est nécessaire (lecture publique) et aucun secret n'est exposé.
+- Aucune clé API n'est nécessaire (lecture publique) et aucun secret n'est exposé, y compris dans
+  le proxy (aucune donnée utilisateur n'y transite ni n'y est stockée — il relaie une requête
+  publique vers un service public).
 - La recherche texte est temporisée côté interface et la recherche par code-barres reste un geste
   explicite (bouton ou Entrée) — en usage réel (deux personnes), très en dessous des limites
   publiées par OFF (15 requêtes/min/IP pour la fiche produit, 10/min/IP pour la recherche).
-- Aucune mise en cache durable des résultats OFF : chaque recherche interroge le service à nouveau,
-  volontairement — les données d'un produit peuvent changer, et rien ne justifierait ici la
-  complexité d'une stratégie d'invalidation pour un usage aussi ponctuel.
+- Aucune mise en cache durable des résultats OFF (ni côté application, ni dans le proxy) : chaque
+  recherche interroge le service à nouveau, volontairement — les données d'un produit peuvent
+  changer, et rien ne justifierait ici la complexité d'une stratégie d'invalidation pour un usage
+  aussi ponctuel.
+- Le schéma de réponse exact de Search-a-licious n'a toujours pas pu être vérifié avec certitude
+  depuis cet environnement de développement (accès réseau bloqué, y compris vers le proxy une fois
+  déployé) : l'analyse de la réponse reste volontairement tolérante (§ ci-dessus) ; à ajuster si le
+  format réel observé en usage diffère de l'hypothèse retenue.
 
 ## 8. Tests
 

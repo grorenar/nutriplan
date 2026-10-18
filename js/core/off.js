@@ -26,12 +26,23 @@
  *     tableau de résultats) pour s'adapter sans casser si le schéma exact
  *     diffère légèrement de l'hypothèse retenue.
  *
- * Aucune clé API n'est nécessaire (lecture publique). OFF demande un
- * User-Agent personnalisé pour identifier l'appli cliente — un navigateur
- * REFUSE qu'une page web positionne cet en-tête sur une requête fetch()
- * (« forbidden header name », imposé par le navigateur lui-même, pas
- * contournable côté client) : limitation documentée, sans solution côté
- * navigateur pur sans serveur proxy (hors de portée ici, cf. README).
+ * CORS : `search.openfoodfacts.org` ne renvoie pas d'en-tête
+ * `Access-Control-Allow-Origin` pour un site tiers (confirmé en usage réel —
+ * la requête aboutit, 200 OK côté serveur, mais le navigateur bloque la
+ * réponse). Nutriplan étant un site statique pur, ceci est incontournable
+ * côté client seul : `cloudflare-worker/off-proxy.js` (racine du dépôt) est
+ * un relais minimal à déployer séparément (voir README) qui fait la requête
+ * lui-même et ajoute l'en-tête manquant. `OFF_PROXY_URL` (js/config.js)
+ * active ce relais pour les deux endpoints une fois configuré ; tant qu'il
+ * reste vide, les deux fonctions ci-dessous appellent Open Food Facts
+ * directement (fonctionne pour la fiche produit par code-barres à ce jour,
+ * pas pour la recherche).
+ *
+ * Aucune clé API n'est nécessaire (lecture publique). OFF demande par
+ * ailleurs un User-Agent personnalisé pour identifier l'appli cliente — un
+ * navigateur REFUSE qu'une page web positionne cet en-tête sur une requête
+ * fetch() (« forbidden header name », imposé par le navigateur lui-même) ;
+ * le proxy, lui, le peut (et le fait) puisque c'est un serveur.
  *
  * Respecte les limites publiées par OFF (documentation officielle) :
  * 15 req/min/IP pour la lecture de fiches produit, 10 req/min/IP pour la
@@ -40,12 +51,17 @@
  * interface (foods.js) les respecte par construction.
  */
 
-const PRODUCT_BASE = 'https://world.openfoodfacts.org/api/v2/product';
+import { OFF_PROXY_URL } from '../config.js';
+
+// Avec proxy configuré : mêmes chemins que ceux attendus par
+// cloudflare-worker/off-proxy.js (/product/{code}.json, /search). Sans
+// proxy : appel direct à Open Food Facts (cf. commentaire d'en-tête).
+const PRODUCT_BASE = OFF_PROXY_URL ? `${OFF_PROXY_URL}/product` : 'https://world.openfoodfacts.org/api/v2/product';
 // Search-a-licious : pas de paramètre `fields=` connu avec certitude (schéma
 // non vérifiable depuis cet environnement) — on ne le tente pas, au risque
 // sinon qu'un paramètre mal deviné fasse échouer toute la requête ; les
 // documents complets sont filtrés après coup par mapOffProductToFoodDraft().
-const SEARCH_BASE = 'https://search.openfoodfacts.org/search';
+const SEARCH_BASE = OFF_PROXY_URL ? `${OFF_PROXY_URL}/search` : 'https://search.openfoodfacts.org/search';
 
 const PRODUCT_FIELDS = [
   'code', 'product_name', 'product_name_fr', 'generic_name', 'generic_name_fr',
