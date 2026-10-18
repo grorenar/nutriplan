@@ -51,7 +51,12 @@ foods[]            id, name, category, brand, kcal, protein, carbs, fat, fiber,
                    referenceState, cookedFactor, unitName, gramsPerUnit, fractionable,
                    unitEntry, price, packageWeight, batchAllowed, shelfLifeDays,
                    requiresCooking, favorite,
-                   cookingMethod, cookingTemp, cookingTime, prepTime, equipment, instructions
+                   cookingMethod, cookingTemp, cookingTime, prepTime, equipment, instructions,
+                   — Open Food Facts (§7, purement informatifs, jamais utilisés par le moteur
+                   nutritionnel ci-dessus) : barcode (chaîne, jamais un nombre — préserve un zéro
+                   initial), satFat, sugars, salt, sodium, nutriScore, novaGroup, ecoScore,
+                   ingredientsText, allergensText, imageUrl, imageThumbUrl, offUrl, offQuantity,
+                   offFetchedAt — tous `null` par défaut, jamais 0 ni '' pour une valeur absente
 recipes[]          id, name, kind(weight|portion), baseGrams, items[] (recette, cf. items[] ci-dessous),
                    batchAllowed, shelfLifeDays, cookingMethod, cookingTemp, cookingTime, prepTime,
                    equipment, instructions
@@ -406,11 +411,81 @@ aliments fusionnés sont redirigées vers lui, puis ceux-ci sont supprimés. Le 
 figé d'une préparation existante n'est jamais réécrit par une fusion, pour la même raison que pour
 la suppression : il garde l'historique exact de ce qui a été réellement préparé.
 
+### Recherche Open Food Facts (préremplissage à la création)
+
+Sur un **nouvel** aliment uniquement (pas en modification), le bouton « Rechercher sur Open Food
+Facts » ouvre un panneau de recherche à deux entrées indépendantes et combinables :
+
+- **par code-barres** : saisie (ou, un jour, un lecteur/une caméra — non implémenté ici, mais
+  `js/views/foods.js` expose `openFoodFormWithBarcode()` et l'événement
+  `nutriplan:off-barcode` (`{ detail: { barcode } }`, écouté dans `app.js` comme
+  `nutriplan:open-food`) comme point d'entrée tout prêt pour un futur scanner) ;
+- **par nom et/ou marque** : recherche texte temporisée (500 ms après la dernière frappe), jamais
+  une requête par caractère tapé.
+
+Résultat : une liste de produits (vignette, nom, marque, quantité, macros pour 100 g, Nutri-Score
+quand disponible). **Aucune création automatique** : il faut cliquer explicitement sur « Utiliser ce
+produit » pour préremplir le formulaire — qui reste entièrement modifiable avant l'enregistrement
+final, comme une saisie manuelle. Si le formulaire contenait déjà une saisie réelle, une confirmation
+bloquante est demandée avant de la remplacer.
+
+**Doublon par code-barres** : si le produit trouvé correspond déjà à un aliment de la banque (même
+code-barres — critère fort, pas une simple ressemblance de nom), la recherche ne propose jamais de
+créer un second aliment : elle ouvre directement la fiche existante (« Utiliser quand même » reste
+possible pour le cas rare d'un code-barres partagé par erreur entre deux produits réellement
+différents sur Open Food Facts). Le même contrôle s'applique à l'enregistrement manuel : un
+code-barres identique à un aliment déjà présent déclenche la même popup bloquante que pour une
+ressemblance de nom.
+
+**Données récupérées** (toujours modifiables, jamais une valeur devinée pour un champ absent de la
+fiche OFF — `null` reste `null`, jamais remplacé par 0) : nom (version française privilégiée quand
+disponible), marque (la première si plusieurs), code-barres, kcal/protéines/glucides/lipides/fibres
+pour 100 g, poids du conditionnement (seulement pour un format simple et non ambigu du type
+« 500 g »/« 1 kg »/« 1 L » — un multi-conditionnement comme « 4 x 125 g » reste affiché en texte
+plutôt que deviné), et, en section complémentaire repliable : graisses saturées, sucres, sel et
+sodium (jamais l'un déduit de l'autre), Nutri-Score, groupe NOVA, Eco-Score, liste des ingrédients,
+allergènes et traces, URL de la fiche OFF et date de récupération (traçabilité). **La catégorie
+Nutriplan n'est jamais déduite** des catégories OFF — taxonomie trop large pour une correspondance
+fiable, le choix reste toujours manuel. L'énergie n'est jamais recalculée depuis l'énergie en kJ :
+seul le champ kcal direct d'OFF est utilisé, par prudence sur l'unité.
+
+**Endpoints utilisés** (`js/core/off.js`, module unique encapsulant les deux) :
+- fiche produit par code-barres : `GET world.openfoodfacts.org/api/v2/product/{code}.json` (API
+  v2, encore officiellement supportée). Une v3 existe mais son schéma de réponse exact n'a pas pu
+  être vérifié depuis cet environnement de développement (accès réseau à `world.openfoodfacts.org`
+  et à la documentation OFF bloqués dans ce bac à sable) — v2 reste documentée, stable, et c'est
+  elle qui est utilisée ; à reconsidérer si v3 peut être vérifiée en direct.
+- recherche texte : `GET world.openfoodfacts.org/cgi/search.pl?search_terms=…&json=1` — **un
+  endpoint distinct** de la fiche produit (OFF ne propose pas de recherche texte sur le même
+  endpoint). Search-a-licious (`search.openfoodfacts.org`) est le remplaçant officiellement annoncé,
+  mais encore en bêta à l'écriture de cette fonctionnalité, avec un schéma de réponse non confirmé
+  et un signalement public (issue GitHub du projet) d'un index de production resté désynchronisé
+  plusieurs mois — risque jugé trop élevé pour une implémentation qui ne pouvait pas être testée en
+  direct ici. L'endpoint historique reste officiellement en production et documenté.
+
+**Licence et attribution** : les données Open Food Facts sont sous licence ouverte **ODbL**
+(attribution requise), affichée dans le panneau de recherche avec un lien vers le projet. Aucune
+donnée n'est redistribuée au-delà d'un usage personnel de préremplissage.
+
+**Limitations connues, documentées plutôt que contournées :**
+- OFF demande un en-tête `User-Agent` personnalisé pour identifier l'application cliente ; un
+  navigateur **refuse** qu'une page web positionne cet en-tête sur une requête `fetch()`
+  (« forbidden header name », imposé par le navigateur lui-même) — sans serveur intermédiaire (hors
+  de portée ici, l'application reste volontairement sans backend), cette recommandation ne peut pas
+  être pleinement respectée côté client pur.
+- Aucune clé API n'est nécessaire (lecture publique) et aucun secret n'est exposé.
+- La recherche texte est temporisée côté interface et la recherche par code-barres reste un geste
+  explicite (bouton ou Entrée) — en usage réel (deux personnes), très en dessous des limites
+  publiées par OFF (15 requêtes/min/IP pour la fiche produit, 10/min/IP pour la recherche).
+- Aucune mise en cache durable des résultats OFF : chaque recherche interroge le service à nouveau,
+  volontairement — les données d'un produit peuvent changer, et rien ne justifierait ici la
+  complexité d'une stratégie d'invalidation pour un usage aussi ponctuel.
+
 ## 8. Tests
 
 ```bash
 npm ci                # une seule fois (installe jsdom, nécessaire à tests/ui.test.mjs)
-npm test              # les 4 suites ci-dessous, dans cet ordre, en une commande
+npm test              # les 5 suites ci-dessous, dans cet ordre, en une commande
 ```
 
 Équivalent détaillé, ou pour lancer une suite isolément :
@@ -419,6 +494,7 @@ npm test              # les 4 suites ci-dessous, dans cet ordre, en une commande
 npm run test:engine     # node tests/engine.test.mjs    — moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
 npm run test:volume     # node tests/volume.test.mjs    — analyse du volume d'un repas — sans dépendance
 npm run test:autosync   # node tests/autosync.test.mjs  — synchronisation automatique, client Supabase simulé — sans dépendance
+npm run test:off        # node tests/off.test.mjs       — service Open Food Facts, `fetch` entièrement simulé — sans dépendance, sans réseau
 npm run test:ui         # node tests/ui.test.mjs        — parcours réel de l'interface (jsdom)
 ```
 

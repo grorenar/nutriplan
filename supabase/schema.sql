@@ -351,6 +351,28 @@ alter table snack_items add column if not exists recipe_id text;
 alter table snack_items add column if not exists preparation_id text;
 alter table snack_items add column if not exists zero_waste boolean default false;
 
+-- Open Food Facts (recherche/préremplissage de la fiche aliment) : toutes
+-- purement informatives, jamais utilisées par le moteur nutritionnel. Aucune
+-- contrainte "unique" sur barcode : la détection de doublon par code-barres
+-- est faite côté application (foods.js), pas forcée en base — un push ne
+-- doit jamais échouer pour cette raison. `barcode` est du texte (jamais un
+-- type numérique) pour préserver un éventuel zéro initial.
+alter table foods add column if not exists barcode text;
+alter table foods add column if not exists sat_fat numeric;
+alter table foods add column if not exists sugars numeric;
+alter table foods add column if not exists salt numeric;
+alter table foods add column if not exists sodium numeric;
+alter table foods add column if not exists nutri_score text;
+alter table foods add column if not exists nova_group numeric;
+alter table foods add column if not exists eco_score text;
+alter table foods add column if not exists ingredients_text text;
+alter table foods add column if not exists allergens_text text;
+alter table foods add column if not exists image_url text;
+alter table foods add column if not exists image_thumb_url text;
+alter table foods add column if not exists off_url text;
+alter table foods add column if not exists off_quantity text;
+alter table foods add column if not exists off_fetched_at timestamptz;
+
 -- PostgreSQL ne propose pas "add constraint if not exists" : on supprime puis
 -- recrée (comme les policies RLS plus bas), pour que le script reste rejouable.
 do $$

@@ -27,7 +27,7 @@ import {
   migrateState, newRecipe, newRecipeItem, defaultState, newItem, newFreeItem, sectionsUsed, SECTIONS, DEFAULT_SECTION,
   newPreparation, preparationsById, newPreparationItem, newRecipeMealItem,
   newMeal, normalizeMeal, autoMealName, normalizePreparation, newPreparationLoss,
-  mergeFoods,
+  mergeFoods, normalizeFood,
 } from '../js/core/store.js';
 import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
 import { stateToTables, tablesToState, TABLES } from '../js/core/sync.js';
@@ -3868,6 +3868,52 @@ test('P3.1.8 — findDuplicateGroups() détecte bien un groupe fusionnable (bout
   check('un groupe contenant foodA est détecté', !!group);
   const members = group ? [group.food.id, ...group.similar.map((x) => x.food.id)] : [];
   check('le groupe contient aussi foodB et l’aliment conservé (même nom de base)', members.includes(foodB.id) && members.includes(keep.id));
+});
+
+test('Open Food Facts — champs de la fiche aliment : round-trip stateToTables()/tablesToState() complet', () => {
+  const s = defaultState();
+  const offFood = {
+    id: 'f_off_roundtrip', name: 'Produit OFF Test', category: 'autre', brand: 'MarqueOFF',
+    kcal: 539, protein: 6.3, carbs: 57.5, fat: 30.9, fiber: 0, // fiber=0 : vraie valeur, distincte d'absente
+    referenceState: 'pret', cookedFactor: 1, unitName: '', gramsPerUnit: 0, fractionable: true,
+    price: null, packageWeight: 400, batchAllowed: false, favorite: false, lastUsed: null,
+    shelfLifeDays: null, requiresCooking: false,
+    cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+    // zéro initial réel : un vrai EAN français commence souvent par 0
+    barcode: '03017620422003',
+    satFat: 10.6, sugars: 56.3, salt: 0.107, sodium: null, // sodium absent, salt présent : jamais confondus
+    nutriScore: 'e', novaGroup: 4, ecoScore: null,
+    ingredientsText: 'Sucre, huile de palme, NOISETTES 13%.', allergensText: 'noisettes, lait, soja',
+    imageUrl: 'https://images.openfoodfacts.org/x.jpg', imageThumbUrl: 'https://images.openfoodfacts.org/x.100.jpg',
+    offUrl: 'https://world.openfoodfacts.org/product/3017620422003', offQuantity: '400 g',
+    offFetchedAt: '2026-01-15T10:00:00.000Z',
+  };
+  s.foods = [offFood];
+  const tables = stateToTables(s);
+  const row = tables.foods[0];
+  check('barcode transmis comme chaîne (jamais un nombre)', typeof row.barcode === 'string' && row.barcode === '03017620422003');
+
+  const back = tablesToState({ foods: tables.foods });
+  const roundTripped = back.foods[0];
+  check('barcode préservé, zéro initial intact', roundTripped.barcode === '03017620422003');
+  check('sucres (valeur réelle) préservés', roundTripped.sugars === 56.3);
+  check('fibre = 0 (vraie valeur) préservée, jamais perdue au round-trip', roundTripped.fiber === 0);
+  check('sodium absent reste null après round-trip (jamais confondu avec salt)', roundTripped.sodium === null);
+  check('sel présent ET distinct du sodium après round-trip', roundTripped.salt === 0.107 && roundTripped.salt !== roundTripped.sodium);
+  check('Nutri-Score préservé', roundTripped.nutriScore === 'e');
+  check('groupe NOVA préservé comme nombre', roundTripped.novaGroup === 4);
+  check('Eco-Score absent reste null', roundTripped.ecoScore === null);
+  check('texte des ingrédients préservé intégralement', roundTripped.ingredientsText === offFood.ingredientsText);
+  check('texte des allergènes préservé', roundTripped.allergensText === offFood.allergensText);
+  check('URL de la fiche OFF préservée (traçabilité de la source)', roundTripped.offUrl === offFood.offUrl);
+  check('horodatage de récupération préservé (traçabilité)', roundTripped.offFetchedAt === offFood.offFetchedAt);
+
+  // un aliment SANS lien OFF (création manuelle classique) ne doit jamais se
+  // voir attribuer de valeurs OFF par défaut autres que null.
+  const manual = normalizeFood({ id: 'f_manual', name: 'Pomme', category: 'fruit', kcal: 52, protein: 0.3, carbs: 14, fat: 0.2 });
+  check('aliment créé manuellement : barcode absent reste null, jamais une chaîne vide forcée ni 0', manual.barcode === null);
+  check('aliment créé manuellement : aucune valeur OFF inventée (satFat/sugars/salt/sodium restent null)',
+    manual.satFat === null && manual.sugars === null && manual.salt === null && manual.sodium === null);
 });
 
 /* ---------------------------------------------------------------- bilan */

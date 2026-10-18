@@ -2326,6 +2326,186 @@ await wait();
 check('Échap ferme la confirmation bloquante sans déclencher l’action', !$('[data-action-confirm]'));
 check('Échap n’a pas supprimé la recette (annulation, pas confirmation)', store.getState().recipes.some((r) => r.id === recetteP4Id));
 
+console.log('\n— Chantier Open Food Facts : recherche par code-barres (produit trouvé, préremplissage, enregistrement)');
+const realFetch = globalThis.fetch;
+const jsonRes = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => data });
+click($('[data-view="foods"]'));
+await wait();
+click($('[data-new]'));
+await wait();
+check('bouton de recherche Open Food Facts affiché pour un NOUVEL aliment', !!$('[data-off-open]'));
+click($('[data-off-open]'));
+await wait();
+check('panneau de recherche OFF ouvert', !!$('[data-off-backdrop]'));
+type($('[data-off-barcode]'), '3017620422003');
+globalThis.fetch = async (url) => {
+  check('endpoint code-barres appelé (API v2, pas la recherche texte)', /\/api\/v2\/product\/3017620422003\.json/.test(url));
+  return jsonRes({
+    status: 1, code: '3017620422003',
+    product: {
+      product_name_fr: 'Pâte à tartiner Test OFF', brands: 'MarqueOFF,AutreMarque', quantity: '400 g',
+      nutriments: { 'energy-kcal_100g': 539, proteins_100g: 6.3, carbohydrates_100g: 57.5, fat_100g: 30.9, sugars_100g: 56.3, salt_100g: 0.107 },
+      nutriscore_grade: 'E', url: 'https://world.openfoodfacts.org/product/3017620422003',
+    },
+  });
+};
+click($('[data-off-barcode-go]'));
+await wait();
+check('produit trouvé affiché', /Pâte à tartiner Test OFF/.test($('[data-off-backdrop]').textContent));
+check('marque affichée (une seule, la première)', /MarqueOFF/.test($('[data-off-backdrop]').textContent) && !/AutreMarque/.test($('[data-off-backdrop]').textContent));
+click($('[data-off-use]'));
+await wait();
+check('panneau OFF refermé après sélection', !$('[data-off-backdrop]'));
+check('nom préremplit le formulaire', $('[data-f="name"]').value === 'Pâte à tartiner Test OFF');
+check('marque préremplie', $('[data-f="brand"]').value === 'MarqueOFF');
+check('kcal prérempli', Number($('[data-f="kcal"]').value) === 539);
+check('code-barres prérempli (chaîne, pas un nombre affiché différemment)', $('[data-f="barcode"]').value === '3017620422003');
+check('sucres (valeur complémentaire OFF) préremplis', Number($('[data-f="sugars"]').value) === 56.3);
+check('fibre ABSENTE sur la fiche OFF reste vide, jamais forcée à 0', $('[data-f="fiber"]').value === '');
+type($('[data-f="category"]'), ''); // no-op, la catégorie reste au choix par défaut (jamais déduite d'OFF)
+change($('[data-f="category"]'), 'autre');
+click($('[data-save]'));
+await wait();
+const createdOff = store.getState().foods.find((f) => f.barcode === '3017620422003');
+check('aliment enregistré avec son code-barres', !!createdOff);
+check('toast de confirmation', /enregistré/i.test(lastToastText()));
+globalThis.fetch = realFetch;
+
+console.log('\n— Chantier Open Food Facts : code-barres déjà présent dans la banque (doublon fort, jamais silencieux)');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+type($('[data-off-barcode]'), '3017620422003'); // même code que l'aliment déjà créé ci-dessus
+globalThis.fetch = async () => jsonRes({
+  status: 1, code: '3017620422003',
+  product: { product_name: 'Pâte à tartiner Test OFF', nutriments: {} },
+});
+click($('[data-off-barcode-go]'));
+await wait();
+check('doublon détecté : proposition d’ouvrir la fiche existante plutôt que d’en créer une seconde', !!$('[data-off-open-existing]'));
+click($('[data-off-open-existing]'));
+await wait();
+check('la fiche EXISTANTE est ouverte (édition), pas une nouvelle création', $('.drawer__head h3')?.textContent.includes('Modifier'));
+check('toujours un seul aliment pour ce code-barres', store.getState().foods.filter((f) => f.barcode === '3017620422003').length === 1);
+globalThis.fetch = realFetch;
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Open Food Facts : code-barres absent de la base (pas une erreur, saisie manuelle possible)');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+type($('[data-off-barcode]'), '0000000000000');
+globalThis.fetch = async () => jsonRes({ status: 0, code: '0000000000000', status_verbose: 'product not found' });
+click($('[data-off-barcode-go]'));
+await wait();
+check('message "non trouvé" affiché, jamais présenté comme une erreur', /[Aa]ucun produit trouvé/.test($('[data-off-backdrop]').textContent));
+check('pas de blocage : le formulaire de saisie manuelle reste utilisable', !!$('[data-f="name"]'));
+globalThis.fetch = realFetch;
+click($('[data-off-cancel]'));
+await wait();
+check('retour en saisie manuelle : le panneau OFF se ferme, le formulaire de création reste ouvert', !$('[data-off-backdrop]') && !!$('[data-f="name"]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Open Food Facts : recherche par nom/marque — plusieurs résultats, sélection explicite, jamais de création automatique');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+globalThis.fetch = async (url) => {
+  check('endpoint de recherche texte (distinct de la fiche produit par code-barres)', /cgi\/search\.pl/.test(url) && /search_terms=/.test(url));
+  return jsonRes({
+    count: 2,
+    products: [
+      { code: '1111111111111', product_name: 'Yaourt OFF Test A', brands: 'MarqueA', nutriments: { 'energy-kcal_100g': 60 } },
+      { code: '2222222222222', product_name: 'Yaourt OFF Test B', brands: 'MarqueB', nutriments: { 'energy-kcal_100g': 45 } },
+    ],
+  });
+};
+type($('[data-off-name]'), 'yaourt off test');
+await new Promise((r) => setTimeout(r, 600)); // au-delà du délai de temporisation (debounce) de la recherche
+check('deux résultats affichés, aucune création automatique', /Yaourt OFF Test A/.test($('[data-off-backdrop]').textContent) && /Yaourt OFF Test B/.test($('[data-off-backdrop]').textContent));
+check('aucun aliment créé avant sélection explicite', !store.getState().foods.some((f) => f.name.startsWith('Yaourt OFF Test')));
+const useButtons = () => $$('[data-off-use]');
+check('un bouton de sélection par résultat', useButtons().length === 2);
+click(useButtons().find((b) => b.dataset.offUse === '2222222222222'));
+await wait();
+check('le BON résultat sélectionné préremplit le formulaire (pas le premier par défaut)', $('[data-f="name"]').value === 'Yaourt OFF Test B' && Number($('[data-f="kcal"]').value) === 45);
+globalThis.fetch = realFetch;
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Open Food Facts : une réponse périmée (recherche précédente) n’écrase jamais une recherche plus récente');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+let resolveSlow;
+let fastCalled = false;
+globalThis.fetch = async (url) => {
+  if (/search_terms=lent/.test(url)) {
+    return new Promise((resolve) => { resolveSlow = () => resolve(jsonRes({ count: 1, products: [{ code: '1', product_name: 'RÉSULTAT PÉRIMÉ', nutriments: {} }] })); });
+  }
+  fastCalled = true;
+  return jsonRes({ count: 1, products: [{ code: '2', product_name: 'RÉSULTAT RÉCENT', nutriments: {} }] });
+};
+type($('[data-off-name]'), 'lent');
+await new Promise((r) => setTimeout(r, 600)); // déclenche la recherche "lente", encore en attente
+type($('[data-off-name]'), 'rapide');
+await new Promise((r) => setTimeout(r, 600)); // la recherche "rapide" part et se résout en premier
+check('la recherche la plus récente s’est bien exécutée', fastCalled);
+resolveSlow?.(); // la réponse "périmée" arrive maintenant, après la plus récente
+await wait();
+check('seul le résultat de la recherche la plus récente est affiché', /RÉSULTAT RÉCENT/.test($('[data-off-backdrop]').textContent));
+check('la réponse périmée n’a PAS écrasé l’affichage', !/RÉSULTAT PÉRIMÉ/.test($('[data-off-backdrop]').textContent));
+globalThis.fetch = realFetch;
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Open Food Facts : erreur réseau — message explicite, jamais un blocage silencieux');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+type($('[data-off-barcode]'), '1234567890123');
+globalThis.fetch = async () => { throw new TypeError('network down'); };
+click($('[data-off-barcode-go]'));
+await wait();
+check('message d’erreur réseau explicite affiché', /[Cc]onnexion.*[Oo]pen Food Facts/.test($('[data-off-backdrop]').textContent) || /réseau/i.test($('[data-off-backdrop]').textContent));
+check('bouton « Réessayer » proposé', !!$('[data-off-retry]'));
+globalThis.fetch = realFetch;
+click($('[data-off-cancel]'));
+await wait();
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Open Food Facts : remplace une saisie manuelle déjà en cours seulement après confirmation');
+click($('[data-new]'));
+await wait();
+type($('[data-f="name"]'), 'Saisie manuelle déjà commencée');
+click($('[data-off-open]'));
+await wait();
+type($('[data-off-barcode]'), '5555555555555');
+globalThis.fetch = async () => jsonRes({
+  status: 1, code: '5555555555555',
+  product: { product_name: 'Produit OFF qui écraserait la saisie', nutriments: { 'energy-kcal_100g': 100 } },
+});
+click($('[data-off-barcode-go]'));
+await wait();
+click($('[data-off-use]'));
+await wait();
+check('une confirmation est demandée avant d’écraser une saisie manuelle déjà en cours', !!$('[data-action-confirm]'));
+check('rien n’est encore remplacé tant que la confirmation n’a pas eu lieu', $('[data-f="name"]')?.value === 'Saisie manuelle déjà commencée' || !$('[data-f="name"]'));
+click($('[data-action-confirm]'));
+await wait();
+check('après confirmation explicite, les données OFF remplacent bien la saisie', $('[data-f="name"]').value === 'Produit OFF qui écraserait la saisie');
+globalThis.fetch = realFetch;
+click($('[data-form-cancel]'));
+await wait();
+
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));
 console.log(`${passed} vérifications réussies, ${failures.length} échec(s).`);

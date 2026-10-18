@@ -97,6 +97,15 @@ export function normalizeFood(f) {
     shelfLifeDays: null,
     requiresCooking: false,
     cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+    // Open Food Facts (recherche/préremplissage de la fiche aliment) : tous
+    // purement informatifs, jamais utilisés par le moteur nutritionnel
+    // (macros/objectifs restent kcal/protein/carbs/fat/fiber uniquement).
+    // `barcode` est TOUJOURS une chaîne (jamais Number()) pour préserver un
+    // éventuel zéro initial. null = non renseigné, jamais 0/'' par défaut.
+    barcode: null, satFat: null, sugars: null, salt: null, sodium: null,
+    nutriScore: null, novaGroup: null, ecoScore: null,
+    ingredientsText: null, allergensText: null,
+    imageUrl: null, imageThumbUrl: null, offUrl: null, offQuantity: null, offFetchedAt: null,
     ...f,
     // saisie par unités entières par défaut pour un aliment non fractionnable
     unitEntry: f.unitEntry ?? (Number(f.gramsPerUnit) > 0 && f.fractionable === false),

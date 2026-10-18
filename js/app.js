@@ -124,6 +124,13 @@ function boot() {
     navigate('foods');
   });
 
+  // point d'entrée pour un futur lecteur de code-barres (caméra/douchette,
+  // non implémenté ici) : il n'a qu'à émettre cet événement avec le code lu.
+  document.addEventListener('nutriplan:off-barcode', (e) => {
+    navigate('foods');
+    foods.openFoodFormWithBarcode(document.getElementById('view'), e.detail?.barcode);
+  });
+
   const hash = location.hash.replace('#', '');
   if (VIEWS.some((v) => v.id === hash)) current = hash;
   window.addEventListener('hashchange', () => {

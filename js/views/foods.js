@@ -2,13 +2,17 @@
 
 import { getState, update, mergeFoods } from '../core/store.js';
 import { CATEGORIES, STATES, computeYield } from '../core/nutrition.js';
-import { esc, num, normalize, toast, uid, euros } from '../core/util.js';
+import { esc, num, normalize, toast, uid, euros, debounce } from '../core/util.js';
 import { findSimilarFoods, findDuplicateGroups } from '../core/similarity.js';
+import { fetchProductByBarcode, searchProductsByText, normalizeBarcode } from '../core/off.js';
 import { similarConfirmModal } from './confirm-similar.js';
 import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
+let offSearch = null; // panneau de recherche Open Food Facts — voir openOffSearch()
+let offRequestId = 0; // garde-fou anti-réponse périmée (une recherche plus récente écrase la précédente)
+let offController = null; // AbortController de la requête OFF en cours, pour l'annuler si une autre démarre
 let query = '';
 let cat = 'all';
 let duplicatesOpen = false; // P3 : section « Doublons détectés » dépliée ou non
@@ -57,6 +61,25 @@ export function openFoodForm(id) {
   yieldCalc = null;
   formBaseline = null; // recapturé au prochain render() via wire()
   confirmingClose = false;
+  closeOffSearch();
+}
+
+/**
+ * Point d'entrée pour un futur lecteur de code-barres (caméra ou douchette) :
+ * un module de scan n'a qu'à appeler cette fonction (ou, de façon découplée,
+ * déclencher `document.dispatchEvent(new CustomEvent('nutriplan:off-barcode',
+ * { detail: { barcode } }))`, écouté dans app.js comme `nutriplan:open-food`)
+ * pour ouvrir directement la création d'un aliment avec la recherche OFF déjà
+ * lancée sur ce code — aucune caméra/douchette n'est implémentée ici.
+ */
+export function openFoodFormWithBarcode(root, barcode) {
+  resetForm();
+  editing = 'new';
+  formDraft = blank();
+  openOffSearch();
+  offSearch.barcodeInput = normalizeBarcode(barcode);
+  render(root);
+  runBarcodeSearch(root);
 }
 
 export function render(root) {
@@ -174,7 +197,7 @@ function refreshOpenForm(root, s) {
 }
 
 function overlaysHtml(s) {
-  return `${editing && yieldCalc ? yieldPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
+  return `${editing && yieldCalc ? yieldPanel() : ''}${editing && offSearch ? offSearchPanel(s) : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 }
 
 /** L'aliment affiché dans le formulaire actuellement ouvert (brouillon ou fiche existante). */
@@ -219,6 +242,12 @@ const blank = () => ({
   fractionable: true, unitEntry: false, price: null, packageWeight: null,
   batchAllowed: false, shelfLifeDays: null, requiresCooking: false, favorite: false, lastUsed: null,
   cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
+  // Open Food Facts (cf. normalizeFood(), store.js) — null tant que rien
+  // n'a été récupéré ou saisi, jamais 0 ou ''.
+  barcode: null, satFat: null, sugars: null, salt: null, sodium: null,
+  nutriScore: null, novaGroup: null, ecoScore: null,
+  ingredientsText: null, allergensText: null,
+  imageUrl: null, imageThumbUrl: null, offUrl: null, offQuantity: null, offFetchedAt: null,
 });
 
 function formPanel(s) {
@@ -238,13 +267,19 @@ function formPanel(s) {
 /** Contenu de .drawer__body — réutilisé tel quel par refreshOpenForm(). */
 function formBodyHtml(f) {
   const n = (v) => (v === null || v === undefined ? '' : v);
-  return `<div class="grid grid--3">
+  return `${editing === 'new' ? `<div class="row" style="margin-bottom:12px">
+          <button class="btn btn--sm" data-off-open type="button">Rechercher sur Open Food Facts</button>
+          <small>Préremplit la fiche depuis un produit existant — tout reste modifiable avant d'enregistrer.</small>
+        </div>` : ''}
+        <div class="grid grid--3">
           <label class="field" style="grid-column:1/-1">Nom
             <input type="text" data-f="name" value="${esc(f.name)}"></label>
           <label class="field">Marque (facultatif)
             <input type="text" data-f="brand" value="${esc(f.brand)}"></label>
           <label class="field">Catégorie
             <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}</select></label>
+          <label class="field">Code-barres (facultatif)
+            <input type="text" inputmode="numeric" pattern="[0-9]*" data-f="barcode" value="${esc(f.barcode || '')}" placeholder="EAN…"></label>
         </div>
         <h3 style="margin:16px 0 6px">Pour 100 g</h3>
         <small style="display:block;margin-bottom:6px">Les valeurs ci-dessous correspondent à l'état sélectionné plus bas dans « État des valeurs nutritionnelles ».</small>
@@ -255,6 +290,7 @@ function formBodyHtml(f) {
           <label class="field">Lipides (g) <input type="number" step="0.1" data-f="fat" value="${n(f.fat)}"></label>
           <label class="field">Fibres (g) <input type="number" step="0.1" data-f="fiber" value="${n(f.fiber)}"></label>
         </div>
+        ${offInfoBlock(f)}
         <h3 style="margin:16px 0 6px">État et unités</h3>
         <div class="grid grid--3">
           <label class="field">État des valeurs nutritionnelles
@@ -311,6 +347,46 @@ function formBodyHtml(f) {
         <small style="display:block;margin-top:10px">Les valeurs livrées par défaut sont génériques. Pour un produit de marque, recopie les valeurs de l'emballage.</small>`;
 }
 
+/**
+ * Valeurs complémentaires (jamais utilisées par le moteur nutritionnel, qui
+ * reste kcal/protein/carbs/fat/fiber uniquement) + informations Open Food
+ * Facts quand la fiche en provient. Tout reste modifiable, y compris après
+ * un préremplissage — aucun champ n'est présenté comme verrouillé.
+ */
+function offInfoBlock(f) {
+  const n = (v) => (v === null || v === undefined ? '' : v);
+  const fromOff = Boolean(f.offUrl || f.offFetchedAt);
+  return `<details style="margin:10px 0" ${fromOff ? 'open' : ''}>
+    <summary>Valeurs complémentaires ${fromOff ? '(Open Food Facts)' : '(facultatif)'}</summary>
+    <div class="grid grid--3" style="margin-top:8px">
+      <label class="field">Graisses saturées (g) <input type="number" step="0.1" data-f="satFat" value="${n(f.satFat)}"></label>
+      <label class="field">Sucres (g) <input type="number" step="0.1" data-f="sugars" value="${n(f.sugars)}"></label>
+      <label class="field">Sel (g) <input type="number" step="0.01" data-f="salt" value="${n(f.salt)}"></label>
+      <label class="field">Sodium (g) <input type="number" step="0.01" data-f="sodium" value="${n(f.sodium)}"></label>
+    </div>
+    <small style="display:block;margin-top:4px">Sel et sodium sont deux données distinctes sur l'emballage — jamais l'une déduite de l'autre ici.</small>
+    ${
+      fromOff
+        ? `<div class="grid grid--3" style="margin-top:8px">
+             <label class="field">Nutri-Score <input type="text" data-f="nutriScore" value="${esc((f.nutriScore || '').toUpperCase())}" maxlength="1" style="text-transform:uppercase"></label>
+             <label class="field">Groupe NOVA <input type="number" step="1" min="1" max="4" data-f="novaGroup" value="${n(f.novaGroup)}"></label>
+             <label class="field">Eco-Score <input type="text" data-f="ecoScore" value="${esc((f.ecoScore || '').toUpperCase())}" maxlength="1" style="text-transform:uppercase"></label>
+           </div>
+           <label class="field" style="margin-top:8px">Ingrédients (Open Food Facts)
+             <textarea data-f="ingredientsText" rows="2">${esc(f.ingredientsText || '')}</textarea></label>
+           <label class="field" style="margin-top:8px">Allergènes / traces (Open Food Facts)
+             <textarea data-f="allergensText" rows="2">${esc(f.allergensText || '')}</textarea></label>
+           <small style="display:block;margin-top:6px">
+             ${f.offQuantity ? `Conditionnement indiqué : ${esc(f.offQuantity)}. ` : ''}
+             ${f.offFetchedAt ? `Récupéré le ${esc(new Date(f.offFetchedAt).toLocaleDateString('fr-FR'))}` : ''}
+             ${f.offUrl ? ` — <a href="${esc(f.offUrl)}" target="_blank" rel="noopener">fiche Open Food Facts</a>` : ''}.
+             Indicatif : vérifie toujours contre l'emballage réel, en particulier si le produit a changé depuis.
+           </small>`
+        : ''
+    }
+  </details>`;
+}
+
 /** Aide au calcul du rendement après cuisson (coefficient = cuit ÷ cru). */
 function yieldPanel() {
   return `<div class="drawer" data-yield-backdrop>
@@ -343,6 +419,265 @@ function yieldPanel() {
       </div>
     </div>
   </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Recherche Open Food Facts (préremplissage à la création)            */
+/* ------------------------------------------------------------------ */
+
+function openOffSearch() {
+  offSearch = {
+    barcodeInput: '', nameInput: '', brandInput: '',
+    status: 'idle', // idle | loading | found | not-found | results | no-results | error
+    error: null,
+    foundProduct: null, // { code, draft } — résultat direct d'une recherche par code-barres
+    results: [],        // [{ code, draft }] — résultats d'une recherche par nom/marque
+  };
+}
+
+function closeOffSearch() {
+  offController?.abort();
+  offController = null;
+  offSearch = null;
+}
+
+/**
+ * Un aliment de la banque référence-t-il déjà ce code-barres ? Critère FORT
+ * de doublon (contrairement à une simple similarité de nom) : si trouvé, la
+ * recherche ne propose jamais de créer un second aliment pour le même
+ * produit — seulement d'ouvrir la fiche existante, ou de passer outre en
+ * connaissance de cause (produit réellement différent partageant par erreur
+ * le même code dans la base OFF, cas rare mais pas impossible).
+ */
+function existingFoodForBarcode(code) {
+  if (!code) return null;
+  return getState().foods.find((f) => f.barcode && f.barcode === code) || null;
+}
+
+function offSearchPanel(s) {
+  const o = offSearch;
+  return `<div class="drawer" data-off-backdrop>
+    <div class="drawer__panel" style="width:min(640px,100%)">
+      <div class="drawer__head"><div class="row">
+        <h3 style="flex:1">Rechercher sur Open Food Facts</h3>
+        <button class="btn btn--ghost" data-off-cancel>Fermer</button>
+      </div></div>
+      <div class="drawer__body">
+        <h3 style="margin-top:0">Par code-barres</h3>
+        <div class="row">
+          <input type="text" inputmode="numeric" pattern="[0-9]*" data-off-barcode
+            value="${esc(o.barcodeInput)}" placeholder="Code-barres (EAN)…" style="flex:1;min-width:160px">
+          <button class="btn btn--primary" data-off-barcode-go ${o.barcodeInput.trim() ? '' : 'disabled'}>Rechercher</button>
+        </div>
+        <h3 style="margin-top:16px">Par nom et/ou marque</h3>
+        <div class="grid grid--2">
+          <input type="text" data-off-name value="${esc(o.nameInput)}" placeholder="Nom du produit…">
+          <input type="text" data-off-brand value="${esc(o.brandInput)}" placeholder="Marque (facultatif)…">
+        </div>
+        <div style="margin-top:14px">${offSearchStatusHtml(o)}</div>
+        <small style="display:block;margin-top:16px">Données © <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>, sous licence ouverte ODbL — vérifie toujours les valeurs avant d'enregistrer.</small>
+      </div>
+    </div>
+  </div>`;
+}
+
+function offSearchStatusHtml(o) {
+  if (o.status === 'loading') return `<p class="muted">Recherche en cours…</p>`;
+  if (o.status === 'error') {
+    return `<div class="card" style="border-color:#eebeb9">
+      <strong>${esc(o.error)}</strong>
+      <div class="row" style="margin-top:8px"><button class="btn btn--sm" data-off-retry>Réessayer</button></div>
+    </div>`;
+  }
+  if (o.status === 'not-found') {
+    return `<p class="muted">Aucun produit trouvé pour ce code-barres sur Open Food Facts. Tu peux continuer la saisie manuellement (ferme cette fenêtre).</p>`;
+  }
+  if (o.status === 'no-results') {
+    return `<p class="muted">Aucun résultat pour cette recherche. Essaie un autre terme, ou continue en saisie manuelle.</p>`;
+  }
+  if (o.status === 'found' && o.foundProduct) {
+    return offResultCard(o.foundProduct, { standalone: true });
+  }
+  if (o.status === 'results' && o.results.length) {
+    return `<div class="grid grid--2">${o.results.map((r) => offResultCard(r, { standalone: false })).join('')}</div>`;
+  }
+  return '';
+}
+
+function offResultCard({ code, draft }, { standalone }) {
+  const existing = existingFoodForBarcode(code);
+  const macro = (label, v, unit = 'g') => (v === null || v === undefined ? '' : `${num(v, 1)} ${unit} ${label}`);
+  const macros = [
+    draft.kcal !== null ? `${num(draft.kcal, 0)} kcal` : '',
+    macro('P', draft.protein), macro('G', draft.carbs), macro('L', draft.fat),
+  ].filter(Boolean).join(' · ');
+  return `<div class="card" style="margin-bottom:${standalone ? 0 : '10px'}">
+    <div class="row" style="align-items:flex-start">
+      ${draft.imageThumbUrl ? `<img src="${esc(draft.imageThumbUrl)}" alt="" style="width:56px;height:56px;object-fit:contain;border-radius:var(--radius-sm,6px);background:#fff" loading="lazy">` : ''}
+      <div style="flex:1;min-width:0">
+        <strong>${esc(draft.name || 'Nom non renseigné')}</strong>${draft.brand ? ` <span class="tag">${esc(draft.brand)}</span>` : ''}
+        ${draft.offQuantity ? `<div class="tag">${esc(draft.offQuantity)}</div>` : ''}
+        ${macros ? `<div class="tag">${esc(macros)} / 100 g</div>` : '<div class="tag muted">valeurs nutritionnelles incomplètes sur Open Food Facts</div>'}
+        ${draft.nutriScore ? `<span class="tag">Nutri-Score ${esc(draft.nutriScore.toUpperCase())}</span>` : ''}
+      </div>
+    </div>
+    ${
+      existing
+        ? `<div class="row" style="margin-top:8px;flex-wrap:wrap">
+             <small style="flex:1;min-width:100%">Déjà dans ta banque : « ${esc(existing.name)} ».</small>
+             <button class="btn btn--sm btn--primary" data-off-open-existing="${esc(existing.id)}">Ouvrir cette fiche</button>
+             <button class="btn btn--sm btn--ghost" data-off-use="${esc(code)}">Utiliser quand même</button>
+           </div>`
+        : `<div class="row" style="margin-top:8px"><button class="btn btn--sm btn--primary" data-off-use="${esc(code)}">Utiliser ce produit</button></div>`
+    }
+  </div>`;
+}
+
+/**
+ * Prépare une requête : annule la précédente (AbortController) et protège
+ * contre une réponse périmée qui arriverait APRÈS une recherche plus
+ * récente (compteur monotone comparé à la résolution, jamais sur la seule
+ * annulation réseau — un abort() n'empêche pas toujours une promesse déjà
+ * résolue de continuer son .then()).
+ */
+function startOffRequest() {
+  offController?.abort();
+  offController = new AbortController();
+  return { id: ++offRequestId, signal: offController.signal };
+}
+
+function isStaleOffRequest(id) {
+  return id !== offRequestId;
+}
+
+async function runBarcodeSearch(root) {
+  if (!offSearch) return;
+  const code = normalizeBarcode(offSearch.barcodeInput);
+  if (!code) return;
+  const { id, signal } = startOffRequest();
+  offSearch.status = 'loading';
+  offSearch.error = null;
+  render(root);
+  const res = await fetchProductByBarcode(code, { signal });
+  if (isStaleOffRequest(id) || !offSearch) return; // une recherche plus récente (ou la fermeture du panneau) a pris le dessus
+  if (res.status === 'aborted') return;
+  if (res.status === 'error') { offSearch.status = 'error'; offSearch.error = res.error; }
+  else if (res.status === 'not-found') { offSearch.status = 'not-found'; offSearch.foundProduct = null; }
+  else { offSearch.status = 'found'; offSearch.foundProduct = { code: res.code, draft: res.draft }; }
+  render(root);
+}
+
+async function runTextSearch(root) {
+  if (!offSearch) return;
+  const name = offSearch.nameInput.trim();
+  const brand = offSearch.brandInput.trim();
+  if (!name && !brand) { offSearch.status = 'idle'; offSearch.results = []; render(root); return; }
+  const { id, signal } = startOffRequest();
+  offSearch.status = 'loading';
+  offSearch.error = null;
+  render(root);
+  const res = await searchProductsByText({ name, brand }, { signal });
+  if (isStaleOffRequest(id) || !offSearch) return;
+  if (res.status === 'aborted') return;
+  if (res.status === 'error') { offSearch.status = 'error'; offSearch.error = res.error; }
+  else if (res.status === 'no-results') { offSearch.status = 'no-results'; offSearch.results = []; }
+  else { offSearch.status = 'results'; offSearch.results = res.results.map((r) => ({ code: r.code, draft: r.draft })); }
+  render(root);
+}
+
+const runTextSearchDebounced = debounce((root) => runTextSearch(root), 500);
+
+/**
+ * Préremplit le formulaire avec un produit OFF choisi explicitement. Si le
+ * brouillon courant contient déjà une saisie réelle (pas un formulaire
+ * vierge), une confirmation est demandée avant d'écraser — jamais silencieux.
+ */
+function applyOffDraft(root, draft) {
+  const current = formDraft || blank();
+  const merged = { ...current, ...draft, id: current.id };
+  const apply = () => {
+    formDraft = merged;
+    closeOffSearch();
+    toast('Fiche préremplie depuis Open Food Facts — vérifie les valeurs avant d\'enregistrer');
+    render(root);
+  };
+  // le formulaire contient-il déjà une saisie réelle depuis son OUVERTURE ?
+  // `formBaseline` (capturé une seule fois à l'ouverture par
+  // captureBaselineIfNeeded(), déjà passé par readForm() à ce moment-là, sur
+  // un formulaire alors réellement vierge) est exactement la référence qu'il
+  // faut ici — la même que celle utilisée par attemptClose() pour la même
+  // question. Reconstruire un blank() frais et le relire MAINTENANT serait
+  // trompeur : la lecture refléterait la saisie déjà faite des deux côtés de
+  // la comparaison, qui paraîtrait alors toujours identique (jamais "sale").
+  if (isDirty(formBaseline, current)) {
+    pendingConfirm = {
+      title: 'Remplacer la saisie actuelle ?',
+      message: 'Le formulaire contient déjà une saisie. La remplacer par les données récupérées sur Open Food Facts ?',
+      confirmLabel: 'Remplacer',
+      danger: false,
+      onConfirm: apply,
+    };
+    render(root);
+    return;
+  }
+  apply();
+}
+
+function wireOffSearch(root) {
+  if (!offSearch) return;
+  const o = offSearch;
+  root.querySelector('[data-off-cancel]')?.addEventListener('click', () => { closeOffSearch(); render(root); });
+  root.querySelector('[data-off-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.offBackdrop !== undefined) { closeOffSearch(); render(root); }
+  });
+  root.querySelector('[data-off-retry]')?.addEventListener('click', () => {
+    if (o.barcodeInput.trim() && o.status === 'error') runBarcodeSearch(root);
+    else runTextSearch(root);
+  });
+
+  const barcodeInput = root.querySelector('[data-off-barcode]');
+  barcodeInput?.addEventListener('input', (e) => {
+    o.barcodeInput = e.target.value;
+    // re-rendu nécessaire pour activer/désactiver le bouton Rechercher selon
+    // la saisie — même motif que [data-q] (écran Aliments) pour ne pas
+    // perdre le focus/curseur à chaque frappe.
+    render(root);
+    const el2 = root.querySelector('[data-off-barcode]');
+    el2?.focus();
+    el2?.setSelectionRange(el2.value.length, el2.value.length);
+  });
+  barcodeInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') runBarcodeSearch(root); });
+  root.querySelector('[data-off-barcode-go]')?.addEventListener('click', () => runBarcodeSearch(root));
+
+  root.querySelector('[data-off-name]')?.addEventListener('input', (e) => {
+    o.nameInput = e.target.value;
+    runTextSearchDebounced(root);
+  });
+  root.querySelector('[data-off-brand]')?.addEventListener('input', (e) => {
+    o.brandInput = e.target.value;
+    runTextSearchDebounced(root);
+  });
+
+  root.querySelectorAll('[data-off-use]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const code = e.currentTarget.dataset.offUse;
+      const item = o.foundProduct?.code === code ? o.foundProduct : o.results.find((r) => r.code === code);
+      if (item) applyOffDraft(root, item.draft);
+    })
+  );
+  root.querySelectorAll('[data-off-open-existing]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.offOpenExisting;
+      openFoodForm(id);
+      // un tiroir de création est déjà ouvert (.drawer__panel existe) : le
+      // dispatcher render() prendrait sinon le chemin refreshOpenForm(), qui
+      // ne touche jamais .drawer__head (titre « Nouvel aliment » resterait
+      // affiché) — ici, on change délibérément de fiche, un rendu complet
+      // est le comportement correct (même motif que navigate(), qui vide
+      // #view avant de rendre, sauf qu'ici ce n'est pas un changement d'écran).
+      renderFull(root, getState());
+    })
+  );
 }
 
 /** Ligne de comparaison d'un aliment dans la popup de doublon. */
@@ -378,6 +713,7 @@ function resetForm() {
   formBaseline = null;
   confirmingClose = false;
   pendingConfirm = null;
+  closeOffSearch();
   if (escBound) { document.removeEventListener('keydown', onEscapeKey); escBound = false; }
 }
 
@@ -560,8 +896,15 @@ function wireDrawerBody(root) {
 
     // Détection de doublon à la création : la popup de confirmation suspend la
     // création (un seul mécanisme, aucun toast ni message en bas de fenêtre).
+    // Un code-barres identique est un critère FORT (pas une simple
+    // ressemblance de nom) : prioritaire en tête de liste si trouvé, sans
+    // dupliquer l'entrée si findSimilarFoods() a déjà détecté le même aliment.
     if (editing === 'new' && !similarWarning?.confirmed) {
       const list = findSimilarFoods(data, s.foods);
+      const barcodeMatch = data.barcode ? s.foods.find((x) => x.barcode && x.barcode === data.barcode) : null;
+      if (barcodeMatch && !list.some((x) => x.food.id === barcodeMatch.id)) {
+        list.unshift({ food: barcodeMatch, score: 1, reasons: ['même code-barres'] });
+      }
       if (list.length) {
         similarWarning = { list, pending: data, confirmed: false };
         render(root);
@@ -628,6 +971,14 @@ function wireDrawerBody(root) {
 
 /** #food-overlays (rendement, doublon, confirmation) : recâblé à chaque render de cette zone. */
 function wireOverlays(root) {
+  // --- recherche Open Food Facts (préremplissage à la création uniquement)
+  root.querySelector('[data-off-open]')?.addEventListener('click', () => {
+    captureDraft(root);
+    openOffSearch();
+    render(root);
+  });
+  wireOffSearch(root);
+
   // --- aide au calcul du rendement après cuisson
   root.querySelector('[data-yield-open]')?.addEventListener('click', () => {
     captureDraft(root);
