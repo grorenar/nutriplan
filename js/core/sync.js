@@ -21,13 +21,30 @@ import { PERSONS } from './nutrition.js';
 let client = null;
 let libPromise = null;
 let injectedClient = null; // point d'injection réservé aux tests
+let forcedUnconfigured = false; // point d'injection réservé aux tests (ui.test.mjs)
 
 /** Remplace le client Supabase (tests uniquement). Passer null pour revenir au client réel. */
 export function __setTestClient(c) {
   injectedClient = c;
 }
 
-export const isConfigured = () => Boolean(injectedClient) || Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+/**
+ * Force isConfigured() à false SANS toucher à js/config.js (tests uniquement).
+ * js/config.js contient volontairement les vraies clés Supabase du projet
+ * (la clé anon est publique par nature, cf. README §5.3) — nécessaire pour
+ * que l'app déployée sur GitHub Pages fonctionne, puisqu'il n'y a pas d'étape
+ * de build pour injecter une config différente en test. Sans ce point
+ * d'injection, un test qui n'utilise pas __setTestClient() (ex. ui.test.mjs,
+ * qui démarre l'application entière via app.js) déclencherait de vraies
+ * requêtes réseau vers esm.sh puis vers le projet Supabase réel — jamais
+ * destructif (auth.getUser() seul, jamais un push/pull sans authentification
+ * explicite), mais jamais souhaitable non plus pour une suite de tests.
+ */
+export function __forceUnconfigured(v) {
+  forcedUnconfigured = v;
+}
+
+export const isConfigured = () => !forcedUnconfigured && (Boolean(injectedClient) || Boolean(SUPABASE_URL && SUPABASE_ANON_KEY));
 
 /** navigator.onLine n'existe pas partout : on ne considère hors ligne que si c'est explicite. */
 const isOnline = () => globalThis.navigator?.onLine !== false;

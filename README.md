@@ -356,19 +356,40 @@ possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
 ## 8. Tests
 
 ```bash
-node tests/engine.test.mjs    # moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
-node tests/volume.test.mjs    # analyse du volume d'un repas — sans dépendance
-node tests/autosync.test.mjs  # synchronisation automatique, client Supabase simulé — sans dépendance
-npm i jsdom && node tests/ui.test.mjs   # parcours réel de l'interface
+npm i jsdom           # une seule fois (nécessaire à tests/ui.test.mjs)
+npm test              # les 4 suites ci-dessous, dans cet ordre, en une commande
 ```
+
+Équivalent détaillé, ou pour lancer une suite isolément :
+
+```bash
+npm run test:engine     # node tests/engine.test.mjs    — moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
+npm run test:volume     # node tests/volume.test.mjs    — analyse du volume d'un repas — sans dépendance
+npm run test:autosync   # node tests/autosync.test.mjs  — synchronisation automatique, client Supabase simulé — sans dépendance
+npm run test:ui         # node tests/ui.test.mjs        — parcours réel de l'interface (jsdom)
+```
+
+`tests/ui.test.mjs` démarre l'application entière (`js/app.js`) : comme `js/config.js` contient
+volontairement les vraies clés du projet Supabase (nécessaire à l'app déployée, aucune étape de
+build pour en injecter d'autres), le test force explicitement un mode « non configuré » dès son
+démarrage (`sync.__forceUnconfigured(true)`, réservé aux tests) — sans ce point d'injection, chaque
+exécution du test tenterait de vraies requêtes réseau vers `esm.sh` puis vers le projet Supabase
+réel (jamais destructif en soi, `auth.getUser()` seul, mais jamais souhaitable non plus pour une
+suite de tests). Les autres suites qui touchent la synchronisation (`autosync.test.mjs`,
+`sync.test.mjs`) injectent directement leur propre client factice (`__setTestClient()`), donc n'en
+ont pas besoin.
+
+`npm test` n'inclut volontairement **pas** `tests/sync.test.mjs` : cette suite a besoin d'un service
+PostgreSQL local (voir ci-dessous), pas toujours disponible, alors que les 4 autres ne dépendent de
+rien d'externe et doivent donc rester exécutables partout, y compris en intégration continue.
 
 Le test de synchronisation vérifie le schéma, la transaction et les policies RLS sur un
 PostgreSQL **local** (jamais sur ta base Supabase) : il crée une base jetable, émule `auth.uid()`
 et applique `supabase/schema.sql`.
 
 ```bash
-apt-get install -y postgresql && service postgresql start
-node tests/sync.test.mjs
+apt-get install -y postgresql && service postgresql start   # une seule fois par environnement
+npm run test:sync       # équivalent à : node tests/sync.test.mjs
 ```
 
 ## 9. Sauvegarde

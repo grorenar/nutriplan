@@ -47,12 +47,25 @@ window.addEventListener('error', (e) => jsErrors.push(e.message));
 const app = await import(join(root, 'js/app.js'));
 const store = await import(join(root, 'js/core/store.js')); // même instance de module que celle utilisée par app.js
 const derive = await import(join(root, 'js/core/derive.js')); // lecture seule, pour valider les quantités affichées sans reparser le texte rendu
+const sync = await import(join(root, 'js/core/sync.js'));
+// js/config.js contient volontairement les vraies clés Supabase du projet
+// (nécessaire à l'app déployée, aucune étape de build pour en injecter une
+// autre) : sans ce point d'injection réservé aux tests, ce fichier — qui
+// démarre l'application ENTIÈRE via app.js, contrairement à autosync.test.mjs
+// qui injecte son propre client factice — déclencherait de vraies requêtes
+// réseau vers esm.sh puis vers le projet Supabase réel dès le premier rendu.
+sync.__forceUnconfigured(true);
 document.dispatchEvent(new window.Event('DOMContentLoaded'));
 await new Promise((r) => setTimeout(r, 50));
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const click = (el) => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+// contenu du DERNIER toast — jamais un delta de children.length : sur une
+// suite aussi longue, les timers d'expiration (2,6 s puis 3,1 s) des toasts
+// précédents peuvent retirer des éléments PENDANT l'exécution, rendant tout
+// delta de compte instable (observé réellement sur cette suite).
+const lastToastText = () => [...document.querySelectorAll('#toasts .toast')].at(-1)?.textContent || '';
 const change = (el, v) => { el.value = v; el.dispatchEvent(new window.Event('change', { bubbles: true })); };
 const type = (el, v) => { el.value = v; el.dispatchEvent(new window.Event('input', { bubbles: true })); };
 // dispatché directement SUR l'élément backdrop lui-même (jamais sur un
@@ -1707,13 +1720,12 @@ click($$('[data-pick-meal]')[0]);
 await wait();
 click($('[data-wizard-submit]'));
 await wait();
-const toastCountBeforeBlockedDelete = document.getElementById('toasts')?.children.length || 0;
 click($$('[data-open-delete-prep]').find((b) => b.dataset.openDeletePrep === p5Prep3.id));
 await wait();
 check('suppression bloquée par une affectation vivante : aucune modale ouverte',
   !$('.modal__panel'));
 check('un toast explicite apparaît pour signaler le blocage',
-  (document.getElementById('toasts')?.children.length || 0) > toastCountBeforeBlockedDelete);
+  /affectation/i.test(lastToastText()));
 check('la préparation affectée existe toujours', p5Saved().preparations.some((p) => p.id === p5Prep3.id));
 
 // retirer l'affectation puis vérifier la chaîne complète : suppression préparation -> suppression recette devient possible
@@ -1850,10 +1862,6 @@ click(pommeRow().querySelector('[data-edit]'));
 await wait();
 click($('[data-delete]'));
 await wait();
-// contenu du DERNIER toast (pas un delta de compte : sur une suite aussi
-// longue, les timers d'expiration des toasts précédents peuvent retirer des
-// éléments pendant l'exécution, rendant un delta de children.length instable).
-const lastToastText = () => [...document.querySelectorAll('#toasts .toast')].at(-1)?.textContent || '';
 check('suppression bloquée : un toast explicite nomme la recette qui l’utilise', /Compote P0 Test/.test(lastToastText()));
 check('l’aliment existe toujours', store.getState().foods.some((f) => f.id === pommeP0.id));
 
