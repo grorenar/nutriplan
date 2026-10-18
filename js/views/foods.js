@@ -636,15 +636,16 @@ function wireOffSearch(root) {
   });
 
   const barcodeInput = root.querySelector('[data-off-barcode]');
+  const barcodeGoBtn = root.querySelector('[data-off-barcode-go]');
   barcodeInput?.addEventListener('input', (e) => {
     o.barcodeInput = e.target.value;
-    // re-rendu nécessaire pour activer/désactiver le bouton Rechercher selon
-    // la saisie — même motif que [data-q] (écran Aliments) pour ne pas
-    // perdre le focus/curseur à chaque frappe.
-    render(root);
-    const el2 = root.querySelector('[data-off-barcode]');
-    el2?.focus();
-    el2?.setSelectionRange(el2.value.length, el2.value.length);
+    // active/désactive directement le bouton, sans passer par un render()
+    // complet : un rendu plein à chaque frappe reconstruirait tout le
+    // panneau (y compris les résultats déjà affichés avec leurs images),
+    // provoquant un rechargement/scintillement visible de ce qui était déjà
+    // là — un simple attribut à bascule suffit ici, rien d'autre ne dépend
+    // de barcodeInput tant que la recherche n'est pas explicitement lancée.
+    if (barcodeGoBtn) barcodeGoBtn.disabled = !o.barcodeInput.trim();
   });
   barcodeInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') runBarcodeSearch(root); });
   root.querySelector('[data-off-barcode-go]')?.addEventListener('click', () => runBarcodeSearch(root));
