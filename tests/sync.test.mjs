@@ -15,7 +15,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, chmodSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, chmodSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultState } from '../js/core/store.js';
@@ -60,10 +60,20 @@ function replaceAll(payload, uid) {
 /* Base de test jetable : émulation de ce que Supabase fournit          */
 /* ------------------------------------------------------------------ */
 
-/** Rejoue supabase/schema.sql tel qu'il sera collé dans l'éditeur SQL de Supabase. */
+/**
+ * Rejoue supabase/schema.sql tel qu'il sera collé dans l'éditeur SQL de
+ * Supabase. Copié d'abord dans `tmp` (même motif que sql()/bootstrap()
+ * ci-dessus) plutôt que lu directement dans le dépôt : l'utilisateur
+ * `postgres` n'a pas forcément accès au répertoire de checkout — c'est
+ * d'ailleurs le cas sur les runners GitHub Actions (`Permission denied`),
+ * alors que ce bac à sable local tourne en root et masquait le problème.
+ */
 function applySchema() {
   const schemaPath = new URL('../supabase/schema.sql', import.meta.url).pathname;
-  execFileSync('su', [PSQL_USER, '-c', `psql -q -d ${DB} -f ${schemaPath}`], { encoding: 'utf8' });
+  const file = join(tmp, 'schema.sql');
+  writeFileSync(file, readFileSync(schemaPath, 'utf8'));
+  chmodSync(file, 0o644);
+  execFileSync('su', [PSQL_USER, '-c', `psql -q -d ${DB} -f ${file}`], { encoding: 'utf8' });
 }
 
 function bootstrap() {
