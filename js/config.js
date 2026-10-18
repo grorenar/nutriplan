@@ -44,4 +44,4 @@ export const STORAGE_KEY = 'nutriplan.state.v1';
  * l'application appelle Open Food Facts directement (fonctionne pour la
  * fiche produit par code-barres à ce jour, mais pas pour la recherche).
  */
-export const OFF_PROXY_URL = '';
+export const OFF_PROXY_URL = 'https://nutriplan-off-proxy.thomas-boualit.workers.dev';
