@@ -1834,10 +1834,11 @@ await wait();
 click($('[data-view="batch"]'));
 await wait();
 check('« Recettes à préparer en batch » affichée avec la nouvelle recette', /Recettes à préparer en batch/.test($('#view').textContent) && /Batch Detail CDE/.test($('#view').textContent));
-const batchDetails = $$('details').find((d) => /Détail de la recette/.test(d.textContent) && d.textContent.includes('g préparés'));
-check('bloc de détail des ingrédients présent pour cette recette', !!batchDetails);
-check('ingrédient mis à l’échelle affiché (500 g, 500/1000 de la référence)', /500 g.*Steak haché|Steak haché.*500 g/.test(batchDetails.textContent.replace(/\s+/g, ' ')));
-check('répartition prévue vers la gamelle correspondante affichée', /Répartition prévue/.test($('#view').textContent));
+// toujours visible désormais (jamais repliée derrière un <details> qu'on manque facilement)
+check('bloc « Recette totale à préparer » affiché sans avoir besoin de le déplier', /Recette totale à préparer/.test($('#view').textContent));
+const batchRow = $$('td').find((td) => /Batch Detail CDE/.test(td.textContent));
+check('ingrédient mis à l’échelle affiché (500 g, 500/1000 de la référence)', /500 g.*Steak haché|Steak haché.*500 g/.test(batchRow.textContent.replace(/\s+/g, ' ')));
+check('répartition dans les gamelles affichée', /Répartition dans les gamelles/.test($('#view').textContent));
 
 console.log('\n— Chantier P0 : suppression d’un aliment référencé dans une recette (composition live)');
 click($('[data-view="foods"]'));

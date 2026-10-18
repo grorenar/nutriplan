@@ -202,34 +202,39 @@ function recipesToPrepareBlock(sess, startWeekday) {
 }
 
 /**
- * Étape 1 du « global » demandé : ce qu'il y a DANS la recette, distinctement,
- * à l'échelle de ce qui va être réellement préparé (c.preparedRaw) — pour
+ * Étape 1 du « global » : ce qu'il y a DANS la recette, distinctement, à
+ * l'échelle de ce qui va être réellement préparé (c.preparedRaw) — pour
  * savoir quoi sortir/peser avant de cuisiner, sans aller rouvrir la fiche
- * recette. Détail seul — lecture seule, aucune donnée n'est modifiée ici.
+ * recette. Toujours visible (jamais repliée derrière un <details> qu'on
+ * manque facilement) : c'est le cœur de ce bloc, pas un détail secondaire.
+ * Lecture seule, aucune donnée n'est modifiée ici.
  */
 function ingredientsDetail(c) {
   if (!c.ingredients?.length) return '';
-  return `<details style="margin-top:6px">
-    <summary>Détail de la recette (${c.ingredients.length} ingrédient${c.ingredients.length > 1 ? 's' : ''}, pour ${grams(c.preparedRaw)} préparés)</summary>
+  return `<div style="margin-top:8px">
+    <strong>Recette totale à préparer</strong> — ${grams(c.preparedRaw)}
     <ul style="margin:4px 0 0;padding-left:18px">
       ${c.ingredients.map((ing) => `<li>${grams(ing.qty)} ${esc(ing.food.name)}${ing.state ? ` (${esc(ing.state)})` : ''}</li>`).join('')}
     </ul>
-  </details>`;
+  </div>`;
 }
 
 /**
- * Étape 2 du « global » demandé : une fois la recette préparée EN TOTALITÉ
- * pour la session, vers quelles gamelles ce total se répartit — relie la
- * ligne « je prépare » à la section « Détail des gamelles » plus bas, sans
- * dupliquer son calcul ni jamais écrire dans le planning (lecture seule,
- * dérivée des repas de la session — cf. commentaire d'en-tête du fichier).
+ * Étape 2 du « global » : une fois la recette préparée EN TOTALITÉ pour la
+ * session, vers quelles gamelles ce total se répartit — un bloc distinct
+ * sous la recette totale (ligne par gamelle, pas un seul tag illisible),
+ * sans dupliquer le calcul de « Détail des gamelles » plus bas ni jamais
+ * écrire dans le planning (lecture seule, dérivée des repas de la session).
  */
 function destinationsDetail(c, startWeekday) {
   if (!c.destinations?.length) return '';
-  return `<div class="tag" style="display:block;margin-top:6px">
-    Répartition prévue : ${c.destinations
-      .map((d) => `${esc(slot(startWeekday, d.dayIndex, d.mealType))}${d.name ? ` (${esc(d.name)})` : ''} — ${grams(d.qty)}`)
-      .join(', ')}
+  return `<div style="margin-top:8px">
+    <strong>Répartition dans les gamelles</strong>
+    <ul style="margin:4px 0 0;padding-left:18px">
+      ${c.destinations
+        .map((d) => `<li>${esc(slot(startWeekday, d.dayIndex, d.mealType))}${d.name ? ` — ${esc(d.name)}` : ''} : ${grams(d.qty)}</li>`)
+        .join('')}
+    </ul>
   </div>`;
 }
 
