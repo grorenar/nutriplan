@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Les 4 suites autonomes (moteur, interface, volume, synchronisation
+  # automatique simulée) — aucune dépendance externe, aucun secret.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - run: npm test
+
+  # Suite séparée : nécessite un PostgreSQL local (jamais la base Supabase
+  # de production — tests/sync.test.mjs crée une base jetable et la
+  # supprime/recrée à chaque exécution). Isolée dans son propre job pour ne
+  # jamais bloquer les 4 suites ci-dessus si l'installation de PostgreSQL
+  # échoue pour une raison propre au runner.
+  test-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install
+      - name: Installer et démarrer PostgreSQL (local, jetable)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          sudo service postgresql start
+      - run: npm run test:sync
