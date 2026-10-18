@@ -1840,6 +1840,28 @@ const batchRow = $$('td').find((td) => /Batch Detail CDE/.test(td.textContent));
 check('ingrédient mis à l’échelle affiché (500 g, 500/1000 de la référence)', /500 g.*Steak haché|Steak haché.*500 g/.test(batchRow.textContent.replace(/\s+/g, ' ')));
 check('répartition dans les gamelles affichée', /Répartition dans les gamelles/.test($('#view').textContent));
 
+console.log('\n— Écran batch : recette « portion » NON batchable (assemblée le jour même) — même détail d’ingrédients');
+store.update((s) => {
+  const r4 = store.newRecipe('Skyr Flocons Test', 'portion');
+  // 1 portion = somme des quantités de la composition (portionGramsOf(), nutrition.js) — ici 330 g,
+  // comme la fiche recette réelle qui a motivé ce correctif.
+  r4.items = [store.newRecipeItem(p4Beef.id, 330, 'cru')];
+  s.recipes.push(r4);
+  const meal = s.meals.find((m) => m.dayIndex === 1 && m.mealType === 'lunch');
+  // qty est toujours stockée en GRAMMES dans le modèle (même pour une recette
+  // « portion » — la conversion vers un nombre de portions n'est qu'un
+  // affichage, cf. editor.js/toUnits()) : 4 portions × 330 g = 1320 g.
+  // Jamais marquée batchAllowed : doit tomber dans « à assembler le jour même ».
+  meal.items.push({ ...store.newRecipeMealItem(r4.id, 1320), qty: { thomas: 1320, julie: 0 } });
+});
+await wait();
+click($('[data-view="batch"]'));
+await wait();
+const skyrLi = $$('li').find((li) => li.querySelector('ul') && /Skyr Flocons Test/.test(li.textContent));
+check('« Skyr Flocons Test » apparaît avec son détail d’ingrédients, assemblée le jour même (jamais marquée batchAllowed)', !!skyrLi);
+check('ingrédient mis à l’échelle affiché (4 portions × 330 g = 1,32 kg de Steak haché, pas la recette seule)',
+  !!skyrLi && /1,32\s*kg.*Steak haché|Steak haché.*1,32\s*kg/.test(skyrLi.textContent.replace(/\s+/g, ' ')));
+
 console.log('\n— Chantier P0 : suppression d’un aliment référencé dans une recette (composition live)');
 click($('[data-view="foods"]'));
 await wait();

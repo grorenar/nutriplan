@@ -554,6 +554,25 @@ export function batchCategory(food) {
   return needsCooking(food) ? 'cook' : 'assemble';
 }
 
+/**
+ * Détail des ingrédients d'une recette, mis à l'échelle de `targetGrams` (ce
+ * qui va réellement être préparé/assemblé) — pas seulement la composition de
+ * référence de la fiche recette. Lecture seule, dérivée de recipe.items ;
+ * même principe d'échelle que recipeAsVirtualFood()/preparedGramsOf(). Partagé
+ * entre « recettes à préparer en batch » et « à assembler le jour même » :
+ * une recette composée de plusieurs ingrédients bruts (ex. yaourt + flocons +
+ * édulcorant + fruit) n'est pas « déjà prête », contrairement à une
+ * préparation réellement cuisinée à l'avance — elle a besoin du même détail,
+ * que ce soit préparé en avance ou assemblé le jour même.
+ */
+export function recipeIngredientsScaledTo(recipe, targetGrams, foodsById) {
+  const referenceBase = recipe.kind === 'portion' ? portionGramsOf(recipe) : (Number(recipe.baseGrams) || 0);
+  const scale = referenceBase > 0 ? targetGrams / referenceBase : 0;
+  return (recipe.items || [])
+    .map((ri) => ({ food: foodsById[ri.foodId], qty: (Number(ri.qty) || 0) * scale, state: ri.state }))
+    .filter((ing) => ing.food);
+}
+
 export const BATCH_CATEGORY_LABEL = {
   batch: 'À préparer en batch',
   cook: 'À cuire le jour même',
@@ -726,20 +745,7 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
         const prepared = state.batch.overrides[key];
         const preparedRaw = prepared ?? requiredRaw;
 
-        // Détail des ingrédients NÉCESSAIRES À LA PRÉPARATION de cette recette,
-        // à l'échelle de ce qui va réellement être préparé (preparedRaw) — pas
-        // seulement la composition de référence de la fiche recette. Lecture
-        // seule, dérivée de recipe.items ; aucune nouvelle mécanique numérique
-        // (même principe d'échelle que recipeAsVirtualFood()/preparedGramsOf()).
-        const referenceBase = recipe.kind === 'portion' ? portionGramsOf(recipe) : (Number(recipe.baseGrams) || 0);
-        const scale = referenceBase > 0 ? preparedRaw / referenceBase : 0;
-        const ingredients = (recipe.items || [])
-          .map((ri) => ({
-            food: foodsById[ri.foodId],
-            qty: (Number(ri.qty) || 0) * scale,
-            state: ri.state,
-          }))
-          .filter((ing) => ing.food);
+        const ingredients = recipeIngredientsScaledTo(recipe, preparedRaw, foodsById);
 
         // Vers quelles gamelles de CETTE session ce besoin est réparti (lecture
         // seule — cet écran ne modifie jamais le planning) : une recette
@@ -796,11 +802,19 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
         if (it.recipeId || it.preparationId) {
           const total = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
           if (!total) continue;
-          const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipesById[it.recipeId]?.name;
+          // une préparation est un stock déjà réellement cuisiné à l'avance —
+          // "prête à assembler" au sens propre, rien à détailler ici. Une
+          // recette référencée directement (sans préparation, "molle") ne
+          // l'est pas forcément : elle peut n'être qu'un assemblage
+          // d'ingrédients bruts (ex. yaourt + flocons + fruit) qu'il faut
+          // peser un par un — même détail que « recettes à préparer en batch ».
+          const recipe = it.recipeId ? recipesById[it.recipeId] : null;
+          const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipe?.name;
           if (!label) continue;
           assembleSameDay.push({
             food: { name: label }, dayIndex: meal.dayIndex, mealType: meal.mealType,
             grams: total, summary: null, note: null,
+            ingredients: recipe ? recipeIngredientsScaledTo(recipe, total, foodsById) : null,
           });
           continue;
         }

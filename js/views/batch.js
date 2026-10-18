@@ -249,16 +249,36 @@ function sameDayBlock(kind, rows, startWeekday) {
     (byMeal[key] ||= { dayIndex: r.dayIndex, mealType: r.mealType, items: [] }).items.push(r);
   }
   return `<h3>${label}</h3>
-    <ul style="margin:4px 0 10px;padding-left:18px">
-      ${Object.values(byMeal)
-        .sort((a, b) => a.dayIndex - b.dayIndex || (a.mealType === 'lunch' ? -1 : 1))
-        .map(
-          (m) => `<li><strong>${esc(slot(startWeekday, m.dayIndex, m.mealType))}</strong> — ${m.items
-            .map((r) => `${esc(r.food.name)} ${grams(r.grams)}${r.summary ? ` (${esc(r.summary)})` : ''}`)
-            .join(', ')}</li>`
-        )
-        .join('')}
-    </ul>`;
+    ${Object.values(byMeal)
+      .sort((a, b) => a.dayIndex - b.dayIndex || (a.mealType === 'lunch' ? -1 : 1))
+      .map(
+        (m) => `<div style="margin-bottom:8px">
+          <strong>${esc(slot(startWeekday, m.dayIndex, m.mealType))}</strong>
+          <ul style="margin:2px 0 0;padding-left:18px">
+            ${m.items.map((r) => sameDayItem(r)).join('')}
+          </ul>
+        </div>`
+      )
+      .join('')}`;
+}
+
+/**
+ * Une recette référencée directement (sans préparation, « molle ») n'est pas
+ * forcément un plat déjà prêt à assembler : si elle est composée de plusieurs
+ * ingrédients bruts (ex. yaourt + flocons + édulcorant + fruit), `r.ingredients`
+ * donne le même détail que « Recette totale à préparer » plus haut — sans
+ * quoi il serait impossible de savoir quoi peser pour la préparer. Une
+ * préparation (stock déjà réellement cuisiné) n'a pas `ingredients` : rien à
+ * détailler, elle est prête telle quelle.
+ */
+function sameDayItem(r) {
+  const head = `${esc(r.food.name)} ${grams(r.grams)}${r.summary ? ` (${esc(r.summary)})` : ''}`;
+  if (!r.ingredients?.length) return `<li>${head}</li>`;
+  return `<li>${head}
+    <ul style="margin:2px 0 4px;padding-left:18px">
+      ${r.ingredients.map((ing) => `<li>${grams(ing.qty)} ${esc(ing.food.name)}${ing.state ? ` (${esc(ing.state)})` : ''}</li>`).join('')}
+    </ul>
+  </li>`;
 }
 
 /* ------------------------------------- détail des gamelles */
