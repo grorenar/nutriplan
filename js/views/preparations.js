@@ -25,6 +25,8 @@ import {
 } from '../core/derive.js';
 import { analyzeMealVolume } from '../core/meal-volume.js';
 import { esc, num, toast } from '../core/util.js';
+import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 // État d'interface uniquement (jamais persisté) — même convention que
 // `pickerQuery`/`ctx` dans editor.js ou `duplicateFrom` dans planning.js.
@@ -32,10 +34,13 @@ let wizard = null;   // { preparationId, amount, mealIds: Set<string>, catalog: 
 let quickUse = null; // { preparationId, mealId, qty }
 let lastResult = null;
 let creating = null;    // { recipeId, qty } — P1.A, création depuis une recette
+let createBaseline = null; // instantané de `creating` à l'ouverture (P1 — garde non-sauvegardé)
+let confirmingCloseCreate = false; // le dialogue « Modifications non sauvegardées » est affiché sur ce panneau
 let discardConfirm = null; // { preparationId } — jet de LA TOTALITÉ du disponible, un seul dialogue (2 clics)
 let discarding = null;  // { preparationId, qty } — jet d'une quantité PARTIELLE, flux distinct et volontairement séparé
 let exhaustedOpen = false; // la section "préparations épuisées" (disponible = 0) est-elle dépliée ?
 let deletePrep = null; // { preparationId } — suppression DÉFINITIVE de la préparation elle-même
+let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif (jet partiel)
 const assignmentsOpen = new Set(); // ids de préparation dont la liste d'affectations est dépliée
 
 export function render(root) {
@@ -60,9 +65,11 @@ export function render(root) {
     </div>
     ${lastResult ? resultCard(lastResult) : ''}
     ${creating ? createPanel(s) : ''}
+    ${creating && confirmingCloseCreate ? unsavedConfirmModal() : ''}
     ${discardConfirm ? discardConfirmModal(s) : ''}
     ${discarding ? discardPanel(s) : ''}
     ${deletePrep ? deletePrepModal(s) : ''}
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
     ${wizard ? distributeWizard(s, recipesMap) : ''}
     ${quickUse ? quickUseCard(s, recipesMap) : ''}
     ${
@@ -605,14 +612,30 @@ function wire(root, s) {
     const st = getState();
     if (!st.recipes.length) return;
     creating = { recipeId: st.recipes[0].id, qty: '' };
+    createBaseline = { ...creating };
     render(root);
   });
-  const closeCreate = () => { creating = null; render(root); };
+  const closeCreate = () => { creating = null; createBaseline = null; confirmingCloseCreate = false; render(root); };
+  // Garde « modifications non sauvegardées » (P1, même composant que
+  // foods.js/recipes.js) : ce panneau n'a que deux champs (recette, quantité),
+  // donc `creating` lui-même sert d'instantané — pas besoin d'un lecteur de
+  // formulaire séparé comme readForm() dans foods.js.
+  const attemptCloseCreate = () => {
+    if (confirmingCloseCreate) return; // déjà en train de demander confirmation
+    if (isDirty(createBaseline, creating)) { confirmingCloseCreate = true; render(root); return; }
+    closeCreate();
+  };
   // même cause que ci-dessus : Fermer (en-tête) ET Annuler (pied) partagent
   // cet attribut — les deux doivent être câblés.
-  root.querySelectorAll('[data-create-cancel]').forEach((btn) => btn.addEventListener('click', closeCreate));
+  root.querySelectorAll('[data-create-cancel]').forEach((btn) => btn.addEventListener('click', attemptCloseCreate));
   root.querySelector('[data-create-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.createBackdrop !== undefined) closeCreate();
+    if (e.target.dataset.createBackdrop !== undefined) attemptCloseCreate();
+  });
+  root.querySelector('[data-unsaved-stay]')?.addEventListener('click', () => { confirmingCloseCreate = false; render(root); });
+  root.querySelector('[data-unsaved-discard]')?.addEventListener('click', closeCreate);
+  root.querySelector('[data-unsaved-backdrop]')?.addEventListener('mousedown', (e) => {
+    // le fond du dialogue revient à « Non, retour » (action sûre par défaut), jamais à une fermeture silencieuse.
+    if (e.target.dataset.unsavedBackdrop !== undefined) { confirmingCloseCreate = false; render(root); }
   });
   root.querySelector('[data-create-recipe]')?.addEventListener('change', (e) => {
     creating.recipeId = e.target.value;
@@ -635,6 +658,8 @@ function wire(root, s) {
     });
     toast(`Préparation « ${recipe.name} » créée`);
     creating = null;
+    createBaseline = null;
+    confirmingCloseCreate = false;
     render(root);
   });
 
@@ -702,18 +727,25 @@ function wire(root, s) {
     const qty = Number(discarding.qty) || 0;
     const disponible = preparationAvailable(st0, p0);
     if (!(qty > 0)) { toast('Indique une quantité à jeter supérieure à 0', 'error'); return; }
-    if (qty > disponible + 1e-6) { toast(`Tu ne peux pas jeter plus que les ${Math.round(disponible)} g disponibles.`, 'error'); return; }
+    if (qty > disponible + 1e-6) { toast(`Tu ne peux pas jeter plus que les ${unitLabelFor(p0, disponible)} disponibles.`, 'error'); return; }
     // confirmation bloquante avant toute perte, même motif que la suppression
     // d'un aliment/d'une recette ailleurs dans l'application.
-    if (!confirm(`Jeter ${Math.round(qty)} g de « ${p0.label} » ? Cette quantité ne sera plus comptée dans le disponible.`)) return;
-    update((s2) => {
-      const p = s2.preparations.find((x) => x.id === p0.id);
-      if (!p) return;
-      p.losses = p.losses || [];
-      p.losses.push(newPreparationLoss(qty));
-    });
-    toast('Perte enregistrée');
-    discarding = null;
+    pendingConfirm = {
+      title: 'Jeter cette quantité ?',
+      message: `Jeter ${unitLabelFor(p0, qty)} de « ${p0.label} » ? Cette quantité ne sera plus comptée dans le disponible.`,
+      confirmLabel: 'Jeter cette quantité',
+      onConfirm: () => {
+        update((s2) => {
+          const p = s2.preparations.find((x) => x.id === p0.id);
+          if (!p) return;
+          p.losses = p.losses || [];
+          p.losses.push(newPreparationLoss(qty));
+        });
+        toast('Perte enregistrée');
+        discarding = null;
+        render(root);
+      },
+    };
     render(root);
   });
 
@@ -766,6 +798,8 @@ function wire(root, s) {
     deletePrep = null;
     render(root);
   });
+
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
 
   // --- Affectations actuelles (P1.B) : édition en place, jamais de doublon
   root.querySelectorAll('[data-toggle-assignments]').forEach((btn) => {

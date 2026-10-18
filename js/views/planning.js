@@ -5,9 +5,11 @@ import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, autoAdjust } f
 import { optimizeSuggestions, dayTotals } from '../core/derive.js';
 import { dayName, esc, num, toast, uid } from '../core/util.js';
 import { openEditor } from './editor.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 let showSuggestions = false;
 let duplicateFrom = null;
+let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
 export function render(root) {
   const s = getState();
@@ -45,6 +47,7 @@ export function render(root) {
     ${showSuggestions ? suggestionsPanel(s, byId, recipesMap, preparationsMap) : ''}
     ${days.join('')}
     ${duplicateFrom ? duplicatePanel(s) : ''}
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
   `;
 
   wire(root);
@@ -133,18 +136,23 @@ function wire(root) {
   root.querySelectorAll('[data-clear]').forEach((b) =>
     b.addEventListener('click', (e) => {
       const id = e.currentTarget.dataset.clear;
-      if (!confirm('Vider ce repas ?')) return;
-      update((s) => {
-        const m = s.meals.find((x) => x.id === id);
-        // Vider le repas le ramène à un état vraiment vide — équivalent à
-        // newMeal() — donc nameAuto repasse à true : un nom manuellement tapé
-        // puis explicitement vidé DANS L'ÉDITEUR reste figé (règle existante,
-        // data-name), mais « Vider ce repas » depuis le planning est un reset
-        // complet, pas un simple effacement du champ nom ; sans ce repli, un
-        // repas qui avait un nom manuel resterait bloqué sans auto-nommage
-        // pour toujours, même une fois recomposé.
-        if (m) { m.items = []; m.name = ''; m.nameAuto = true; }
-      });
+      pendingConfirm = {
+        title: 'Vider ce repas ?',
+        message: 'Tous les ingrédients de ce repas seront retirés, et son nom réinitialisé.',
+        confirmLabel: 'Vider le repas',
+        onConfirm: () => update((s) => {
+          const m = s.meals.find((x) => x.id === id);
+          // Vider le repas le ramène à un état vraiment vide — équivalent à
+          // newMeal() — donc nameAuto repasse à true : un nom manuellement tapé
+          // puis explicitement vidé DANS L'ÉDITEUR reste figé (règle existante,
+          // data-name), mais « Vider ce repas » depuis le planning est un reset
+          // complet, pas un simple effacement du champ nom ; sans ce repli, un
+          // repas qui avait un nom manuel resterait bloqué sans auto-nommage
+          // pour toujours, même une fois recomposé.
+          if (m) { m.items = []; m.name = ''; m.nameAuto = true; }
+        }),
+      };
+      render(root);
     })
   );
 
@@ -171,6 +179,7 @@ function wire(root) {
   root.querySelector('[data-dup-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.dupBackdrop !== undefined) { duplicateFrom = null; render(root); }
   });
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
 
   root.querySelector('[data-dup-confirm]')?.addEventListener('click', () => {
     const targets = [...root.querySelectorAll('[data-target]:checked')].map((c) => c.dataset.target);

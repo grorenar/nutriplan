@@ -24,7 +24,9 @@ js/core/similarity.js     détection d'aliments similaires (avertissement unique
 js/core/sync.js           Supabase : auth + envoi/récupération atomiques
 js/views/*.js             une vue par écran (dont recipes.js, preparations.js) + l'éditeur de
                           repas partagé (editor.js) + les dialogues de confirmation réutilisables
-                          (confirm-unsaved.js, confirm-similar.js)
+                          (confirm-unsaved.js, confirm-similar.js, confirm-action.js — toute
+                          action destructrice/irréversible passe par ce dernier, plus de
+                          `confirm()` natif nulle part dans l'application)
 supabase/schema.sql       schéma PostgreSQL + RLS par compte + fonction transactionnelle
 tests/engine.test.mjs     moteur nutritionnel, batch, courses, recettes/préparations (aucune dépendance)
 tests/volume.test.mjs     analyse du volume d'un repas (aucune dépendance)

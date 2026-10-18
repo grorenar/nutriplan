@@ -1339,7 +1339,10 @@ check('bouton de confirmation désactivé : refuse de jeter plus que le disponib
 change($('[data-discard-qty]'), '50');
 await wait();
 check('bouton de confirmation activé pour une quantité valide', !$('[data-discard-partial-confirm]').disabled);
-click($('[data-discard-partial-confirm]')); // confirm() stubbé à true en tête de fichier
+click($('[data-discard-partial-confirm]'));
+await wait();
+check('confirmation bloquante affichée (P1, remplace confirm() natif)', !!$('[data-action-confirm]'));
+click($('[data-action-confirm]'));
 await wait();
 check('toast de confirmation de la perte', /perte enregistrée/i.test(document.getElementById('toasts')?.textContent || ''));
 check('la perte est tracée (préparation, quantité, date) et affichée', /Jeté/.test($('#view').textContent));
@@ -1558,6 +1561,9 @@ click($('[data-view="settings"]'));
 await wait();
 click($('[data-reset-cycle]'));
 await wait();
+check('confirmation bloquante affichée avant réinitialisation (P1)', !!$('[data-action-confirm]'));
+click($('[data-action-confirm]'));
+await wait();
 const afterReset1 = p4SavedFinal().preparations.find((p) => p.id === p4Prep2Id);
 check('remainingAtReset figé à 300 g (500 préparés − 200 affectés), jamais republié à 500 g',
   afterReset1.remainingAtReset === 300, `remainingAtReset=${afterReset1.remainingAtReset}`);
@@ -1571,6 +1577,8 @@ check('l’écran Préparations affiche 300 g disponibles après reset, pas 500 
 click($('[data-view="settings"]'));
 await wait();
 click($('[data-reset-cycle]'));
+await wait();
+click($('[data-action-confirm]'));
 await wait();
 const afterReset2 = p4SavedFinal().preparations.find((p) => p.id === p4Prep2Id);
 check('deux resets successifs sans nouvel usage : remainingAtReset stable à 300 g',
@@ -1741,6 +1749,9 @@ const recipeRow3b = $$('tr').find((tr) => tr.textContent.includes('Chaine Suppre
 click(recipeRow3b?.querySelector('[data-edit]'));
 await wait();
 click($('[data-delete]'));
+await wait();
+check('confirmation bloquante affichée avant suppression (P1)', !!$('[data-action-confirm]'));
+click($('[data-action-confirm]'));
 await wait();
 check('la suppression de la recette devient possible une fois la préparation supprimée',
   !p5Saved().recipes.some((r) => r.id === p5Recipe3Id));
@@ -1914,7 +1925,9 @@ store.update((s) => {
 await wait();
 click(saladeRow().querySelector('[data-edit]'));
 await wait();
-click($('[data-delete]')); // globalThis.confirm est mocké à `() => true` en tête de fichier
+click($('[data-delete]'));
+await wait();
+click($('[data-action-confirm]')); // confirmation bloquante (P1, remplace confirm() natif)
 await wait();
 check('une fois la référence retirée, la suppression de la recette réussit', !store.getState().recipes.some((r) => r.id === recetteP0bId));
 
@@ -1965,6 +1978,9 @@ check('un nom auto-généré (nameAuto:true) copié reste nameAuto:true dans la 
 
 console.log('\n— Chantier P0 : « Vider ce repas » réinitialise nameAuto à true (équivalent newMeal())');
 click($$('[data-clear]').find((b) => b.dataset.clear === dstEmptyId));
+await wait();
+check('confirmation bloquante affichée avant de vider le repas (P1)', !!$('[data-action-confirm]'));
+click($('[data-action-confirm]'));
 await wait();
 const dstCleared = () => store.getState().meals.find((m) => m.id === dstEmptyId);
 check('repas vidé : items vides', dstCleared().items.length === 0);
@@ -2077,6 +2093,113 @@ check('restoreBackup() lève une erreur explicite quand aucune sauvegarde n’ex
   try { store.restoreBackup(); return false; }
   catch (e) { return /[Aa]ucune sauvegarde/.test(e.message); }
 })());
+
+console.log('\n— Chantier P1 : garde « modifications non sauvegardées » sur le panneau de création de préparation');
+let p1dRecipeId;
+store.update((s) => {
+  const r = store.newRecipe('Tarte P1D Test', 'weight');
+  r.items = [store.newRecipeItem(pommeP0.id, 400, 'cru')];
+  r.baseGrams = 400;
+  s.recipes.push(r);
+  p1dRecipeId = r.id;
+});
+await wait();
+click($('[data-view="preparations"]'));
+await wait();
+
+// formulaire VIERGE (recette par défaut, aucune quantité saisie) : fermeture directe
+click($('[data-open-create]'));
+await wait();
+check('panneau de création ouvert', !!$('[data-create-qty]'));
+click($('[data-create-cancel]'));
+await wait();
+check('formulaire vierge : fermeture immédiate sans dialogue', !$('[data-create-qty]') && !$('[data-unsaved-stay]'));
+
+// quantité saisie puis tentative de fermeture : dialogue affiché
+click($('[data-open-create]'));
+await wait();
+change($('[data-create-qty]'), '350');
+await wait();
+click($('[data-create-cancel]'));
+await wait();
+check('quantité saisie : dialogue de confirmation affiché', !!$('[data-unsaved-stay]'));
+check('le panneau reste ouvert derrière le dialogue (pas fermé silencieusement)', !!$('[data-create-qty]'));
+
+// "Non, retour" : la saisie est conservée
+click($('[data-unsaved-stay]'));
+await wait();
+check('« Non, retour » : saisie conservée', $('[data-create-qty]').value === '350');
+check('dialogue refermé', !$('[data-unsaved-stay]'));
+
+// "Oui, tant pis" : ferme sans créer de préparation
+click($('[data-create-cancel]'));
+await wait();
+click($('[data-unsaved-discard]'));
+await wait();
+check('« Oui, tant pis » : panneau fermé', !$('[data-create-qty]'));
+check('aucune préparation créée pour "Tarte P1D Test"', !store.getState().preparations.some((p) => p.recipeId === p1dRecipeId));
+
+// changer de recette (même sans quantité) compte comme une modification
+click($('[data-open-create]'));
+await wait();
+const otherRecipeOpt = [...$('[data-create-recipe]').options].find((o) => o.value !== $('[data-create-recipe]').value);
+if (otherRecipeOpt) {
+  change($('[data-create-recipe]'), otherRecipeOpt.value);
+  await wait();
+  click($('[data-create-cancel]'));
+  await wait();
+  check('changer de recette sans rouvrir avec quantité : dialogue affiché (sélection perdue sinon)', !!$('[data-unsaved-stay]'));
+  click($('[data-unsaved-discard]'));
+  await wait();
+}
+
+// création réussie : aucune confirmation après coup
+click($('[data-open-create]'));
+await wait();
+change($('[data-create-recipe]'), p1dRecipeId);
+await wait();
+change($('[data-create-qty]'), '400');
+await wait();
+click($('[data-create-confirm]'));
+await wait();
+check('création réussie : panneau fermé directement, sans dialogue', !$('[data-create-qty]') && !$('[data-unsaved-stay]'));
+check('préparation bien créée', store.getState().preparations.some((p) => p.recipeId === p1dRecipeId));
+
+console.log('\n— Chantier P1 : suppression d’une option de catalogue — confirmation bloquante (remplace confirm() natif)');
+click($('[data-view="breakfasts"]'));
+await wait();
+const breakfastCountBefore = store.getState().breakfasts.length;
+check('au moins une option de petit-déjeuner existante (créée plus tôt dans la suite)', breakfastCountBefore > 0);
+const delBtn = $('[data-del]');
+check('bouton de suppression présent', !!delBtn);
+click(delBtn);
+await wait();
+check('confirmation bloquante affichée, aucune suppression immédiate', !!$('[data-action-confirm]') && store.getState().breakfasts.length === breakfastCountBefore);
+click($('[data-action-cancel]'));
+await wait();
+check('« Annuler » : option toujours présente', store.getState().breakfasts.length === breakfastCountBefore);
+click($('[data-del]'));
+await wait();
+click($('[data-action-confirm]'));
+await wait();
+check('confirmation : option bien supprimée', store.getState().breakfasts.length === breakfastCountBefore - 1);
+
+console.log('\n— Chantier P1 : Paramètres — « Rétablir les objectifs par défaut » (confirmation bloquante)');
+click($('[data-view="settings"]'));
+await wait();
+store.update((s) => { s.settings.targets.thomas.day.kcal = 1234; });
+await wait();
+click($('[data-reset-targets]'));
+await wait();
+check('confirmation affichée, rien modifié avant confirmation', !!$('[data-action-confirm]') && store.getState().settings.targets.thomas.day.kcal === 1234);
+click($('[data-action-cancel]'));
+await wait();
+check('« Annuler » : objectif inchangé', store.getState().settings.targets.thomas.day.kcal === 1234);
+click($('[data-reset-targets]'));
+await wait();
+click($('[data-action-confirm]'));
+await wait();
+check('confirmation : objectifs rétablis par défaut', store.getState().settings.targets.thomas.day.kcal !== 1234);
 
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));

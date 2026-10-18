@@ -14,6 +14,9 @@ import {
 import { unitLabel, unitHint } from './editor.js';
 import { esc, num, normalize, toast, deepCopy } from '../core/util.js';
 import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
+
+let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
 let editing = null; // id de recette, ou 'new'
 let formDraft = null; // copie de travail, jamais écrite dans l'état avant "Enregistrer"
@@ -268,7 +271,8 @@ function formBodyHtml(r, s, byId) {
       <button class="btn btn--primary" data-save>Enregistrer</button>
       ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${r.id}">Supprimer</button>`}
     </div>
-    ${confirmingClose ? unsavedConfirmModal() : ''}`;
+    ${confirmingClose ? unsavedConfirmModal() : ''}
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 }
 
 /**
@@ -294,6 +298,7 @@ function resetForm() {
   ingQuery = '';
   formBaseline = null;
   confirmingClose = false;
+  pendingConfirm = null;
   if (escBound) { document.removeEventListener('keydown', onEscapeKey); escBound = false; }
 }
 
@@ -531,11 +536,19 @@ function wireDrawerBody(root, s) {
       toast(`Impossible : cette recette est encore utilisée directement dans ${directUses.length > 1 ? `${directUses.length} repas/catalogues` : directUses[0]}. Retire-la de là avant de la supprimer.`, 'error');
       return;
     }
-    if (!confirm('Supprimer cette recette ?')) return;
-    update((s2) => { s2.recipes = s2.recipes.filter((x) => x.id !== id); });
-    resetForm();
+    pendingConfirm = {
+      title: 'Supprimer cette recette ?',
+      message: 'Cette recette sera définitivement supprimée.',
+      confirmLabel: 'Supprimer',
+      onConfirm: () => {
+        update((s2) => { s2.recipes = s2.recipes.filter((x) => x.id !== id); });
+        resetForm();
+        render(root);
+      },
+    };
     render(root);
   });
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
 
   // P2 : dialogue « Modifications non sauvegardées »
   root.querySelector('[data-unsaved-stay]')?.addEventListener('click', () => { confirmingClose = false; render(root); });

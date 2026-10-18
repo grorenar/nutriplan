@@ -5,10 +5,12 @@ import { PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core/nutrition.js';
 import { WEEKDAYS, esc, num, toast, downloadFile } from '../core/util.js';
 import { findDuplicateGroups } from '../core/similarity.js';
 import * as sync from '../core/sync.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 const TYPES = ['day', 'breakfast', 'lunch', 'snack_afternoon', 'dinner', 'snack_evening'];
 let importReport = null; // doublons probables repérés au dernier import
 let account = { user: null, checked: false };
+let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
 export async function render(root) {
   const s = getState();
@@ -78,6 +80,7 @@ export async function render(root) {
       <div class="card__head"><h2>Compte et synchronisation</h2></div>
       <div data-account>Chargement…</div>
     </div>
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
   `;
 
   wire(root);
@@ -119,8 +122,15 @@ function wire(root) {
   });
 
   root.querySelector('[data-reset-targets]')?.addEventListener('click', () => {
-    if (!confirm('Rétablir les objectifs par défaut ?')) return;
-    update((s) => { s.settings.targets = defaultState().settings.targets; });
+    pendingConfirm = {
+      title: 'Rétablir les objectifs par défaut ?',
+      message: 'Les objectifs nutritionnels actuels de Thomas et Julie seront remplacés par les valeurs par défaut.',
+      confirmLabel: 'Rétablir',
+      onConfirm: () => {
+        update((s) => { s.settings.targets = defaultState().settings.targets; });
+        render(root);
+      },
+    };
     render(root);
   });
 
@@ -161,29 +171,46 @@ function wire(root) {
     toast('Export téléchargé');
   });
 
-  root.querySelector('[data-import]')?.addEventListener('change', async (e) => {
+  root.querySelector('[data-import]')?.addEventListener('change', (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!confirm('Importer cette sauvegarde ? Les données actuelles seront remplacées.')) return;
-    try {
-      importJSON(await file.text());
-      // contrôle non bloquant : la banque importée contient-elle des doublons probables ?
-      const groups = findDuplicateGroups(getState().foods);
-      importReport = groups.length ? groups : null;
-      toast(groups.length ? `Sauvegarde importée — ${groups.length} doublon(s) possible(s)` : 'Sauvegarde importée');
-      render(root);
-    } catch (err) {
-      toast(`Import impossible : ${err.message}`, 'error');
-    }
+    pendingConfirm = {
+      title: 'Importer cette sauvegarde ?',
+      message: 'Les données actuelles seront entièrement remplacées par le contenu de ce fichier.',
+      confirmLabel: 'Importer',
+      onConfirm: async () => {
+        try {
+          importJSON(await file.text());
+          // contrôle non bloquant : la banque importée contient-elle des doublons probables ?
+          const groups = findDuplicateGroups(getState().foods);
+          importReport = groups.length ? groups : null;
+          toast(groups.length ? `Sauvegarde importée — ${groups.length} doublon(s) possible(s)` : 'Sauvegarde importée');
+        } catch (err) {
+          toast(`Import impossible : ${err.message}`, 'error');
+        }
+        render(root);
+      },
+    };
+    render(root);
   });
 
   root.querySelector('[data-dismiss-import]')?.addEventListener('click', () => { importReport = null; render(root); });
 
   root.querySelector('[data-reset-cycle]')?.addEventListener('click', () => {
-    if (!confirm('Réinitialiser le cycle ? Le planning, les achats cochés et les quantités de batch seront effacés. La banque alimentaire, les objectifs et les catalogues sont conservés.')) return;
-    resetCycle();
-    toast('Cycle réinitialisé');
+    pendingConfirm = {
+      title: 'Réinitialiser le cycle ?',
+      message: 'Le planning, les achats cochés et les quantités de batch seront effacés. La banque alimentaire, les objectifs et les catalogues sont conservés.',
+      confirmLabel: 'Réinitialiser',
+      onConfirm: () => {
+        resetCycle();
+        toast('Cycle réinitialisé');
+        render(root);
+      },
+    };
+    render(root);
   });
+
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
 }
 
 /* ------------------------------------------------------------------ */
@@ -242,9 +269,17 @@ async function renderAccount(root) {
        <small>Un seul compte partagé par Thomas et Julie : les données appartiennent à ce compte et ne sont accessibles qu’avec lui.</small>`;
 
   box.querySelector('[data-restore]')?.addEventListener('click', () => {
-    if (!confirm('Restaurer la sauvegarde locale ? L’état actuel de l’application sera remplacé par celui d’avant la dernière récupération.')) return;
-    try { restoreBackup(); toast('Sauvegarde locale restaurée'); render(root); }
-    catch (e) { toast(e.message, 'error'); }
+    pendingConfirm = {
+      title: 'Restaurer la sauvegarde locale ?',
+      message: 'L’état actuel de l’application sera remplacé par celui d’avant la dernière récupération depuis le cloud.',
+      confirmLabel: 'Restaurer',
+      onConfirm: () => {
+        try { restoreBackup(); toast('Sauvegarde locale restaurée'); }
+        catch (e) { toast(e.message, 'error'); }
+        render(root);
+      },
+    };
+    render(root);
   });
 
   box.querySelector('[data-signin]')?.addEventListener('click', async () => {
@@ -280,15 +315,22 @@ async function renderAccount(root) {
       // conflit détecté (assertNotStale(), sync.js) : un autre appareil a
       // modifié le cloud depuis la dernière synchronisation de celui-ci —
       // échappatoire explicite, jamais un écrasement silencieux par défaut.
-      if (e.syncErrorKind === 'conflict' &&
-          confirm(`${e.message}\n\nEnvoyer quand même les données de cet appareil, en remplaçant celles du cloud ?`)) {
-        try {
-          const counts = await sync.push({ force: true });
-          const total = Object.values(counts || {}).reduce((a, b) => a + Number(b), 0);
-          toast(`Envoi forcé : ${total} lignes enregistrées (données distantes remplacées)`);
-        } catch (e2) {
-          toast(`Envoi impossible : ${e2.message} — rien n'a été modifié`, 'error');
-        }
+      if (e.syncErrorKind === 'conflict') {
+        pendingConfirm = {
+          title: 'Envoyer quand même ?',
+          message: `${e.message}\n\nEnvoyer quand même les données de cet appareil, en remplaçant celles du cloud ?`,
+          confirmLabel: 'Envoyer quand même',
+          onConfirm: async () => {
+            try {
+              const counts = await sync.push({ force: true });
+              const total = Object.values(counts || {}).reduce((a, b) => a + Number(b), 0);
+              toast(`Envoi forcé : ${total} lignes enregistrées (données distantes remplacées)`);
+            } catch (e2) {
+              toast(`Envoi impossible : ${e2.message} — rien n'a été modifié`, 'error');
+            }
+            render(root);
+          },
+        };
         render(root);
         return;
       }
@@ -297,10 +339,18 @@ async function renderAccount(root) {
     }
   });
 
-  box.querySelector('[data-pull]')?.addEventListener('click', async () => {
-    if (!confirm('Remplacer les données locales par celles du cloud ? Une sauvegarde locale sera conservée, restaurable depuis cet écran.')) return;
-    try { await sync.pull(); toast('Données récupérées'); render(root); }
-    catch (e) { toast(e.message || 'Récupération impossible', 'error'); }
+  box.querySelector('[data-pull]')?.addEventListener('click', () => {
+    pendingConfirm = {
+      title: 'Remplacer les données locales ?',
+      message: 'Remplacer les données locales par celles du cloud ? Une sauvegarde locale sera conservée, restaurable depuis cet écran.',
+      confirmLabel: 'Récupérer depuis le cloud',
+      onConfirm: async () => {
+        try { await sync.pull(); toast('Données récupérées'); }
+        catch (e) { toast(e.message || 'Récupération impossible', 'error'); }
+        render(root);
+      },
+    };
+    render(root);
   });
 
   box.querySelector('[data-changepw]')?.addEventListener('click', async () => {

@@ -13,6 +13,9 @@ import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core
 import { coverageReport, optionUses } from '../core/derive.js';
 import { esc, num, uid } from '../core/util.js';
 import { openEditor } from './editor.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
+
+let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
 export function renderBreakfasts(root) {
   const s = getState();
@@ -33,7 +36,8 @@ export function renderBreakfasts(root) {
       s.breakfasts.length
         ? `<div class="grid grid--2">${s.breakfasts.map((o) => optionCard(o, 'breakfast', byId, s, recipesMap, preparationsMap)).join('')}</div>`
         : `<div class="empty">Aucun petit-déjeuner enregistré. Crée une composition : elle sera réutilisable sans être liée à un jour.</div>`
-    }`;
+    }
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 
   wire(root, 'breakfast', renderBreakfasts);
 }
@@ -57,7 +61,8 @@ export function renderSnacks(root) {
       s.snacks.length
         ? `<div class="grid grid--2">${s.snacks.map((o) => optionCard(o, 'snack', byId, s, recipesMap, preparationsMap)).join('')}</div>`
         : `<div class="empty">Aucune collation enregistrée.</div>`
-    }`;
+    }
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 
   wire(root, 'snack', renderSnacks);
 }
@@ -266,8 +271,15 @@ function wire(root, kind, rerender) {
   root.querySelectorAll('[data-del]').forEach((b) =>
     b.addEventListener('click', (e) => {
       const id = e.currentTarget.dataset.del;
-      if (!confirm('Supprimer cette option ?')) return;
-      update((st) => { st[key] = st[key].filter((o) => o.id !== id); });
+      pendingConfirm = {
+        title: 'Supprimer cette option ?',
+        message: 'Cette option de catalogue sera définitivement supprimée, avec ses compteurs d’utilisation.',
+        confirmLabel: 'Supprimer',
+        onConfirm: () => update((st) => { st[key] = st[key].filter((o) => o.id !== id); }),
+      };
+      rerender(root);
     })
   );
+
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render: rerender });
 }

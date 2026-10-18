@@ -6,7 +6,9 @@ import { esc, num, normalize, toast, uid, euros } from '../core/util.js';
 import { findSimilarFoods } from '../core/similarity.js';
 import { similarConfirmModal } from './confirm-similar.js';
 import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
+let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 let query = '';
 let cat = 'all';
 let editing = null; // id d'aliment ou 'new'
@@ -103,7 +105,7 @@ function refreshOpenForm(root, s) {
 }
 
 function overlaysHtml(s) {
-  return `${editing && yieldCalc ? yieldPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}`;
+  return `${editing && yieldCalc ? yieldPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 }
 
 /** L'aliment affiché dans le formulaire actuellement ouvert (brouillon ou fiche existante). */
@@ -306,6 +308,7 @@ function resetForm() {
   yieldCalc = null;
   formBaseline = null;
   confirmingClose = false;
+  pendingConfirm = null;
   if (escBound) { document.removeEventListener('keydown', onEscapeKey); escBound = false; }
 }
 
@@ -498,9 +501,18 @@ function wireDrawerBody(root) {
     const used =
       s.meals.some((m) => m.items.some((i) => i.foodId === id)) ||
       [...s.breakfasts, ...s.snacks].some((o) => o.items.some((i) => i.foodId === id));
-    if (!confirm(used ? 'Cet aliment est utilisé dans des repas. Le supprimer quand même ?' : 'Supprimer cet aliment ?')) return;
-    update((st) => { st.foods = st.foods.filter((x) => x.id !== id); });
-    resetForm();
+    pendingConfirm = {
+      title: 'Supprimer cet aliment ?',
+      message: used
+        ? 'Cet aliment est utilisé dans des repas ou des catalogues. Le supprimer quand même ?'
+        : 'Cet aliment sera définitivement supprimé de la banque alimentaire.',
+      confirmLabel: 'Supprimer',
+      onConfirm: () => {
+        update((st) => { st.foods = st.foods.filter((x) => x.id !== id); });
+        resetForm();
+        render(root);
+      },
+    };
     render(root);
   });
 }
@@ -555,4 +567,6 @@ function wireOverlays(root) {
     // (action sûre par défaut), jamais à une fermeture silencieuse.
     if (e.target.dataset.unsavedBackdrop !== undefined) { confirmingClose = false; render(root); }
   });
+
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
 }
