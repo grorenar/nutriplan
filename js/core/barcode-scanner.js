@@ -243,7 +243,7 @@ export async function startScan({ videoElement, deviceId, onDetected, onError })
     );
   } catch (error) {
     onError(friendlyError(error));
-    return { stop: () => {}, getActiveDeviceId: () => null };
+    return { stop: () => {}, getActiveDeviceId: () => null, hasTorch: () => false, setTorch: async () => false };
   }
 
   await tryEnableContinuousFocus(controls);
@@ -256,6 +256,23 @@ export async function startScan({ videoElement, deviceId, onDetected, onError })
         return controls?.streamVideoSettingsGet(() => true)?.deviceId || null;
       } catch {
         return null;
+      }
+    },
+    /**
+     * La torche (flash) est-elle disponible sur la piste active ? @zxing/browser
+     * n'expose `controls.switchTorch` QUE si le matériel la supporte
+     * (`mediaStreamIsTorchCompatible()`, vérifié en interne par la
+     * bibliothèque) — sa seule présence suffit donc à répondre.
+     */
+    hasTorch: () => typeof controls?.switchTorch === 'function',
+    /** Active/désactive la torche. Jamais bloquant : un échec renvoie simplement `false`. */
+    setTorch: async (on) => {
+      if (typeof controls?.switchTorch !== 'function') return false;
+      try {
+        await controls.switchTorch(Boolean(on));
+        return true;
+      } catch {
+        return false;
       }
     },
   };

@@ -512,14 +512,20 @@ function offSearchPanel(s) {
  * `status`: 'starting' (permission/flux en cours) | 'scanning' (flux affiché,
  * lecture en cours) | 'error' (caméra inaccessible — bouton Réessayer).
  * `cameras`: [{deviceId, label}] — rafraîchi après le premier flux obtenu
- * (les libellés ne sont fiables qu'une fois la permission accordée).
+ * (les libellés ne sont fiables qu'une fois la permission accordée), déjà
+ * simplifié par simplifyCameraChoices() (jamais la liste brute).
  * `activeDeviceId`: device réellement actif, pour présélectionner le bon
  * choix dans le sélecteur de caméra (utile avec le repli "environment").
- * `controls`: renvoyé par startScan() — { stop() }.
+ * `controls`: renvoyé par startScan() — { stop(), hasTorch(), setTorch() }.
+ * `torchAvailable`/`torchOn` : état du flash, réinitialisés à chaque
+ * (re)démarrage (jamais activé automatiquement sans action explicite).
  */
 function openScanner(root) {
   if (!offSearch) return;
-  scanner = { status: 'starting', error: null, cameras: [], activeDeviceId: null, controls: null };
+  scanner = {
+    status: 'starting', error: null, cameras: [], activeDeviceId: null, controls: null,
+    torchAvailable: false, torchOn: false,
+  };
   // Insertion ciblée (jamais render() complet) : un rendu complet repasserait
   // par refreshOpenForm(), qui reconstruit TOUT #food-overlays — y compris le
   // panneau OFF déjà ouvert en dessous (champs code-barres/nom/marque),
@@ -554,6 +560,8 @@ async function runScan(root, deviceId) {
   scanner.status = 'starting';
   scanner.error = null;
   scanner.controls = null;
+  scanner.torchAvailable = false;
+  scanner.torchOn = false; // jamais reporté d'une caméra à l'autre : état matériel réellement réinitialisé au changement
   renderScannerChrome(root);
 
   const videoElement = document.getElementById('scanner-video');
@@ -584,18 +592,62 @@ async function runScan(root, deviceId) {
   scanner.status = 'scanning';
   scanner.controls = controls;
   scanner.activeDeviceId = controls.getActiveDeviceId() || deviceId || null;
+  scanner.torchAvailable = controls.hasTorch();
   // Les libellés de caméras ne sont fiables qu'après qu'une permission a été
   // accordée au moins une fois : on (re)liste seulement maintenant.
-  scanner.cameras = await listCameras();
+  scanner.cameras = simplifyCameraChoices(await listCameras());
   renderScannerChrome(root);
 }
+
+// Mots-clés reconnaissant une caméra avant/arrière dans son libellé natif —
+// accents retirés par normalize() avant le test, d'où "arriere"/"avant" en
+// toutes lettres (jamais un fragment de mot : "arri" seul ne "boundary"
+// jamais avec le "e" qui suit dans "arriere", d'où la forme complète ici).
+const BACK_CAMERA_PATTERN = /\b(back|rear|environment|arriere)\b/;
+const FRONT_CAMERA_PATTERN = /\b(front|user|face|avant)\b/;
 
 /** Libellé lisible pour une caméra : avant/arrière déduit du libellé natif quand possible, repli numéroté sinon. */
 function cameraLabel(cam, index) {
   const l = normalize(cam.label || '');
-  if (/\b(back|arri|rear|environment)\b/.test(l)) return 'Caméra arrière';
-  if (/\b(front|avant|user|face)\b/.test(l)) return 'Caméra avant';
+  if (BACK_CAMERA_PATTERN.test(l)) return 'Caméra arrière';
+  if (FRONT_CAMERA_PATTERN.test(l)) return 'Caméra avant';
   return cam.label || `Caméra ${index + 1}`;
+}
+
+/**
+ * iOS/Safari (et d'autres navigateurs mobiles) exposent CHAQUE objectif
+ * physique arrière comme un périphérique distinct — grand angle, ultra grand
+ * angle, téléobjectif, ET des périphériques "virtuels" combinant plusieurs
+ * objectifs (« Triple caméra arrière », « Double caméra arrière… ») pour le
+ * changement de focale automatique en zoomant, comme l'app Appareil photo.
+ * Un iPhone récent peut ainsi annoncer 6 à 8 caméras pour 2 UTILISATEURS
+ * réels (avant/arrière) — une liste brute n'est pas exploitable.
+ *
+ * Simplifie donc le choix à UNE caméra arrière + UNE caméra avant (jamais
+ * plus) : côté arrière, préfère explicitement le périphérique virtuel
+ * multi-objectifs quand il existe (« Triple » puis « Double »/« Dual ») —
+ * c'est lui qui donne le changement d'objectif automatique en zoomant,
+ * exactement le comportement de l'app Appareil photo native — à défaut la
+ * première caméra arrière listée. Un appareil sans notion avant/arrière
+ * (webcams d'ordinateur, aucun libellé reconnu) n'est jamais réduit : la
+ * liste reste telle quelle (cf. cameraLabel(), repli numéroté).
+ */
+function simplifyCameraChoices(cameras) {
+  const back = [];
+  const front = [];
+  const unclassified = [];
+  for (const cam of cameras) {
+    const l = normalize(cam.label || '');
+    if (BACK_CAMERA_PATTERN.test(l)) back.push(cam);
+    else if (FRONT_CAMERA_PATTERN.test(l)) front.push(cam);
+    else unclassified.push(cam);
+  }
+  if (!back.length && !front.length) return cameras; // rien de reconnaissable : aucune simplification à faire (ex. webcams d'ordinateur)
+  const bestBack =
+    back.find((c) => /\btriple\b/.test(normalize(c.label || ''))) ||
+    back.find((c) => /\b(double|dual)\b/.test(normalize(c.label || ''))) ||
+    back[0];
+  return [bestBack, front[0], ...unclassified].filter(Boolean);
 }
 
 function scannerPanel() {
@@ -641,6 +693,11 @@ function scannerChromeHtml() {
         .map((c, i) => `<option value="${esc(c.deviceId)}" ${c.deviceId === s.activeDeviceId ? 'selected' : ''}>${esc(cameraLabel(c, i))}</option>`)
         .join('')}</select></label>`);
   }
+  if (s.status === 'scanning' && s.torchAvailable) {
+    parts.push(`<div class="row" style="margin-top:10px">
+      <button class="btn btn--sm" data-scanner-torch type="button" aria-pressed="${s.torchOn}">${s.torchOn ? '🔦 Flash activé' : '🔦 Activer le flash'}</button>
+    </div>`);
+  }
   return parts.join('');
 }
 
@@ -666,6 +723,14 @@ function wireScannerChrome(root) {
   root.querySelector('[data-scanner-retry]')?.addEventListener('click', () => runScan(root, scanner.activeDeviceId || undefined));
   root.querySelector('[data-scanner-manual]')?.addEventListener('click', () => closeScanner(root));
   root.querySelector('[data-scanner-camera]')?.addEventListener('change', (e) => runScan(root, e.target.value));
+  root.querySelector('[data-scanner-torch]')?.addEventListener('click', async () => {
+    if (!scanner?.controls) return;
+    const next = !scanner.torchOn;
+    const ok = await scanner.controls.setTorch(next);
+    if (!scanner) return; // panneau refermé pendant l'appel
+    if (ok) scanner.torchOn = next;
+    renderScannerChrome(root);
+  });
 }
 
 function offSearchStatusHtml(o) {

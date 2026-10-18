@@ -2558,8 +2558,9 @@ await wait();
 /* ------------------------------------------------------------------ */
 
 /** Simule @zxing/browser : une entrée par appel à decodeFromVideoDevice(), avec son propre compteur d'arrêt. */
-function makeFakeScannerLib({ onStart } = {}) {
+function makeFakeScannerLib({ onStart, withTorch = false } = {}) {
   const calls = [];
+  let torchOn = null; // état réel du flash côté "matériel" simulé — null tant que jamais activé/désactivé
   // getKind() : reproduit l'API réelle d'Exception (@zxing/library) — c'est ce
   // signal, pas instanceof, que barcode-scanner.js utilise pour reconnaître
   // une exception "normale" de lecture (rien dans le cadre à cet instant).
@@ -2575,12 +2576,17 @@ function makeFakeScannerLib({ onStart } = {}) {
       const controls = {
         stop: () => { entry.stopCount++; },
         streamVideoSettingsGet: () => ({ deviceId: deviceId || 'env-camera' }),
+        // switchTorch n'existe QUE si le matériel la supporte (même convention
+        // que la vraie bibliothèque @zxing/browser — cf. barcode-scanner.js,
+        // hasTorch() teste la seule PRÉSENCE de cette méthode).
+        ...(withTorch ? { switchTorch: async (on) => { torchOn = on; } } : {}),
       };
       entry.emit = (result, error) => callback(result, error, controls);
       calls.push(entry);
       return controls;
     }
   }
+  Object.defineProperty(calls, 'torchState', { get: () => torchOn });
   const lib = {
     BrowserMultiFormatOneDReader: FakeReader,
     DecodeHintType: { POSSIBLE_FORMATS: 'POSSIBLE_FORMATS' },
@@ -2774,6 +2780,110 @@ await wait();
   scannerLib.__setTestLib(null);
 }
 click($('[data-scanner-close]'));
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : simplifie la liste des caméras sur un iPhone multi-objectifs (jamais la liste brute)');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  // Reproduit exactement le cas réel signalé (capture d'écran utilisateur,
+  // iPhone récent) : iOS expose chaque objectif comme une caméra séparée,
+  // plus des périphériques virtuels combinant plusieurs objectifs.
+  scannerLib.__setTestDevices([
+    { deviceId: 'front-1', label: 'Caméra avant' },
+    { deviceId: 'triple-1', label: 'Triple caméra arrière' },
+    { deviceId: 'dualwide-1', label: 'Double caméra grand angle arrière' },
+    { deviceId: 'ultrawide-1', label: 'Caméra ultra grand angle arrière' },
+    { deviceId: 'dual-1', label: 'Double caméra arrière' },
+    { deviceId: 'back-1', label: 'Caméra arrière' },
+    { deviceId: 'front-2', label: 'Caméra avant' },
+    { deviceId: 'tele-1', label: 'Caméra arrière de longue focale' },
+  ]);
+  const { lib } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  const select = $('[data-scanner-camera]');
+  check('sélecteur réduit à 2 choix (jamais les 8 caméras brutes du téléphone)', select?.options.length === 2);
+  const options = select ? [...select.options] : [];
+  check('« Caméra arrière » proposée (libellé français reconnu, plus de faux négatif)', options.some((o) => o.textContent === 'Caméra arrière'));
+  check('« Caméra avant » proposée (libellé français reconnu)', options.some((o) => o.textContent === 'Caméra avant'));
+  const backOption = options.find((o) => o.textContent === 'Caméra arrière');
+  check('la caméra arrière choisie est la Triple caméra (changement d’objectif automatique, comme l’app Appareil photo)', backOption?.value === 'triple-1');
+  scannerLib.__setTestDevices(null);
+  scannerLib.__setTestLib(null);
+}
+click($('[data-scanner-close]'));
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : sur ordinateur (aucune notion avant/arrière), la liste reste telle quelle');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  scannerLib.__setTestDevices([
+    { deviceId: 'webcam-1', label: 'HD Pro Webcam C920' },
+    { deviceId: 'webcam-2', label: 'Logitech BRIO' },
+  ]);
+  const { lib } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  const select = $('[data-scanner-camera]');
+  check('les deux webcams restent proposées telles quelles (aucune simplification arbitraire sans notion avant/arrière)', select?.options.length === 2);
+  scannerLib.__setTestDevices(null);
+  scannerLib.__setTestLib(null);
+}
+click($('[data-scanner-close]'));
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : flash/torche — proposé seulement si le matériel le permet, jamais activé automatiquement');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  const { lib, calls } = makeFakeScannerLib({ withTorch: true });
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  check('bouton flash proposé (caméra compatible)', !!$('[data-scanner-torch]'));
+  check('flash éteint par défaut, jamais activé automatiquement au démarrage', /Activer le flash/.test($('[data-scanner-torch]').textContent));
+  click($('[data-scanner-torch]'));
+  await wait();
+  check('le flash est bien activé après le clic', /Flash activé/.test($('[data-scanner-torch]').textContent) && calls.torchState === true);
+  click($('[data-scanner-torch]'));
+  await wait();
+  check('un second clic désactive le flash', /Activer le flash/.test($('[data-scanner-torch]').textContent) && calls.torchState === false);
+  scannerLib.__setTestLib(null);
+}
+click($('[data-scanner-close]'));
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : pas de bouton flash quand le matériel ne le permet pas');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  const { lib } = makeFakeScannerLib(); // withTorch non précisé -> switchTorch absent, comme une caméra sans flash
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  check('aucun bouton flash proposé (matériel non compatible)', !$('[data-scanner-torch]'));
+  scannerLib.__setTestLib(null);
+}
 click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();

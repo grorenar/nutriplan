@@ -522,12 +522,30 @@ traité comme une **chaîne de caractères**, jamais repassé par `Number()` —
 **Choix de la caméra avant/arrière** : une fois un premier flux obtenu (seul moment où le navigateur
 expose des libellés de caméra fiables), la liste des caméras disponibles est rafraîchie
 (`listCameras()`) et un sélecteur apparaît **seulement s'il y a plus d'une caméra** — jamais un choix
-qui ne peut pas réellement s'appliquer. Le libellé affiché déduit « Caméra arrière »/« Caméra avant »
-du nom natif du périphérique quand c'est reconnaissable, et retombe sur un nom numéroté (« Caméra
-2 »…) sinon — utile en particulier sur ordinateur, où plusieurs webcams n'ont pas de notion
-avant/arrière. Changer de caméra arrête explicitement l'ancien flux (`controls.stop()`) **avant**
-d'en ouvrir un nouveau — jamais deux flux actifs en même temps — en réutilisant le même élément
-`<video>` (jamais recréé), pour ne provoquer aucun scintillement.
+qui ne peut pas réellement s'appliquer. Changer de caméra arrête explicitement l'ancien flux
+(`controls.stop()`) **avant** d'en ouvrir un nouveau — jamais deux flux actifs en même temps — en
+réutilisant le même élément `<video>` (jamais recréé), pour ne provoquer aucun scintillement.
+
+**Simplification sur mobile (iPhone notamment)** : constaté en usage réel — iOS/Safari expose
+**chaque objectif physique arrière** comme une caméra séparée (grand angle, ultra grand angle,
+téléobjectif) PLUS des périphériques virtuels combinant plusieurs objectifs (« Triple caméra
+arrière », « Double caméra arrière »…) pour le changement de focale automatique en zoomant, comme
+l'app Appareil photo native. Un iPhone récent peut ainsi annoncer 6 à 8 caméras pour 2 utilisateurs
+réels (avant/arrière) — une liste brute n'était pas utilisable. `simplifyCameraChoices()`
+(`js/views/foods.js`) réduit donc le choix à **une seule caméra arrière + une seule caméra avant** :
+côté arrière, le périphérique **virtuel multi-objectifs est préféré quand il existe** (« Triple » puis
+« Double »/« Dual », repli sur le premier sinon) — c'est lui qui donne le changement d'objectif
+automatique, pas une caméra figée sur un seul objectif. Un appareil sans notion avant/arrière
+reconnaissable (webcams d'ordinateur) n'est jamais réduit arbitrairement : la liste reste telle
+quelle, avec un repli sur un nom numéroté (« Caméra 2 »…) pour un libellé non reconnu.
+`cameraLabel()`/`simplifyCameraChoices()` reconnaissent les libellés en français ET en anglais
+(`arriere`/`back`/`rear`/`environment`, `avant`/`front`/`user`/`face` — accents retirés avant
+comparaison).
+
+**Flash/torche** : un bouton apparaît pendant la lecture **seulement si la caméra active le permet**
+(`IScannerControls.hasTorch()`/`setTorch()`, @zxing/browser — aucune nouvelle dépendance), jamais
+activé automatiquement. Réinitialisé (éteint) à chaque démarrage ou changement de caméra — jamais un
+état de flash reporté d'une caméra à l'autre.
 
 **Mise au point** : une fois le flux démarré, `js/core/barcode-scanner.js` consulte les capacités de
 la caméra active (`MediaTrackCapabilities.focusMode`) et demande explicitement une mise au point
@@ -568,10 +586,9 @@ résolus côté CDN.
 `localhost` en développement), permission caméra explicite (jamais de démarrage sans action de
 l'utilisateur, jamais en arrière-plan).
 
-**Limites connues** : pas de contrôle de torche/flash exposé dans l'interface (la bibliothèque le
-permettrait — `IScannerControls.switchTorch()` — non ajouté ici, hors périmètre demandé) ; la liste
-de formats et la table de libellés avant/arrière (`js/core/barcode-scanner.js`) sont volontairement
-restreintes et faciles à étendre plutôt qu'exhaustives ; le décodage réel par caméra physique n'a pu
+**Limites connues** : la liste de formats et la table de libellés avant/arrière
+(`js/core/barcode-scanner.js`, `js/views/foods.js`) sont volontairement restreintes et faciles à
+étendre plutôt qu'exhaustives ; le décodage réel par caméra physique n'a pu
 être vérifié que par un navigateur réel avec caméra simulée (Playwright, drapeaux Chromium
 `--use-fake-device-for-media-stream`) — l'accès à `esm.sh` étant bloqué dans cet environnement de
 développement, les bibliothèques ZXing elles-mêmes y ont été remplacées par un module minimal
