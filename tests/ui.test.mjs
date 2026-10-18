@@ -48,6 +48,7 @@ const app = await import(join(root, 'js/app.js'));
 const store = await import(join(root, 'js/core/store.js')); // même instance de module que celle utilisée par app.js
 const derive = await import(join(root, 'js/core/derive.js')); // lecture seule, pour valider les quantités affichées sans reparser le texte rendu
 const sync = await import(join(root, 'js/core/sync.js'));
+const scannerLib = await import(join(root, 'js/core/barcode-scanner.js')); // même instance que celle utilisée par foods.js
 // js/config.js contient volontairement les vraies clés Supabase du projet
 // (nécessaire à l'app déployée, aucune étape de build pour en injecter une
 // autre) : sans ce point d'injection réservé aux tests, ce fichier — qui
@@ -2550,6 +2551,288 @@ check('la catégorie enregistrée (choix manuel précédent) reste intacte à l�
 check('aucune indication de suggestion sur un aliment déjà enregistré en modification', !/Suggestion Open Food Facts/.test($('[data-form-backdrop]').textContent));
 click($('[data-form-cancel]'));
 await wait();
+
+/* ------------------------------------------------------------------ */
+/* Lecture de code-barres par caméra — AUCUNE caméra/bibliothèque réelle : */
+/* tout est injecté via __setTestLib()/__setTestDevices() (barcode-scanner.js). */
+/* ------------------------------------------------------------------ */
+
+/** Simule @zxing/browser : une entrée par appel à decodeFromVideoDevice(), avec son propre compteur d'arrêt. */
+function makeFakeScannerLib({ onStart } = {}) {
+  const calls = [];
+  // getKind() : reproduit l'API réelle d'Exception (@zxing/library) — c'est ce
+  // signal, pas instanceof, que barcode-scanner.js utilise pour reconnaître
+  // une exception "normale" de lecture (rien dans le cadre à cet instant).
+  class FakeException extends Error { getKind() { return this.constructor.kind; } }
+  class NotFoundException extends FakeException { static kind = 'NotFoundException'; }
+  class ChecksumException extends FakeException { static kind = 'ChecksumException'; }
+  class FormatException extends FakeException { static kind = 'FormatException'; }
+  class FakeReader {
+    constructor(hints) { this.hints = hints; }
+    async decodeFromVideoDevice(deviceId, videoElement, callback) {
+      if (onStart) await onStart(deviceId); // permet de simuler un rejet (erreur caméra)
+      const entry = { deviceId, videoElement, stopCount: 0 };
+      const controls = {
+        stop: () => { entry.stopCount++; },
+        streamVideoSettingsGet: () => ({ deviceId: deviceId || 'env-camera' }),
+      };
+      entry.emit = (result, error) => callback(result, error, controls);
+      calls.push(entry);
+      return controls;
+    }
+  }
+  const lib = {
+    BrowserMultiFormatOneDReader: FakeReader,
+    DecodeHintType: { POSSIBLE_FORMATS: 'POSSIBLE_FORMATS' },
+    BarcodeFormat: { EAN_13: 'EAN_13', EAN_8: 'EAN_8', UPC_A: 'UPC_A', UPC_E: 'UPC_E', CODE_128: 'CODE_128' },
+    NotFoundException, ChecksumException, FormatException,
+  };
+  return { lib, calls };
+}
+
+const realMediaDevices = window.navigator.mediaDevices;
+const stubCameraSupport = () => { window.navigator.mediaDevices = { getUserMedia: async () => ({ getVideoTracks: () => [] }) }; };
+const restoreCameraSupport = () => { window.navigator.mediaDevices = realMediaDevices; };
+
+console.log('\n— Chantier Scanner caméra : bouton absent quand la caméra n’est pas prise en charge (repli recherche manuelle intact)');
+restoreCameraSupport();
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+check('aucun bouton « Scanner » proposé sans support caméra', !$('[data-off-scan-open]'));
+check('la recherche OFF manuelle reste pleinement utilisable malgré l’absence de caméra', !$('[data-off-barcode]')?.disabled);
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : détection réussie -> transmise telle quelle à la recherche OFF déjà existante');
+stubCameraSupport();
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+check('bouton « Scanner un code-barres » proposé (caméra prise en charge)', !!$('[data-off-scan-open]'));
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  check('panneau scanner ouvert, flux vidéo affiché', !!$('#scanner-video'));
+  check('instruction de positionnement affichée une fois le flux démarré', /Positionne le code-barres/.test($('[data-scanner-backdrop]').textContent));
+  check('aucun deviceId explicite au premier démarrage (repli caméra arrière géré par la bibliothèque)', calls[0].deviceId === undefined);
+
+  let fetchCount = 0;
+  globalThis.fetch = async (url) => {
+    fetchCount++;
+    check('endpoint code-barres appelé après détection caméra (pas la recherche texte)', /\/product\/00012345678905\.json/.test(url));
+    return jsonRes({
+      status: 1, code: '00012345678905',
+      product: { product_name: 'Produit scanné Test', nutriments: { 'energy-kcal_100g': 42 } },
+    });
+  };
+  // code-barres AVEC un zéro initial : jamais perdu entre la caméra et la recherche OFF.
+  calls[0].emit({ getText: () => '00012345678905' }, undefined);
+  await wait();
+  check('le scanner s’est refermé après une détection réussie', !$('[data-scanner-backdrop]'));
+  check('la caméra a bien été arrêtée (plus aucune piste active)', calls[0].stopCount >= 1);
+  check('le panneau OFF reste ouvert, avec le résultat trouvé (recherche existante réutilisée, jamais dupliquée)', /Produit scanné Test/.test($('[data-off-backdrop]').textContent));
+  check('une seule recherche OFF déclenchée pour une seule détection', fetchCount === 1);
+  check('aucune création automatique : le formulaire n’est pas encore rempli tant que « Utiliser ce produit » n’a pas été cliqué', $('[data-f="name"]').value !== 'Produit scanné Test');
+  click($('[data-off-use]'));
+  await wait();
+  check('code-barres transmis AVEC son zéro initial jusqu’au formulaire', $('[data-f="barcode"]').value === '00012345678905');
+  check('nom prérempli via le parcours OFF existant (aucune logique dupliquée)', $('[data-f="name"]').value === 'Produit scanné Test');
+  globalThis.fetch = realFetch;
+  scannerLib.__setTestLib(null);
+}
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : "rien dans le cadre" (frames sans code lisible) ne déclenche jamais d’erreur affichée');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  // simule plusieurs frames consécutives sans code lisible — le cas le plus
+  // fréquent en usage réel, qui a justement révélé en navigateur réel que ce
+  // module devait reconnaître ces exceptions par leur "kind" et non par
+  // instanceof (deux modules ZXing chargés séparément -> classes distinctes).
+  calls[0].emit(undefined, new lib.NotFoundException());
+  calls[0].emit(undefined, new lib.ChecksumException());
+  calls[0].emit(undefined, new lib.FormatException());
+  await wait();
+  check('le scanner reste actif après plusieurs "rien détecté"', !!$('[data-scanner-backdrop]'));
+  check('aucun message d’erreur affiché pour un "rien dans le cadre" normal', !/Impossible de démarrer/.test($('[data-scanner-backdrop]')?.textContent || ''));
+  check('la caméra n’a pas été arrêtée par une fausse alerte', calls[0].stopCount === 0);
+  scannerLib.__setTestLib(null);
+}
+click($('[data-scanner-close]'));
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : prévention des détections répétées (une seule recherche OFF même avec plusieurs résultats émis)');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  let fetchCount = 0;
+  globalThis.fetch = async () => { fetchCount++; return jsonRes({ status: 1, code: '1111111111111', product: { product_name: 'X', nutriments: {} } }); };
+  calls[0].emit({ getText: () => '1111111111111' }, undefined);
+  calls[0].emit({ getText: () => '2222222222222' }, undefined); // frame en vol pendant l’arrêt
+  await wait();
+  check('une seule recherche OFF déclenchée malgré deux détections émises coup sur coup', fetchCount === 1);
+  globalThis.fetch = realFetch;
+  scannerLib.__setTestLib(null);
+}
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : permission refusée -> message clair, repli vers la saisie manuelle, rien n’est perdu');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+type($('[data-off-name]'), 'Saisie déjà commencée avant le scan');
+{
+  const { lib } = makeFakeScannerLib({
+    onStart: () => { const e = new Error('refusé'); e.name = 'NotAllowedError'; throw e; },
+  });
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  check('message d’erreur caméra compréhensible affiché (pas de jargon)', /refusé/i.test($('[data-scanner-backdrop]').textContent));
+  check('bouton « Réessayer » proposé', !!$('[data-scanner-retry]'));
+  check('bouton de repli vers la saisie manuelle proposé', !!$('[data-scanner-manual]'));
+  click($('[data-scanner-manual]'));
+  await wait();
+  check('scanner refermé, retour au panneau OFF', !$('[data-scanner-backdrop]') && !!$('[data-off-backdrop]'));
+  check('la saisie déjà en cours dans le panneau OFF n’a pas été perdue', $('[data-off-name]').value === 'Saisie déjà commencée avant le scan');
+  scannerLib.__setTestLib(null);
+}
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : absence de caméra détectée (NotFoundError) -> message distinct, jamais une exception');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  const { lib } = makeFakeScannerLib({
+    onStart: () => { const e = new Error('absente'); e.name = 'NotFoundError'; throw e; },
+  });
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  check('message spécifique à l’absence de caméra', /aucune caméra/i.test($('[data-scanner-backdrop]').textContent));
+  scannerLib.__setTestLib(null);
+}
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : changement de caméra — arrête l’ancien flux avant d’en ouvrir un nouveau, jamais deux flux actifs');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  scannerLib.__setTestDevices([
+    { deviceId: 'cam-back', label: 'Caméra arrière (environment facing)' },
+    { deviceId: 'cam-front', label: 'Caméra avant (user facing)' },
+  ]);
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  const videoEl = $('#scanner-video');
+  videoEl.__marker = 'original-video-node';
+  const select = $('[data-scanner-camera]');
+  check('sélecteur de caméra affiché (plusieurs caméras disponibles)', !!select);
+  const optionLabels = select ? [...select.options].map((o) => o.textContent) : [];
+  check('caméra arrière correctement identifiée', optionLabels.includes('Caméra arrière'));
+  check('caméra avant correctement identifiée', optionLabels.includes('Caméra avant'));
+  change(select, 'cam-front');
+  await wait();
+  check('l’ancien flux a bien été arrêté avant le changement', calls[0].stopCount >= 1);
+  check('un nouveau flux démarré avec le device explicitement choisi', calls.length === 2 && calls[1].deviceId === 'cam-front');
+  check('le second flux n’est démarré qu’APRÈS l’arrêt du premier (jamais deux flux actifs en même temps)', calls[0].stopCount >= 1);
+  check('le même élément vidéo est réutilisé (jamais recréé au changement de caméra)', $('#scanner-video')?.__marker === 'original-video-node');
+  scannerLib.__setTestDevices(null);
+  scannerLib.__setTestLib(null);
+}
+click($('[data-scanner-close]'));
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : fermeture (bouton, puis Échap) — caméra arrêtée, saisie en cours jamais perdue');
+click($('[data-new]'));
+await wait();
+type($('[data-f="name"]'), 'Nom déjà saisi dans le formulaire principal');
+click($('[data-off-open]'));
+await wait();
+type($('[data-off-name]'), 'Recherche déjà en cours');
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  click($('[data-scanner-close]'));
+  await wait();
+  check('fermeture par le bouton : caméra arrêtée', calls[0].stopCount >= 1);
+  check('fermeture par le bouton : panneau OFF toujours ouvert avec sa saisie intacte', $('[data-off-name]').value === 'Recherche déjà en cours');
+  check('le formulaire principal n’a pas été réinitialisé', $('[data-f="name"]').value === 'Nom déjà saisi dans le formulaire principal');
+  scannerLib.__setTestLib(null);
+}
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await wait();
+  check('Échap coupe la caméra', calls[0].stopCount >= 1);
+  check('Échap referme uniquement le scanner (pas tout le formulaire)', !$('[data-scanner-backdrop]') && !!$('[data-off-backdrop]'));
+  check('la saisie du panneau OFF survit à la fermeture par Échap', $('[data-off-name]').value === 'Recherche déjà en cours');
+  scannerLib.__setTestLib(null);
+}
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier Scanner caméra : changer d’écran coupe la caméra en arrière-plan (jamais active une fois quitté)');
+click($('[data-new]'));
+await wait();
+click($('[data-off-open]'));
+await wait();
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-off-scan-open]'));
+  await wait();
+  check('flux démarré avant le changement d’écran', calls[0].stopCount === 0);
+  app.navigate('planning');
+  await wait();
+  check('la caméra est coupée dès le changement de vue, sans attendre une fermeture explicite', calls[0].stopCount >= 1);
+  scannerLib.__setTestLib(null);
+}
+app.navigate('foods');
+await wait();
+
+restoreCameraSupport();
 
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));

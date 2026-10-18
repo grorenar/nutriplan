@@ -1,12 +1,13 @@
 {
   "type": "module",
   "scripts": {
-    "test": "npm run test:engine && npm run test:volume && npm run test:autosync && npm run test:off && npm run test:off-category && npm run test:ui",
+    "test": "npm run test:engine && npm run test:volume && npm run test:autosync && npm run test:off && npm run test:off-category && npm run test:barcode-scanner && npm run test:ui",
     "test:engine": "node tests/engine.test.mjs",
     "test:volume": "node tests/volume.test.mjs",
     "test:autosync": "node tests/autosync.test.mjs",
     "test:off": "node tests/off.test.mjs",
     "test:off-category": "node tests/off-category.test.mjs",
+    "test:barcode-scanner": "node tests/barcode-scanner.test.mjs",
     "test:ui": "node tests/ui.test.mjs",
     "test:sync": "node tests/sync.test.mjs"
   },

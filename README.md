@@ -476,6 +476,97 @@ l'unité.
 (attribution requise), affichée dans le panneau de recherche avec un lien vers le projet. Aucune
 donnée n'est redistribuée au-delà d'un usage personnel de préremplissage.
 
+### Lecture de codes-barres par caméra
+
+Dans le panneau « Rechercher sur Open Food Facts », un bouton **« 📷 Scanner un code-barres »**
+apparaît à côté du champ de saisie manuelle — uniquement si le navigateur expose l'API caméra
+(`navigator.mediaDevices.getUserMedia`) dans un contexte sécurisé (`isSecureContext`) ; sinon le
+bouton n'est simplement pas proposé, et la recherche par code-barres manuel ou par nom/marque reste
+entièrement utilisable, exactement comme avant. Aucune duplication : la caméra ne fait QUE produire
+un code-barres (texte) qui est transmis tel quel à `runBarcodeSearch()`, le même point d'entrée déjà
+utilisé par la saisie manuelle — tout le reste (recherche OFF, préremplissage, détection de doublon,
+suggestion de catégorie) est strictement le code existant, inchangé.
+
+**Bibliothèque retenue : [`@zxing/browser`](https://github.com/zxing-js/browser)** (+ sa dépendance
+`@zxing/library`), chargées en différé depuis esm.sh — même convention que
+`@supabase/supabase-js` (`js/core/sync.js`) : aucune dépendance de build, les deux bibliothèques ne
+sont téléchargées que si l'utilisateur clique sur « Scanner ». Comparées avant de choisir :
+- **API native `BarcodeDetector`** (Shape Detection API) : écartée comme moteur principal — non
+  disponible sur Safari iOS/iPadOS (désactivée par défaut sur toutes les versions actuelles d'après
+  les tableaux de compatibilité à jour), rédhibitoire pour une application qui doit fonctionner sur
+  iPhone/iPad. Un double moteur (natif si dispo, JS sinon) doublerait la surface de test pour un
+  gain limité aux seuls Chrome/Edge desktop et Android.
+- **html5-qrcode** : wrapper au-dessus du même moteur ZXing-js, mais développement arrêté depuis
+  avril 2023.
+- **Quagga2** (fork maintenu de QuaggaJS) : alternative sérieuse et activement maintenue (licence
+  MIT), mais plusieurs retours font état de faux positifs sur des EAN et de soucis sur des codes
+  abîmés ou mal imprimés — risque direct pour des emballages alimentaires réels.
+- **@zxing/browser** : port direct du décodeur ZXing (référence du secteur), licence **MIT**
+  (`@zxing/library` : Apache-2.0). Publications vérifiées sur le registre npm au moment de
+  l'implémentation : `@zxing/browser@0.2.1` (juillet 2026), `@zxing/library@0.23.0` (avril 2026) —
+  toujours activement publié. Fournit nativement l'énumération des caméras
+  (`listVideoInputDevices()`), le démarrage/arrêt propre d'un flux
+  (`decodeFromVideoDevice()`/`IScannerControls.stop()`, qui coupe explicitement toutes les pistes
+  vidéo), et un repli automatique sur la caméra arrière (`facingMode: 'environment'`) quand aucun
+  identifiant de caméra n'est précisé — aucune logique à deviner côté Nutriplan pour ce choix par
+  défaut.
+
+**Formats pris en charge** : `BrowserMultiFormatOneDReader` restreint volontairement le décodage aux
+formats 1D (jamais aux formats 2D type QR/Data Matrix, hors sujet pour un code-barres alimentaire),
+avec une restriction supplémentaire aux formats réellement utilisés sur un emballage alimentaire
+courant — **EAN-13, EAN-8, UPC-A, UPC-E, Code 128** (`js/core/barcode-scanner.js`, table
+`RELEVANT_FORMAT_NAMES`, facile à étendre). Le code-barres décodé (`Result.getText()`) est toujours
+traité comme une **chaîne de caractères**, jamais repassé par `Number()` — même convention que
+`normalizeBarcode()` (`js/core/off.js`) : un zéro initial n'est jamais perdu.
+
+**Choix de la caméra avant/arrière** : une fois un premier flux obtenu (seul moment où le navigateur
+expose des libellés de caméra fiables), la liste des caméras disponibles est rafraîchie
+(`listCameras()`) et un sélecteur apparaît **seulement s'il y a plus d'une caméra** — jamais un choix
+qui ne peut pas réellement s'appliquer. Le libellé affiché déduit « Caméra arrière »/« Caméra avant »
+du nom natif du périphérique quand c'est reconnaissable, et retombe sur un nom numéroté (« Caméra
+2 »…) sinon — utile en particulier sur ordinateur, où plusieurs webcams n'ont pas de notion
+avant/arrière. Changer de caméra arrête explicitement l'ancien flux (`controls.stop()`) **avant**
+d'en ouvrir un nouveau — jamais deux flux actifs en même temps — en réutilisant le même élément
+`<video>` (jamais recréé), pour ne provoquer aucun scintillement.
+
+**Cycle de vie et confidentialité** : le décodage se fait entièrement sur l'appareil (lecture d'une
+image de `<canvas>` en mémoire) — aucune image ni flux vidéo n'est jamais envoyé à un serveur, seul
+le texte décodé quitte `js/core/barcode-scanner.js`. Toutes les pistes vidéo sont explicitement
+arrêtées : à la fermeture du scanner (bouton, clic extérieur, Échap), après une détection réussie
+(avant même de lancer la recherche OFF), lors d'un changement de caméra, et lors d'un changement
+d'écran dans l'application (`foods.stopActiveScanner()`, appelé depuis `js/app.js` — une
+`MediaStream` ne s'arrête jamais toute seule parce que son `<video>` disparaît du DOM). Une seule
+détection est traitée par lecture (garde anti-répétition `settled`) : la caméra est coupée *avant*
+de transmettre le code à la recherche OFF, qui ne crée elle-même jamais d'aliment automatiquement —
+l'utilisateur garde la main jusqu'à l'enregistrement final, exactement comme pour une recherche
+manuelle.
+
+**Erreurs gérées** (`js/core/barcode-scanner.js`, messages sans jargon, repli toujours proposé vers
+la saisie manuelle) : permission refusée (`NotAllowedError`/`SecurityError`), aucune caméra
+(`NotFoundError`), caméra déjà utilisée par une autre application ou inaccessible
+(`NotReadableError`), caméra devenue indisponible (`OverconstrainedError`), et le cas générique d'un
+navigateur/contexte ne permettant pas l'accès vidéo. Une « frame sans code lisible » (l'écrasante
+majorité des images pendant une lecture) n'est **jamais** traitée comme une erreur — reconnue via
+`Exception.getKind()` (ZXing), pas `instanceof` : ce module charge `@zxing/library` et
+`@zxing/browser` comme deux imports ESM séparés, et s'appuyer sur un identifiant textuel stable
+plutôt que sur l'identité de classe évite toute fragilité liée à la façon dont ces deux modules sont
+résolus côté CDN.
+
+**Prérequis navigateur** : contexte sécurisé (HTTPS — GitHub Pages l'est par construction — ou
+`localhost` en développement), permission caméra explicite (jamais de démarrage sans action de
+l'utilisateur, jamais en arrière-plan).
+
+**Limites connues** : pas de contrôle de torche/flash exposé dans l'interface (la bibliothèque le
+permettrait — `IScannerControls.switchTorch()` — non ajouté ici, hors périmètre demandé) ; la liste
+de formats et la table de libellés avant/arrière (`js/core/barcode-scanner.js`) sont volontairement
+restreintes et faciles à étendre plutôt qu'exhaustives ; le décodage réel par caméra physique n'a pu
+être vérifié que par un navigateur réel avec caméra simulée (Playwright, drapeaux Chromium
+`--use-fake-device-for-media-stream`) — l'accès à `esm.sh` étant bloqué dans cet environnement de
+développement, les bibliothèques ZXing elles-mêmes y ont été remplacées par un module minimal
+reproduisant leur API (vérifiée contre leur code source réel) : le flux caméra réel, le rendu vidéo
+et l'arrêt des pistes ont ainsi pu être vérifiés en conditions réelles, mais pas la fidélité de
+décodage d'un vrai code-barres imprimé — à confirmer par l'utilisateur sur un appareil réel.
+
 ### Suggestion automatique de catégorie
 
 Module dédié et testé séparément : `js/core/off-category.js` (pur, sans dépendance à l'UI,
@@ -598,18 +689,19 @@ jour) mais pas pour la recherche par nom/marque.
 
 ```bash
 npm ci                # une seule fois (installe jsdom, nécessaire à tests/ui.test.mjs)
-npm test              # les 6 suites ci-dessous, dans cet ordre, en une commande
+npm test              # les 7 suites ci-dessous, dans cet ordre, en une commande
 ```
 
 Équivalent détaillé, ou pour lancer une suite isolément :
 
 ```bash
-npm run test:engine        # node tests/engine.test.mjs        — moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
-npm run test:volume        # node tests/volume.test.mjs        — analyse du volume d'un repas — sans dépendance
-npm run test:autosync      # node tests/autosync.test.mjs      — synchronisation automatique, client Supabase simulé — sans dépendance
-npm run test:off           # node tests/off.test.mjs           — service Open Food Facts, `fetch` entièrement simulé — sans dépendance, sans réseau
-npm run test:off-category  # node tests/off-category.test.mjs  — suggestion de catégorie OFF -> Nutriplan — module pur, sans dépendance
-npm run test:ui            # node tests/ui.test.mjs            — parcours réel de l'interface (jsdom)
+npm run test:engine           # node tests/engine.test.mjs           — moteur, batch, courses, unités, cru/cuit, recettes/préparations — sans dépendance
+npm run test:volume           # node tests/volume.test.mjs           — analyse du volume d'un repas — sans dépendance
+npm run test:autosync         # node tests/autosync.test.mjs         — synchronisation automatique, client Supabase simulé — sans dépendance
+npm run test:off              # node tests/off.test.mjs              — service Open Food Facts, `fetch` entièrement simulé — sans dépendance, sans réseau
+npm run test:off-category     # node tests/off-category.test.mjs     — suggestion de catégorie OFF -> Nutriplan — module pur, sans dépendance
+npm run test:barcode-scanner  # node tests/barcode-scanner.test.mjs  — lecture caméra, bibliothèque ZXing et caméra entièrement simulées
+npm run test:ui               # node tests/ui.test.mjs               — parcours réel de l'interface (jsdom)
 ```
 
 `tests/ui.test.mjs` démarre l'application entière (`js/app.js`) : comme `js/config.js` contient
@@ -663,6 +755,17 @@ jsdom (rendu CSS, comportement tactile mobile réel, timing d'animation ayant un
 et pas seulement visuel) et qui se reproduirait plus d'une fois. En attendant, une vérification
 ponctuelle au navigateur réel reste possible à la main (Playwright installé globalement, hors
 dépôt) sans que cela justifie de l'ajouter en dépendance versionnée ni en CI.
+
+Le scanner de codes-barres par caméra (§7) entre dans ce cas : jsdom n'implémente aucune API
+WebRTC, donc `tests/barcode-scanner.test.mjs` et les scénarios caméra de `tests/ui.test.mjs`
+simulent entièrement la bibliothèque ZXing et les périphériques (comme pour tout le reste). Une
+vérification ponctuelle, hors dépôt, a confirmé en navigateur réel (Chromium, drapeaux
+`--use-fake-device-for-media-stream`/`--use-fake-ui-for-media-stream`) le cycle de vie RÉEL du flux
+— `getUserMedia()`, affichage vidéo, arrêt effectif des pistes à la fermeture — et a d'ailleurs
+révélé une fragilité corrigée depuis (classification des exceptions ZXing par `getKind()` plutôt que
+par `instanceof`, cf. §7). Elle n'a en revanche pas pu couvrir le décodage d'un vrai code-barres
+imprimé (`esm.sh` injoignable depuis cet environnement de développement) — à confirmer par
+l'utilisateur sur un appareil réel.
 
 ## 9. Sauvegarde
 

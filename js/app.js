@@ -51,6 +51,13 @@ export function navigate(id) {
 }
 
 function renderView() {
+  // Un changement de vue (clic nav, hashchange) ne passe jamais par le
+  // nettoyage propre de foods.js (resetForm()/closeOffSearch()) — il vide
+  // #view directement. Une MediaStream de caméra ne s'arrête JAMAIS toute
+  // seule parce que son élément <video> disparaît du DOM : sans cet appel,
+  // le scanner de codes-barres resterait actif en arrière-plan après avoir
+  // quitté l'écran Aliments. Sans effet si aucun scanner n'est ouvert.
+  foods.stopActiveScanner?.();
   const def = viewDef(current);
   document.getElementById('title').textContent = def.title;
   const root = document.getElementById('view');

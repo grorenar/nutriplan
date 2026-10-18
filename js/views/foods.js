@@ -5,6 +5,7 @@ import { CATEGORIES, STATES, computeYield } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid, euros, debounce } from '../core/util.js';
 import { findSimilarFoods, findDuplicateGroups } from '../core/similarity.js';
 import { fetchProductByBarcode, searchProductsByText, normalizeBarcode } from '../core/off.js';
+import { isCameraSupported, listCameras, startScan } from '../core/barcode-scanner.js';
 import { similarConfirmModal } from './confirm-similar.js';
 import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
@@ -13,6 +14,7 @@ let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1
 let offSearch = null; // panneau de recherche Open Food Facts — voir openOffSearch()
 let offRequestId = 0; // garde-fou anti-réponse périmée (une recherche plus récente écrase la précédente)
 let offController = null; // AbortController de la requête OFF en cours, pour l'annuler si une autre démarre
+let scanner = null; // lecture de code-barres par caméra, superposée au panneau OFF — voir openScanner()
 let query = '';
 let cat = 'all';
 let duplicatesOpen = false; // P3 : section « Doublons détectés » dépliée ou non
@@ -197,7 +199,7 @@ function refreshOpenForm(root, s) {
 }
 
 function overlaysHtml(s) {
-  return `${editing && yieldCalc ? yieldPanel() : ''}${editing && offSearch ? offSearchPanel(s) : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
+  return `${editing && yieldCalc ? yieldPanel() : ''}${editing && offSearch ? offSearchPanel(s) : ''}${editing && offSearch && scanner ? scannerPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 }
 
 /** L'aliment affiché dans le formulaire actuellement ouvert (brouillon ou fiche existante). */
@@ -437,9 +439,28 @@ function openOffSearch() {
 }
 
 function closeOffSearch() {
+  closeScanner(); // la caméra ne doit jamais rester active une fois le panneau OFF refermé
   offController?.abort();
   offController = null;
   offSearch = null;
+}
+
+/**
+ * Coupe immédiatement toute caméra active, sans toucher au DOM — utilisé
+ * aussi bien par closeOffSearch() (fermeture normale) que par
+ * stopActiveScanner() (export, appelé par app.js juste avant de démonter
+ * cette vue : un changement d'écran ne passe jamais par closeOffSearch(),
+ * et une MediaStream ne s'arrête JAMAIS toute seule parce que son élément
+ * <video> a été retiré du DOM — seul track.stop() libère la caméra).
+ */
+function stopScannerStream() {
+  scanner?.controls?.stop();
+}
+
+/** Point d'entrée pour app.js : coupe la caméra avant tout changement de vue. Jamais d'exception. */
+export function stopActiveScanner() {
+  stopScannerStream();
+  scanner = null;
 }
 
 /**
@@ -469,6 +490,7 @@ function offSearchPanel(s) {
           <input type="text" inputmode="numeric" pattern="[0-9]*" data-off-barcode
             value="${esc(o.barcodeInput)}" placeholder="Code-barres (EAN)…" style="flex:1;min-width:160px">
           <button class="btn btn--primary" data-off-barcode-go ${o.barcodeInput.trim() ? '' : 'disabled'}>Rechercher</button>
+          ${isCameraSupported() ? '<button class="btn" data-off-scan-open type="button">📷 Scanner un code-barres</button>' : ''}
         </div>
         <h3 style="margin-top:16px">Par nom et/ou marque</h3>
         <div class="grid grid--2">
@@ -480,6 +502,170 @@ function offSearchPanel(s) {
       </div>
     </div>
   </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Lecture de code-barres par caméra (superposée au panneau OFF)       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `status`: 'starting' (permission/flux en cours) | 'scanning' (flux affiché,
+ * lecture en cours) | 'error' (caméra inaccessible — bouton Réessayer).
+ * `cameras`: [{deviceId, label}] — rafraîchi après le premier flux obtenu
+ * (les libellés ne sont fiables qu'une fois la permission accordée).
+ * `activeDeviceId`: device réellement actif, pour présélectionner le bon
+ * choix dans le sélecteur de caméra (utile avec le repli "environment").
+ * `controls`: renvoyé par startScan() — { stop() }.
+ */
+function openScanner(root) {
+  if (!offSearch) return;
+  scanner = { status: 'starting', error: null, cameras: [], activeDeviceId: null, controls: null };
+  // Insertion ciblée (jamais render() complet) : un rendu complet repasserait
+  // par refreshOpenForm(), qui reconstruit TOUT #food-overlays — y compris le
+  // panneau OFF déjà ouvert en dessous (champs code-barres/nom/marque),
+  // recréés inutilement pour la seule ouverture du scanner (même motif que
+  // renderOffStatus()/#off-status plus haut dans ce fichier).
+  const overlays = root.querySelector('#food-overlays');
+  if (!overlays) { render(root); return; }
+  overlays.insertAdjacentHTML('beforeend', scannerPanel());
+  wireScanner(root);
+  runScan(root);
+}
+
+/** Referme le panneau caméra et revient au panneau OFF (déjà ouvert dessous), sans rien y perdre. */
+function closeScanner(root) {
+  stopScannerStream();
+  scanner = null;
+  // Retrait ciblé du seul nœud du scanner — jamais un render() complet ici
+  // non plus (mêmes raisons que l'ouverture) : le panneau OFF en dessous,
+  // avec sa saisie éventuelle, reste intact.
+  root?.querySelector('[data-scanner-backdrop]')?.remove();
+}
+
+/**
+ * (Re)démarre la lecture sur la caméra demandée (ou, par défaut, la caméra
+ * arrière — géré par startScan()/la bibliothèque, jamais deviné ici).
+ * Coupe systématiquement tout flux précédent avant d'en ouvrir un nouveau
+ * (changement de caméra propre : jamais deux flux actifs en même temps).
+ */
+async function runScan(root, deviceId) {
+  if (!scanner) return;
+  stopScannerStream();
+  scanner.status = 'starting';
+  scanner.error = null;
+  scanner.controls = null;
+  renderScannerChrome(root);
+
+  const videoElement = document.getElementById('scanner-video');
+  if (!videoElement) return; // panneau refermé entre-temps
+
+  const controls = await startScan({
+    videoElement,
+    deviceId,
+    onDetected: (code) => {
+      if (!scanner) return; // panneau déjà refermé (rare, détection juste avant la fermeture)
+      closeScanner(root); // caméra coupée ET panneau retiré AVANT toute recherche OFF
+      if (!offSearch) return;
+      offSearch.barcodeInput = code;
+      runBarcodeSearch(root);
+    },
+    onError: (message) => {
+      if (!scanner) return;
+      scanner.status = 'error';
+      scanner.error = message;
+      scanner.controls = null;
+      renderScannerChrome(root);
+    },
+  });
+
+  if (!scanner) { controls.stop(); return; } // panneau refermé pendant le await startScan()
+  if (scanner.status === 'error') { controls.stop(); return; } // onError a déjà tranché (ex. permission refusée)
+
+  scanner.status = 'scanning';
+  scanner.controls = controls;
+  scanner.activeDeviceId = controls.getActiveDeviceId() || deviceId || null;
+  // Les libellés de caméras ne sont fiables qu'après qu'une permission a été
+  // accordée au moins une fois : on (re)liste seulement maintenant.
+  scanner.cameras = await listCameras();
+  renderScannerChrome(root);
+}
+
+/** Libellé lisible pour une caméra : avant/arrière déduit du libellé natif quand possible, repli numéroté sinon. */
+function cameraLabel(cam, index) {
+  const l = normalize(cam.label || '');
+  if (/\b(back|arri|rear|environment)\b/.test(l)) return 'Caméra arrière';
+  if (/\b(front|avant|user|face)\b/.test(l)) return 'Caméra avant';
+  return cam.label || `Caméra ${index + 1}`;
+}
+
+function scannerPanel() {
+  return `<div class="drawer" data-scanner-backdrop>
+    <div class="drawer__panel" style="width:min(520px,100%)">
+      <div class="drawer__head"><div class="row">
+        <h3 style="flex:1">Scanner un code-barres</h3>
+        <button class="btn btn--ghost" data-scanner-close type="button">Fermer</button>
+      </div></div>
+      <div class="drawer__body">
+        <div class="scanner-frame">
+          <video id="scanner-video" class="scanner-frame__video" autoplay muted playsinline></video>
+          <div class="scanner-frame__guide" aria-hidden="true"></div>
+        </div>
+        <div id="scanner-chrome" style="margin-top:12px">${scannerChromeHtml()}</div>
+        <small style="display:block;margin-top:12px">La lecture se fait entièrement sur cet appareil : aucune image n'est envoyée à un serveur. Seul le code-barres détecté est utilisé pour la recherche.</small>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** Statut + sélecteur de caméra — seule zone remplacée à chaque étape, jamais la vidéo elle-même (pas de coupure/réaffectation inutile du flux). */
+function scannerChromeHtml() {
+  const s = scanner;
+  if (!s) return '';
+  const parts = [];
+  if (s.status === 'starting') {
+    parts.push(`<p class="muted">Démarrage de la caméra…</p>`);
+  } else if (s.status === 'error') {
+    parts.push(`<div class="card" style="border-color:#eebeb9">
+      <strong>${esc(s.error)}</strong>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn--sm" data-scanner-retry type="button">Réessayer</button>
+        <button class="btn btn--sm btn--ghost" data-scanner-manual type="button">Saisie manuelle</button>
+      </div>
+    </div>`);
+  } else {
+    parts.push(`<p class="muted">Positionne le code-barres dans le cadre — la lecture est automatique.</p>`);
+  }
+  if (s.cameras.length > 1) {
+    parts.push(`<label class="field" style="margin-top:10px">Caméra
+      <select data-scanner-camera>${s.cameras
+        .map((c, i) => `<option value="${esc(c.deviceId)}" ${c.deviceId === s.activeDeviceId ? 'selected' : ''}>${esc(cameraLabel(c, i))}</option>`)
+        .join('')}</select></label>`);
+  }
+  return parts.join('');
+}
+
+/** Même discipline que renderOffStatus() : ne touche jamais la vidéo ni le reste du panneau OFF. */
+function renderScannerChrome(root) {
+  const el = root.querySelector('#scanner-chrome');
+  if (!el || !scanner) { render(root); return; }
+  el.innerHTML = scannerChromeHtml();
+  wireScannerChrome(root);
+}
+
+function wireScanner(root) {
+  if (!scanner) return;
+  root.querySelector('[data-scanner-close]')?.addEventListener('click', () => closeScanner(root));
+  root.querySelector('[data-scanner-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.scannerBackdrop !== undefined) closeScanner(root);
+  });
+  wireScannerChrome(root);
+}
+
+function wireScannerChrome(root) {
+  if (!scanner) return;
+  root.querySelector('[data-scanner-retry]')?.addEventListener('click', () => runScan(root, scanner.activeDeviceId || undefined));
+  root.querySelector('[data-scanner-manual]')?.addEventListener('click', () => closeScanner(root));
+  root.querySelector('[data-scanner-camera]')?.addEventListener('change', (e) => runScan(root, e.target.value));
 }
 
 function offSearchStatusHtml(o) {
@@ -778,6 +964,9 @@ function attemptClose(root) {
 function onEscapeKey(e) {
   if (e.key !== 'Escape' || !editing) return;
   const root = document.getElementById('view');
+  // le scanner, quand il est ouvert, est le sous-panneau le plus imbriqué :
+  // Échap coupe la caméra et revient au panneau OFF, jamais plus loin d'un coup.
+  if (scanner) { closeScanner(root); return; }
   // tant que le dialogue de confirmation est déjà ouvert, Échap revient à
   // « Non, retour » (l'action sûre par défaut) plutôt que de rester sans effet.
   if (confirmingClose) { confirmingClose = false; render(root); return; }
@@ -1011,6 +1200,8 @@ function wireOverlays(root) {
     render(root);
   });
   wireOffSearch(root);
+  root.querySelector('[data-off-scan-open]')?.addEventListener('click', () => openScanner(root));
+  wireScanner(root); // ré-attache les écouteurs si le panneau scanner existe déjà (cas d'un render() complet pendant qu'il est ouvert)
 
   // --- aide au calcul du rendement après cuisson
   root.querySelector('[data-yield-open]')?.addEventListener('click', () => {
