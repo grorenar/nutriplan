@@ -474,7 +474,7 @@ function offSearchPanel(s) {
           <input type="text" data-off-name value="${esc(o.nameInput)}" placeholder="Nom du produit…">
           <input type="text" data-off-brand value="${esc(o.brandInput)}" placeholder="Marque (facultatif)…">
         </div>
-        <div style="margin-top:14px">${offSearchStatusHtml(o)}</div>
+        <div id="off-status" style="margin-top:14px">${offSearchStatusHtml(o)}</div>
         <small style="display:block;margin-top:16px">Données © <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>, sous licence ouverte ODbL — vérifie toujours les valeurs avant d'enregistrer.</small>
       </div>
     </div>
@@ -550,6 +550,22 @@ function isStaleOffRequest(id) {
   return id !== offRequestId;
 }
 
+/**
+ * Met à jour UNIQUEMENT la zone de statut/résultats (#off-status), jamais le
+ * reste du panneau (champs code-barres/nom/marque) : un render(root) complet
+ * ici reconstruirait aussi ces champs — y compris celui que l'utilisateur
+ * vient de remplir — provoquant une perte de focus et un scintillement
+ * visible de tout le panneau à chaque étape d'une recherche (constaté en
+ * usage réel). Repli sur un render() complet si le panneau n'est plus dans
+ * le DOM (fermé entre-temps, ou pas encore monté).
+ */
+function renderOffStatus(root) {
+  const el = root.querySelector('#off-status');
+  if (!el || !offSearch) { render(root); return; }
+  el.innerHTML = offSearchStatusHtml(offSearch);
+  wireOffStatusArea(root);
+}
+
 async function runBarcodeSearch(root) {
   if (!offSearch) return;
   const code = normalizeBarcode(offSearch.barcodeInput);
@@ -557,32 +573,32 @@ async function runBarcodeSearch(root) {
   const { id, signal } = startOffRequest();
   offSearch.status = 'loading';
   offSearch.error = null;
-  render(root);
+  renderOffStatus(root);
   const res = await fetchProductByBarcode(code, { signal });
   if (isStaleOffRequest(id) || !offSearch) return; // une recherche plus récente (ou la fermeture du panneau) a pris le dessus
   if (res.status === 'aborted') return;
   if (res.status === 'error') { offSearch.status = 'error'; offSearch.error = res.error; }
   else if (res.status === 'not-found') { offSearch.status = 'not-found'; offSearch.foundProduct = null; }
   else { offSearch.status = 'found'; offSearch.foundProduct = { code: res.code, draft: res.draft }; }
-  render(root);
+  renderOffStatus(root);
 }
 
 async function runTextSearch(root) {
   if (!offSearch) return;
   const name = offSearch.nameInput.trim();
   const brand = offSearch.brandInput.trim();
-  if (!name && !brand) { offSearch.status = 'idle'; offSearch.results = []; render(root); return; }
+  if (!name && !brand) { offSearch.status = 'idle'; offSearch.results = []; renderOffStatus(root); return; }
   const { id, signal } = startOffRequest();
   offSearch.status = 'loading';
   offSearch.error = null;
-  render(root);
+  renderOffStatus(root);
   const res = await searchProductsByText({ name, brand }, { signal });
   if (isStaleOffRequest(id) || !offSearch) return;
   if (res.status === 'aborted') return;
   if (res.status === 'error') { offSearch.status = 'error'; offSearch.error = res.error; }
   else if (res.status === 'no-results') { offSearch.status = 'no-results'; offSearch.results = []; }
   else { offSearch.status = 'results'; offSearch.results = res.results.map((r) => ({ code: r.code, draft: r.draft })); }
-  render(root);
+  renderOffStatus(root);
 }
 
 const runTextSearchDebounced = debounce((root) => runTextSearch(root), 500);
@@ -630,10 +646,6 @@ function wireOffSearch(root) {
   root.querySelector('[data-off-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.offBackdrop !== undefined) { closeOffSearch(); render(root); }
   });
-  root.querySelector('[data-off-retry]')?.addEventListener('click', () => {
-    if (o.barcodeInput.trim() && o.status === 'error') runBarcodeSearch(root);
-    else runTextSearch(root);
-  });
 
   const barcodeInput = root.querySelector('[data-off-barcode]');
   const barcodeGoBtn = root.querySelector('[data-off-barcode-go]');
@@ -659,6 +671,24 @@ function wireOffSearch(root) {
     runTextSearchDebounced(root);
   });
 
+  wireOffStatusArea(root);
+}
+
+/**
+ * Écouteurs de la seule zone #off-status (retry, utiliser ce produit, ouvrir
+ * la fiche existante) : appelée au montage initial du panneau (depuis
+ * wireOffSearch) ET après chaque remplacement ciblé de #off-status (depuis
+ * renderOffStatus) — ces boutons sont recréés à chaque mise à jour du statut
+ * de recherche, contrairement aux champs code-barres/nom/marque qui restent
+ * en place et ne sont jamais réécoutés après le montage initial.
+ */
+function wireOffStatusArea(root) {
+  if (!offSearch) return;
+  const o = offSearch;
+  root.querySelector('[data-off-retry]')?.addEventListener('click', () => {
+    if (o.barcodeInput.trim() && o.status === 'error') runBarcodeSearch(root);
+    else runTextSearch(root);
+  });
   root.querySelectorAll('[data-off-use]').forEach((btn) =>
     btn.addEventListener('click', (e) => {
       const code = e.currentTarget.dataset.offUse;
