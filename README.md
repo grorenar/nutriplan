@@ -38,6 +38,10 @@ tests/ui.test.mjs         parcours complet de l'interface (jsdom)
 Séparation stricte : `core/nutrition.js` et `core/derive.js` ne touchent jamais au DOM et ne
 connaissent ni le stockage ni le réseau. Ce sont des fonctions pures, directement testables.
 
+`package.json`/`package-lock.json` n'existent que pour l'outillage de test (`jsdom`, requis par
+`tests/ui.test.mjs`) : l'application déployée elle-même n'a toujours aucune dépendance ni étape de
+build — `node_modules/` reste ignoré par git, seul `npm ci` le recrée.
+
 ## 2. Modèle de données
 
 État applicatif (et fichier d'export JSON) :
@@ -356,7 +360,7 @@ possibles. Rien n'est jamais fusionné ni supprimé automatiquement.
 ## 8. Tests
 
 ```bash
-npm i jsdom           # une seule fois (nécessaire à tests/ui.test.mjs)
+npm ci                # une seule fois (installe jsdom, nécessaire à tests/ui.test.mjs)
 npm test              # les 4 suites ci-dessous, dans cet ordre, en une commande
 ```
 

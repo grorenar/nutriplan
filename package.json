@@ -1,0 +1,13 @@
+{
+  "scripts": {
+    "test": "npm run test:engine && npm run test:volume && npm run test:autosync && npm run test:ui",
+    "test:engine": "node tests/engine.test.mjs",
+    "test:volume": "node tests/volume.test.mjs",
+    "test:autosync": "node tests/autosync.test.mjs",
+    "test:ui": "node tests/ui.test.mjs",
+    "test:sync": "node tests/sync.test.mjs"
+  },
+  "dependencies": {
+    "jsdom": "^30.1.0"
+  }
+}
