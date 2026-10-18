@@ -2339,7 +2339,8 @@ await wait();
 check('panneau de recherche OFF ouvert', !!$('[data-off-backdrop]'));
 type($('[data-off-barcode]'), '3017620422003');
 globalThis.fetch = async (url) => {
-  check('endpoint code-barres appelé (API v2, pas la recherche texte)', /\/api\/v2\/product\/3017620422003\.json/.test(url));
+  // chemin stable que OFF_PROXY_URL soit configuré (js/config.js) ou non.
+  check('endpoint code-barres appelé (pas la recherche texte)', /\/product\/3017620422003\.json/.test(url));
   return jsonRes({
     status: 1, code: '3017620422003',
     product: {
@@ -2416,7 +2417,9 @@ await wait();
 click($('[data-off-open]'));
 await wait();
 globalThis.fetch = async (url) => {
-  check('endpoint de recherche texte (Search-a-licious, distinct de la fiche produit par code-barres)', /search\.openfoodfacts\.org\/search/.test(url) && /q=/.test(url));
+  // chemin stable que OFF_PROXY_URL soit configuré ou non — jamais le même
+  // chemin que la fiche produit par code-barres.
+  check('endpoint de recherche texte (distinct de la fiche produit par code-barres)', /\/search\?/.test(url) && /q=/.test(url) && !/\/product\//.test(url));
   return jsonRes({
     count: 2,
     hits: [

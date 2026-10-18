@@ -135,7 +135,10 @@ test('mapOffProductToFoodDraft() : category JAMAIS déduite des catégories OFF 
 
 await testAsync('fetchProductByBarcode() : produit trouvé', async () => {
   mockFetchOnce(async (url) => {
-    check('endpoint fiche produit (API v2, code-barres dans l’URL)', /\/api\/v2\/product\/3017620422003\.json/.test(url));
+    // chemin stable que OFF_PROXY_URL soit configuré ou non (direct :
+    // world.openfoodfacts.org/api/v2/product/…, proxié : {OFF_PROXY_URL}/product/…
+    // — seul l'hôte et le préfixe /api/v2 changent, jamais /product/{code}.json).
+    check('endpoint fiche produit (code-barres dans l’URL)', /\/product\/3017620422003\.json/.test(url));
     check('les champs demandés sont limités via `fields=` (pas une fiche complète inutile)', /fields=/.test(url));
     return jsonRes({ status: 1, status_verbose: 'product found', code: '3017620422003', product: { product_name: 'Nutella', nutriments: { 'energy-kcal_100g': 539 } } });
   });
@@ -204,7 +207,9 @@ await testAsync('searchProductsByText() : recherche texte — endpoint DISTINCT 
     });
   });
   const res = await searchProductsByText({ name: 'yaourt nature', brand: '' });
-  check('endpoint Search-a-licious, jamais le même chemin que /api/v2/product/', /search\.openfoodfacts\.org\/search/.test(calledUrl) && !/\/api\/v2\/product\//.test(calledUrl));
+  // chemin stable que OFF_PROXY_URL soit configuré ou non — jamais le même
+  // chemin que la fiche produit par code-barres, dans les deux cas.
+  check('endpoint de recherche, jamais le même chemin que la fiche produit', /\/search\?/.test(calledUrl) && !/\/product\//.test(calledUrl));
   check('terme de recherche transmis', /q=/.test(calledUrl));
   check('status = ok avec 2 résultats', res.status === 'ok' && res.results.length === 2);
   check('chaque résultat porte son brouillon mappé', res.results[0].draft.name === 'Yaourt nature' && res.results[1].draft.kcal === 45);
