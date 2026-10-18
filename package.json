@@ -1,4 +1,5 @@
 {
+  "type": "module",
   "scripts": {
     "test": "npm run test:engine && npm run test:volume && npm run test:autosync && npm run test:ui",
     "test:engine": "node tests/engine.test.mjs",
