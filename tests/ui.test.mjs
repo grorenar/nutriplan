@@ -3182,11 +3182,46 @@ await wait();
 check('retour sur l’écran Recettes : le formulaire non enregistré se rouvre automatiquement (brouillon jamais perdu malgré la bascule)',
   $('[data-r="name"]')?.value === 'Recette Test Scan Code-Barres');
 check('l’ingrédient ajouté avant la bascule est toujours dans la composition du brouillon restauré',
-  new RegExp(targetFood.name).test($('.items')?.textContent || ''));
+  ($('.items')?.textContent || '').includes(targetFood.name));
 click($('[data-form-cancel]'));
 await wait();
 
 restoreCameraSupport();
+
+/* ------------------------------------------------------------------ */
+/* Retour utilisateur : le panneau « Doublons » ne doit jamais rester   */
+/* bloqué ouvert, visuellement lourd, une fois tout groupe écarté.      */
+/* ------------------------------------------------------------------ */
+
+console.log('\n— Correction retour utilisateur : le panneau doublons ne reste jamais bloqué ouvert une fois tout écarté');
+click($('[data-view="foods"]'));
+await wait();
+{
+  let toggleDupFinal = $('[data-toggle-duplicates]');
+  if (toggleDupFinal && !/Masquer/.test(toggleDupFinal.textContent)) { click(toggleDupFinal); await wait(); }
+  // Écarte systématiquement tout groupe actif restant, un par un — exactement
+  // le geste réel qui a révélé le bug (le bouton pour fermer/rouvrir le
+  // panneau disparaissait dès que le dernier groupe actif était écarté).
+  let discardBtn;
+  let guard = 0;
+  while ((discardBtn = $('[data-discard-group]')) && guard < 50) {
+    click(discardBtn);
+    await wait();
+    guard++;
+  }
+  check('plus aucun groupe actif après avoir tout écarté', !$('[data-discard-group]'));
+  const toggleAfterAllDiscarded = $('[data-toggle-duplicates]');
+  check('le bouton pour ouvrir/fermer le panneau reste disponible (jamais orphelin)', !!toggleAfterAllDiscarded);
+  check('son libellé reflète les doublons ignorés, plus « doublons possibles »', /ignorés/i.test(toggleAfterAllDiscarded?.textContent || ''));
+  check('le panneau n’est plus présenté comme un avertissement (titre « Doublons possibles » absent)',
+    !$$('.card').some((c) => /^Doublons possibles$/m.test(c.querySelector('h3')?.textContent || '')));
+  click(toggleAfterAllDiscarded);
+  await wait();
+  check('un clic referme bien le panneau (jamais bloqué ouvert)', !$$('.card').some((c) => /Groupes écartés/.test(c.textContent)));
+  click($('[data-toggle-duplicates]'));
+  await wait();
+  check('un second clic le rouvre normalement', $$('.card').some((c) => /Groupes écartés/.test(c.textContent)));
+}
 
 console.log('\n' + '='.repeat(60));
 check('aucune erreur JavaScript', jsErrors.length === 0, jsErrors.join(' / '));

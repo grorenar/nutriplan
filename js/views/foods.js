@@ -107,6 +107,14 @@ function renderFull(root, s) {
   if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
 
   const duplicateGroups = excludeDismissedGroups(getDuplicateGroups(s.foods), s.dismissedDuplicates);
+  const dismissedCount = (s.dismissedDuplicates || []).length;
+  // Le panneau ne reste ouvert que tant qu'il a quelque chose à montrer : un
+  // groupe entièrement écarté entre-temps (data-discard-group) ne doit
+  // jamais laisser le panneau bloqué ouvert sans bouton pour le refermer.
+  if (duplicatesOpen && !duplicateGroups.length && !dismissedCount) duplicatesOpen = false;
+  const duplicatesToggleLabel = duplicateGroups.length
+    ? `${duplicatesOpen ? 'Masquer' : 'Voir'} les doublons possibles (${duplicateGroups.length})`
+    : `${duplicatesOpen ? 'Masquer' : 'Voir'} les doublons ignorés (${dismissedCount})`;
 
   root.innerHTML = `
     <div class="row" style="margin-bottom:12px">
@@ -118,8 +126,8 @@ function renderFull(root, s) {
         .map(([id, label]) => `<button class="chip" data-cat="${id}" aria-pressed="${cat === id}">${esc(label)}</button>`)
         .join('')}
     </div>
-    ${duplicateGroups.length ? `<div class="row" style="margin-bottom:12px">
-      <button class="btn btn--sm" data-toggle-duplicates>${duplicatesOpen ? 'Masquer' : 'Voir'} les doublons possibles (${duplicateGroups.length})</button>
+    ${duplicateGroups.length || dismissedCount ? `<div class="row" style="margin-bottom:12px">
+      <button class="btn btn--sm${duplicateGroups.length ? '' : ' btn--ghost'}" data-toggle-duplicates>${duplicatesToggleLabel}</button>
     </div>` : ''}
     ${duplicatesOpen ? duplicatesPanel(duplicateGroups, s) : ''}
     <div class="card">
@@ -161,6 +169,26 @@ function renderFull(root, s) {
 function duplicatesPanel(groups, s) {
   const dismissedKeys = s.dismissedDuplicates || [];
   const foodsById = new Map(s.foods.map((f) => [f.id, f]));
+  const dismissedList = dismissedKeys.length ? `<div>
+      ${dismissedKeys.map((key) => {
+        const names = key.split('|').map((id) => foodsById.get(id)?.name || '(aliment supprimé)');
+        return `<div class="row" style="margin-top:6px">
+          <small style="flex:1">${esc(names.join(' · '))}</small>
+          <button class="btn btn--sm btn--ghost" data-undiscard-group="${esc(key)}">Reconsidérer</button>
+        </div>`;
+      }).join('')}
+    </div>` : '';
+
+  // Plus aucun groupe actif (tout a été écarté) : pas de raison de garder
+  // l'encart d'avertissement — un simple rappel neutre, pour qui veut
+  // revenir sur un aliment écarté par erreur, suffit.
+  if (!groups.length) {
+    return `<div class="card" style="margin-bottom:12px">
+      <small style="display:block;margin-bottom:6px">Groupes écartés (« pas un doublon ») — ne sont plus proposés comme doublons possibles :</small>
+      ${dismissedList}
+    </div>`;
+  }
+
   return `<div class="card" style="margin-bottom:12px;border-color:#ecd7ae;background:var(--warn-bg)">
     <div class="card__head"><h3>Doublons possibles</h3></div>
     <small style="display:block;margin-bottom:10px">Rien n'est fusionné automatiquement : choisis l'aliment à conserver dans chaque groupe, les autres y seront redirigés partout où ils sont utilisés (recettes, repas, catalogues, courses, batch), puis supprimés. Si ce n'est pas vraiment un doublon, écarte-le plutôt — il ne sera plus jamais proposé tel quel.</small>
@@ -182,15 +210,7 @@ function duplicatesPanel(groups, s) {
     }).join('')}
     ${dismissedKeys.length ? `<details style="margin-top:10px">
       <summary>Doublons ignorés (${dismissedKeys.length}) — ne sont plus proposés comme doublons possibles</summary>
-      <div style="margin-top:8px">
-        ${dismissedKeys.map((key) => {
-          const names = key.split('|').map((id) => foodsById.get(id)?.name || '(aliment supprimé)');
-          return `<div class="row" style="margin-top:6px">
-            <small style="flex:1">${esc(names.join(' · '))}</small>
-            <button class="btn btn--sm btn--ghost" data-undiscard-group="${esc(key)}">Reconsidérer</button>
-          </div>`;
-        }).join('')}
-      </div>
+      <div style="margin-top:8px">${dismissedList}</div>
     </details>` : ''}
   </div>`;
 }

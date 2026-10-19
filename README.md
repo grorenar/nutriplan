@@ -437,6 +437,14 @@ peut réapparaître sous une nouvelle composition — décision assumée, un cha
 mérite un nouvel avis plutôt que de risquer de masquer silencieusement un vrai doublon impliquant
 le nouveau venu.
 
+**Visibilité du panneau** (retour utilisateur) : le bouton « Voir/Masquer les doublons… » reste
+toujours disponible tant qu'il y a quoi que ce soit à montrer — groupes actifs **ou** groupes
+écartés — pour ne jamais laisser le panneau bloqué ouvert sans moyen de le refermer (ce qui arrivait
+si le dernier groupe actif était écarté depuis le panneau lui-même, sans le refermer d'abord). Une
+fois tous les groupes actifs écartés, le panneau perd aussi son habillage d'avertissement (fond/titre
+« Doublons possibles ») : il n'y a plus rien d'actionnable d'urgent, seulement un rappel neutre des
+groupes écartés avec leur bouton « Reconsidérer ».
+
 ### Recherche Open Food Facts (préremplissage à la création)
 
 Sur un **nouvel** aliment uniquement (pas en modification), le bouton « Rechercher sur Open Food
