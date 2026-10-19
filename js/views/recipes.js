@@ -5,7 +5,7 @@
  * connaissent qu'au travers de `recipeAsVirtualFood()` (nutrition.js).
  */
 
-import { getState, update, newRecipe, newRecipeItem } from '../core/store.js';
+import { getState, update, newRecipe, newRecipeItem, foodByBarcode } from '../core/store.js';
 import {
   CATEGORIES, STATES, recipeMacrosPer100g, canAddIngredientToRecipe,
   isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep, snapQuantity, initialQuantity,
@@ -13,6 +13,8 @@ import {
 } from '../core/nutrition.js';
 import { unitLabel, unitHint } from './editor.js';
 import { esc, num, normalize, toast, deepCopy } from '../core/util.js';
+import { normalizeBarcode } from '../core/off.js';
+import { isScannerSupported, openScannerPanel, closeScannerPanel } from './barcode-panel.js';
 import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
@@ -24,6 +26,9 @@ let ingQuery = '';
 let formBaseline = null;   // P2 : instantané du brouillon à l'ouverture, pour détecter une modification non sauvegardée
 let confirmingClose = false; // P2 : le dialogue « Modifications non sauvegardées » est affiché
 let escBound = false;      // P2 : évite d'empiler plusieurs écouteurs Échap entre deux rendus
+// Résultat du dernier scan de code-barres dans la recherche d'ingrédient —
+// même convention que editor.js (handleBarcodeDetected()).
+let barcodeResult = null;
 
 const foodsMapOf = (s) => Object.fromEntries(s.foods.map((f) => [f.id, f]));
 
@@ -121,10 +126,63 @@ function ingredientResults(state) {
 function ingredientPicker(state) {
   return `<div class="row" style="margin-top:10px">
     <input type="text" data-ing-search value="${esc(ingQuery)}" placeholder="Rechercher un ingrédient…" style="flex:1;min-width:180px">
+    ${isScannerSupported() ? '<button class="btn btn--sm" data-scan-barcode type="button">📷 Scanner un code-barres</button>' : ''}
   </div>
+  ${barcodeResultHtml()}
   <div class="picker__results" style="position:static;border:1px solid var(--line);border-radius:var(--radius-sm);max-height:200px;margin-top:6px">
     ${ingredientResults(state)}
   </div>`;
+}
+
+/**
+ * Résultat du dernier scan de code-barres — même convention que editor.js
+ * (handleBarcodeDetected()) : aliment déjà présent dans la banque
+ * (sélectionnable directement, jamais de doublon créé), code absent de la
+ * banque (proposition de basculer vers la création d'aliment, sur l'écran
+ * Aliments — jamais réimplémentée ici), ou code illisible.
+ */
+function barcodeResultHtml() {
+  if (!barcodeResult) return '';
+  if (barcodeResult.kind === 'found') {
+    const f = barcodeResult.food;
+    return `<div class="card" style="margin-top:8px;border-color:#9fc8a8">
+      <div class="row">
+        <div style="flex:1">
+          <strong>${esc(f.name)}</strong>${f.brand ? ` — ${esc(f.brand)}` : ''}
+          <div class="cat">${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} G / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})</div>
+        </div>
+        <button class="btn btn--sm btn--primary" data-ing-add="${f.id}">Ajouter</button>
+        <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
+      </div>
+    </div>`;
+  }
+  if (barcodeResult.kind === 'not-found') {
+    return `<div class="card" style="margin-top:8px;border-color:#ecd7ae;background:var(--warn-bg)">
+      <div class="row">
+        <small style="flex:1">Aucun aliment avec ce code-barres dans la banque Nutriplan.</small>
+        <button class="btn btn--sm" data-create-food-from-barcode="${esc(barcodeResult.code)}" type="button">Créer un nouvel aliment</button>
+        <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="card" style="margin-top:8px;border-color:#eebeb9">
+    <div class="row">
+      <small style="flex:1">Code-barres illisible.</small>
+      <button class="btn btn--sm" data-scan-barcode type="button">Réessayer</button>
+      <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
+    </div>
+  </div>`;
+}
+
+/** Appelé après une lecture réussie du scanner : recherche dans le catalogue Nutriplan existant, jamais dans Open Food Facts. */
+function handleBarcodeDetected(root, rawCode) {
+  const code = normalizeBarcode(rawCode);
+  if (!code) { barcodeResult = { kind: 'invalid' }; }
+  else {
+    const food = foodByBarcode(code);
+    barcodeResult = food ? { kind: 'found', food } : { kind: 'not-found', code };
+  }
+  render(root);
 }
 
 function wireIngredientAddButtons(root) {
@@ -292,9 +350,11 @@ function syncAutoBaseGrams(draft, previousSum) {
 }
 
 function resetForm() {
+  closeScannerPanel(); // la caméra ne doit jamais rester active une fois le formulaire refermé
   editing = null;
   formDraft = null;
   ingQuery = '';
+  barcodeResult = null;
   formBaseline = null;
   confirmingClose = false;
   pendingConfirm = null;
@@ -426,6 +486,27 @@ function wireDrawerBody(root, s) {
   });
 
   wireIngredientAddButtons(root);
+
+  root.querySelector('[data-scan-barcode]')?.addEventListener('click', () => {
+    openScannerPanel((code) => handleBarcodeDetected(root, code));
+  });
+
+  root.querySelector('[data-dismiss-barcode-result]')?.addEventListener('click', () => {
+    barcodeResult = null;
+    render(root);
+  });
+
+  // Code absent du catalogue Nutriplan : seul chemin vers la création d'un
+  // aliment, qui vit sur l'écran Aliments (recherche OFF comprise) — jamais
+  // réimplémentée ici. Le brouillon de recette en cours n'est pas perdu :
+  // formDraft reste en mémoire (module non réinitialisé par la navigation),
+  // et render() le réaffiche automatiquement tel quel au retour sur
+  // l'écran Recettes.
+  root.querySelector('[data-create-food-from-barcode]')?.addEventListener('click', (e) => {
+    const barcode = e.currentTarget.dataset.createFoodFromBarcode;
+    toast('Aliment à créer — reviens sur cette recette depuis l\'écran Recettes pour l\'ajouter ensuite.');
+    document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
+  });
 
   root.querySelectorAll('[data-ing-unit-toggle]').forEach((btn) => {
     btn.addEventListener('click', (e) => {

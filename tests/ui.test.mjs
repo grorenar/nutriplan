@@ -3000,6 +3000,179 @@ await wait();
 app.navigate('foods');
 await wait();
 
+/* ------------------------------------------------------------------ */
+/* Recherche d'aliments existants par code-barres pendant la création   */
+/* d'un repas (editor.js) ou d'une recette (recipes.js) — barcode-panel.js */
+/* ------------------------------------------------------------------ */
+
+console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — aucun bouton sans support caméra');
+restoreCameraSupport();
+app.navigate('planning');
+await wait();
+click($$('.meal-card button').find((b) => /Modifier/i.test(b.textContent)));
+await wait();
+check('aucun bouton « Scanner » proposé sans support caméra', !$('#drawer [data-scan-barcode]'));
+click($('#drawer [data-close]'));
+await wait();
+
+console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — aliment déjà existant, sélection directe, aucun doublon créé');
+stubCameraSupport();
+const foodCountBeforeScan = store.getState().foods.length;
+const targetFood = store.getState().foods[0];
+store.update((s) => { s.foods.find((f) => f.id === targetFood.id).barcode = '1234567890123'; });
+const editedMealBtn = $$('.meal-card button').find((b) => /Modifier/i.test(b.textContent));
+const editedMealId = editedMealBtn.dataset.edit;
+const mealById = () => store.getState().meals.find((m) => m.id === editedMealId);
+click(editedMealBtn);
+await wait();
+const mealItemCountBeforeBarcodeScan = mealById().items.length;
+check('bouton « Scanner un code-barres » proposé dans le picker du repas (caméra prise en charge)', !!$('#drawer [data-scan-barcode]'));
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('#drawer [data-scan-barcode]'));
+  await wait();
+  check('panneau scanner ouvert au-dessus du tiroir repas', !!$('#scanner-video'));
+  calls[0].emit({ getText: () => '1234567890123' }, undefined);
+  await wait();
+  check('scanner refermé après détection', !$('[data-scanner-backdrop]'));
+  check('aliment existant retrouvé et affiché (nom + macros)', $('#drawer').textContent.includes(targetFood.name));
+  check('aucun aliment créé par la seule détection (jamais automatique)', store.getState().foods.length === foodCountBeforeScan);
+  click($$('#drawer [data-add]').find((b) => b.dataset.add === targetFood.id));
+  await wait();
+  check('aliment trouvé ajouté au repas en cours', mealById().items.length === mealItemCountBeforeBarcodeScan + 1);
+  check('toujours aucun doublon créé dans la banque après ajout', store.getState().foods.length === foodCountBeforeScan);
+  scannerLib.__setTestLib(null);
+}
+
+console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — code absent du catalogue -> bascule vers la création d’aliment, repas préservé');
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('#drawer [data-scan-barcode]'));
+  await wait();
+  calls[0].emit({ getText: () => '9999999999999' }, undefined);
+  await wait();
+  check('message explicite : code-barres absent du catalogue Nutriplan',
+    /Aucun aliment avec ce code-barres dans la banque Nutriplan/.test($('#drawer').textContent));
+  check('action claire proposée pour créer l’aliment', !!$('[data-create-food-from-barcode]'));
+  check('jamais de création automatique tant que le bouton n’a pas été cliqué', store.getState().foods.length === foodCountBeforeScan);
+  globalThis.fetch = async () => jsonRes({ status: 0, code: '9999999999999', status_verbose: 'product not found' });
+  click($('[data-create-food-from-barcode]'));
+  await wait();
+  check('le repas en cours de composition n’est pas perdu (déjà persisté avant la bascule)',
+    mealById().items.length === mealItemCountBeforeBarcodeScan + 1);
+  check('bascule effective vers l’écran Aliments', $('[data-view="foods"]')?.getAttribute('aria-current') === 'true');
+  check('code-barres déjà renseigné (recherche Open Food Facts rouverte directement sur ce code)', $('[data-off-barcode]')?.value === '9999999999999');
+  check('jamais présenté comme déjà créé : le formulaire reste à compléter, rien n’est encore enregistré',
+    !store.getState().foods.some((f) => f.barcode === '9999999999999'));
+  globalThis.fetch = realFetch;
+  scannerLib.__setTestLib(null);
+}
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — code-barres illisible, distinct d’une absence de résultat');
+app.navigate('planning');
+await wait();
+click($$('.meal-card button').find((b) => /Modifier/i.test(b.textContent)));
+await wait();
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('#drawer [data-scan-barcode]'));
+  await wait();
+  calls[0].emit({ getText: () => '---' }, undefined); // décodé mais sans aucun chiffre exploitable
+  await wait();
+  check('message distinct pour un code illisible (pas le même texte qu’une absence de résultat)',
+    /Code-barres illisible/.test($('#drawer').textContent) &&
+    !/Aucun aliment avec ce code-barres/.test($('#drawer').textContent));
+  check('bouton pour réessayer le scan proposé', !!$('#drawer [data-scan-barcode]'));
+  scannerLib.__setTestLib(null);
+}
+
+console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — fermer le résultat (✕) avant le test suivant');
+click($('[data-dismiss-barcode-result]'));
+await wait();
+check('résultat de scan effacé', !$('[data-create-food-from-barcode]') && !$('[data-dismiss-barcode-result]'));
+
+console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — erreur caméra distincte d’une absence de résultat');
+{
+  const { lib, calls } = makeFakeScannerLib({ onStart: () => { throw Object.assign(new Error('refusé'), { name: 'NotAllowedError' }); } });
+  scannerLib.__setTestLib(lib);
+  click($('#drawer [data-scan-barcode]'));
+  await wait();
+  check('message d’erreur caméra affiché (pas confondu avec « aucun résultat »)',
+    /refusé/i.test($('[data-scanner-backdrop]')?.textContent || '') &&
+    !/Aucun aliment avec ce code-barres/.test($('[data-scanner-backdrop]')?.textContent || ''));
+  check('une erreur caméra ne produit jamais le message « aucun résultat catalogue » (la recherche n’a même pas commencé)',
+    !$('[data-create-food-from-barcode]') && !/Aucun aliment avec ce code-barres/.test($('#drawer').textContent));
+  click($('[data-scanner-manual]'));
+  await wait();
+  scannerLib.__setTestLib(null);
+}
+
+console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — recherche manuelle toujours utilisable après un scan');
+type($('#drawer [data-search]'), 'skyr');
+await wait();
+check('la recherche manuelle par nom reste pleinement utilisable après un scan', $$('#drawer [data-add]').some((b) => /skyr/i.test(b.textContent)));
+type($('#drawer [data-search]'), '');
+click($('#drawer [data-close]'));
+await wait();
+
+console.log('\n— Chantier recherche catalogue par code-barres : composition d’une recette — aliment trouvé, ajouté au brouillon');
+app.navigate('recipes');
+await wait();
+click($('[data-new]'));
+await wait();
+change($('[data-r="name"]'), 'Recette Test Scan Code-Barres');
+check('bouton « Scanner un code-barres » proposé dans la recherche d’ingrédient', !!$('[data-scan-barcode]'));
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-scan-barcode]'));
+  await wait();
+  calls[0].emit({ getText: () => '1234567890123' }, undefined);
+  await wait();
+  check('aliment existant retrouvé (même code que le test précédent)', $('.drawer__body').textContent.includes(targetFood.name));
+  click($$('[data-ing-add]').find((b) => b.dataset.ingAdd === targetFood.id));
+  await wait();
+  check('ingrédient ajouté à la composition de la recette en cours de création (brouillon, pas encore enregistrée)',
+    ($('.items')?.textContent || '').includes(targetFood.name));
+  check('toujours aucun doublon créé dans la banque', store.getState().foods.length === foodCountBeforeScan);
+  scannerLib.__setTestLib(null);
+}
+
+console.log('\n— Chantier recherche catalogue par code-barres : composition d’une recette — code absent -> bascule création d’aliment SANS perdre le brouillon non enregistré');
+{
+  const { lib, calls } = makeFakeScannerLib();
+  scannerLib.__setTestLib(lib);
+  click($('[data-scan-barcode]'));
+  await wait();
+  calls[0].emit({ getText: () => '8888888888888' }, undefined);
+  await wait();
+  globalThis.fetch = async () => jsonRes({ status: 0, code: '8888888888888', status_verbose: 'product not found' });
+  click($('[data-create-food-from-barcode]'));
+  await wait();
+  check('bascule effective vers l’écran Aliments', $('[data-view="foods"]')?.getAttribute('aria-current') === 'true');
+  check('code-barres déjà renseigné (recherche Open Food Facts rouverte directement sur ce code)', $('[data-off-barcode]')?.value === '8888888888888');
+  check('aucune recette créée par cette seule bascule', !store.getState().recipes.some((r) => r.name === 'Recette Test Scan Code-Barres'));
+  globalThis.fetch = realFetch;
+  scannerLib.__setTestLib(null);
+}
+click($('[data-off-cancel]'));
+click($('[data-form-cancel]'));
+await wait();
+app.navigate('recipes');
+await wait();
+check('retour sur l’écran Recettes : le formulaire non enregistré se rouvre automatiquement (brouillon jamais perdu malgré la bascule)',
+  $('[data-r="name"]')?.value === 'Recette Test Scan Code-Barres');
+check('l’ingrédient ajouté avant la bascule est toujours dans la composition du brouillon restauré',
+  new RegExp(targetFood.name).test($('.items')?.textContent || ''));
+click($('[data-form-cancel]'));
+await wait();
+
 restoreCameraSupport();
 
 console.log('\n' + '='.repeat(60));

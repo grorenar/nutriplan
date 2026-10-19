@@ -7,7 +7,7 @@ import {
   getState, update, foodsById, newItem, newFreeItem, catalogKey,
   SECTIONS, SECTION_LABEL, DEFAULT_SECTION, sectionsUsed,
   recipesById, preparationsById, newRecipeMealItem, newPreparationItem,
-  autoMealName, normalizeFood,
+  autoMealName, normalizeFood, foodByBarcode,
 } from '../core/store.js';
 import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
@@ -19,6 +19,8 @@ import {
 import { esc, num, normalize, toast, uid } from '../core/util.js';
 import { analyzeMealVolume } from '../core/meal-volume.js';
 import { preparationAvailable, zeroWasteSlotsFor } from '../core/derive.js';
+import { normalizeBarcode } from '../core/off.js';
+import { isScannerSupported, openScannerPanel, closeScannerPanel } from './barcode-panel.js';
 
 let ctx = null; // { kind, id }
 let pickerQuery = '';
@@ -26,6 +28,9 @@ let pickerCategory = 'all';
 let addFor = 'both'; // utilisé quand les compositions diffèrent
 let addSection = DEFAULT_SECTION; // section cible d'un ajout depuis le picker
 let host = null;
+// Résultat du dernier scan de code-barres dans le picker — voir handleBarcodeDetected().
+// { kind: 'found', food } | { kind: 'not-found', code } | { kind: 'invalid' } | null
+let barcodeResult = null;
 
 /**
  * Intitulé unique affiché à la place des sections (Entrée/Plat/…) pour un
@@ -48,10 +53,12 @@ export function openEditor(kind, id) {
   pickerCategory = 'all';
   addFor = 'both';
   addSection = DEFAULT_SECTION;
+  barcodeResult = null;
   renderEditor();
 }
 
 export function closeEditor() {
+  closeScannerPanel(); // la caméra ne doit jamais rester active une fois le tiroir refermé
   ctx = null;
   if (host) host.innerHTML = '';
 }
@@ -626,7 +633,11 @@ function renderPicker(state, entity, recipesMap, preparationsMap) {
     <div class="card__head"><h3>Ajouter un ingrédient</h3></div>
     ${sectionSelector}
     ${personSelector}
-    <input type="text" data-search value="${esc(pickerQuery)}" placeholder="Rechercher un aliment…">
+    <div class="row">
+      <input type="text" data-search value="${esc(pickerQuery)}" placeholder="Rechercher un aliment…" style="flex:1;min-width:160px">
+      ${isScannerSupported() ? '<button class="btn btn--sm" data-scan-barcode type="button">📷 Scanner un code-barres</button>' : ''}
+    </div>
+    ${barcodeResultHtml()}
     <div class="chips" style="margin:10px 0">${chips}</div>
     <div class="picker__results" style="position:static;border:1px solid var(--line);border-radius:var(--radius-sm);max-height:260px">${pickerResults(state)}</div>
     <div class="row" style="margin-top:12px">
@@ -637,6 +648,62 @@ function renderPicker(state, entity, recipesMap, preparationsMap) {
     <small>Un ingrédient libre apparaît dans le repas et à l'impression, mais ne compte ni dans les macros, ni dans le batch, ni dans le budget.</small>
   </div>
   ${renderRecipesPanel(state, recipesMap, preparationsMap)}`;
+}
+
+/**
+ * Résultat du dernier scan de code-barres (voir handleBarcodeDetected()) :
+ * aliment déjà présent dans la banque (sélectionnable directement, jamais de
+ * doublon créé), code absent de la banque (proposition de basculer vers la
+ * création d'aliment), ou code illisible (repli : réessayer le scan).
+ */
+function barcodeResultHtml() {
+  if (!barcodeResult) return '';
+  if (barcodeResult.kind === 'found') {
+    const f = barcodeResult.food;
+    return `<div class="card" style="margin:10px 0;border-color:#9fc8a8">
+      <div class="row">
+        <div style="flex:1">
+          <strong>${esc(f.name)}</strong>${f.brand ? ` — ${esc(f.brand)}` : ''}
+          <div class="cat">${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} G / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})</div>
+        </div>
+        <button class="btn btn--sm btn--primary" data-add="${f.id}">Ajouter</button>
+        <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
+      </div>
+    </div>`;
+  }
+  if (barcodeResult.kind === 'not-found') {
+    return `<div class="card" style="margin:10px 0;border-color:#ecd7ae;background:var(--warn-bg)">
+      <div class="row">
+        <small style="flex:1">Aucun aliment avec ce code-barres dans la banque Nutriplan.</small>
+        <button class="btn btn--sm" data-create-food-from-barcode="${esc(barcodeResult.code)}" type="button">Créer un nouvel aliment</button>
+        <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="card" style="margin:10px 0;border-color:#eebeb9">
+    <div class="row">
+      <small style="flex:1">Code-barres illisible.</small>
+      <button class="btn btn--sm" data-scan-barcode type="button">Réessayer</button>
+      <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
+    </div>
+  </div>`;
+}
+
+/**
+ * Appelé après une lecture réussie du scanner : recherche dans le catalogue
+ * Nutriplan existant, jamais dans Open Food Facts (ne pas confondre un
+ * résultat OFF avec un aliment déjà créé localement). Ne crée et n'ajoute
+ * jamais rien automatiquement : seule une action explicite de l'utilisateur
+ * (bouton « Ajouter » ou « Créer un nouvel aliment ») a un effet.
+ */
+function handleBarcodeDetected(rawCode) {
+  const code = normalizeBarcode(rawCode);
+  if (!code) { barcodeResult = { kind: 'invalid' }; }
+  else {
+    const food = foodByBarcode(code);
+    barcodeResult = food ? { kind: 'found', food } : { kind: 'not-found', code };
+  }
+  renderEditor();
 }
 
 /**
@@ -955,6 +1022,28 @@ function wire(root, entity) {
   });
 
   root.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
+
+  root.querySelector('[data-scan-barcode]')?.addEventListener('click', () => {
+    openScannerPanel(handleBarcodeDetected);
+  });
+
+  root.querySelector('[data-dismiss-barcode-result]')?.addEventListener('click', () => {
+    barcodeResult = null;
+    renderEditor();
+  });
+
+  // Code absent du catalogue Nutriplan : seul chemin vers la création d'un
+  // aliment, qui vit sur l'écran Aliments (recherche OFF comprise) — jamais
+  // réimplémentée ici. Le repas/la collation en cours n'est pas perdu : tout
+  // ajout déjà fait est déjà écrit dans l'état (mutate()), et fermer ce
+  // tiroir ne supprime rien, seulement l'affichage ; il suffit de rouvrir ce
+  // même repas depuis Planning pour reprendre où on en était.
+  root.querySelector('[data-create-food-from-barcode]')?.addEventListener('click', (e) => {
+    const barcode = e.currentTarget.dataset.createFoodFromBarcode;
+    toast('Aliment à créer — reviens sur cette composition depuis Planning pour l\'ajouter ensuite.');
+    closeEditor();
+    document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
+  });
 
   root.querySelector('[data-free-add]')?.addEventListener('click', () => {
     const nameEl = root.querySelector('[data-free-name]');

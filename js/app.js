@@ -13,6 +13,7 @@ import * as shopping from './views/shopping.js';
 import * as settings from './views/settings.js';
 import { renderEditor, isOpen } from './views/editor.js';
 import { openPrintDialog } from './views/print.js';
+import { stopActiveScanner } from './views/barcode-panel.js';
 
 const VIEWS = [
   { id: 'planning', label: 'Planning', icon: '▤', render: planning.render, title: 'Planning du cycle' },
@@ -55,9 +56,10 @@ function renderView() {
   // nettoyage propre de foods.js (resetForm()/closeOffSearch()) — il vide
   // #view directement. Une MediaStream de caméra ne s'arrête JAMAIS toute
   // seule parce que son élément <video> disparaît du DOM : sans cet appel,
-  // le scanner de codes-barres resterait actif en arrière-plan après avoir
-  // quitté l'écran Aliments. Sans effet si aucun scanner n'est ouvert.
-  foods.stopActiveScanner?.();
+  // le scanner de codes-barres (barcode-panel.js, partagé par tous les
+  // écrans qui le proposent) resterait actif en arrière-plan après avoir
+  // quitté la vue. Sans effet si aucun scanner n'est ouvert.
+  stopActiveScanner();
   const def = viewDef(current);
   document.getElementById('title').textContent = def.title;
   const root = document.getElementById('view');

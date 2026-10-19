@@ -353,6 +353,19 @@ export function foodsById() {
   return map;
 }
 
+/**
+ * Aliment de la banque déjà associé à ce code-barres EXACT (même convention
+ * que le reste de l'app : toujours une comparaison de chaînes normalisées en
+ * amont — cf. off.js::normalizeBarcode() —, jamais une conversion Number()
+ * qui perdrait un éventuel zéro initial). Critère fort de doublon : si
+ * trouvé, aucun endroit de l'app ne doit proposer de créer un second aliment
+ * pour le même code-barres, seulement de réutiliser celui-ci.
+ */
+export function foodByBarcode(barcode) {
+  if (!barcode) return null;
+  return getState().foods.find((f) => f.barcode && f.barcode === barcode) || null;
+}
+
 export function recipesById() {
   const map = {};
   for (const r of getState().recipes) map[r.id] = r;

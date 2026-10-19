@@ -25,6 +25,8 @@ js/core/sync.js           Supabase : auth + envoi/récupération atomiques
 js/core/off.js            recherche Open Food Facts (code-barres, nom/marque)
 js/core/off-category.js   suggestion de catégorie Nutriplan depuis une fiche Open Food Facts
 js/core/barcode-scanner.js lecture de codes-barres par caméra (démarrage/arrêt du flux vidéo)
+js/views/barcode-panel.js panneau scanner partagé (caméra/flash/choix d'objectif) — utilisé par
+                          foods.js, editor.js et recipes.js, jamais dupliqué entre les trois
 js/views/*.js             une vue par écran (dont recipes.js, preparations.js) + l'éditeur de
                           repas partagé (editor.js) + les dialogues de confirmation réutilisables
                           (confirm-unsaved.js, confirm-similar.js, confirm-action.js — toute
@@ -556,7 +558,7 @@ téléobjectif) PLUS des périphériques virtuels combinant plusieurs objectifs 
 arrière », « Double caméra arrière »…) pour le changement de focale automatique en zoomant, comme
 l'app Appareil photo native. Un iPhone récent peut ainsi annoncer 6 à 8 caméras pour 2 utilisateurs
 réels (avant/arrière) — une liste brute n'était pas utilisable. `simplifyCameraChoices()`
-(`js/views/foods.js`) réduit donc le choix à **une seule caméra arrière + une seule caméra avant** :
+(`js/views/barcode-panel.js`) réduit donc le choix à **une seule caméra arrière + une seule caméra avant** :
 côté arrière, le périphérique **virtuel multi-objectifs est préféré quand il existe** (« Triple » puis
 « Double »/« Dual », repli sur le premier sinon) — c'est lui qui donne le changement d'objectif
 automatique, pas une caméra figée sur un seul objectif. Un appareil sans notion avant/arrière
@@ -588,8 +590,9 @@ image de `<canvas>` en mémoire) — aucune image ni flux vidéo n'est jamais en
 le texte décodé quitte `js/core/barcode-scanner.js`. Toutes les pistes vidéo sont explicitement
 arrêtées : à la fermeture du scanner (bouton, clic extérieur, Échap), après une détection réussie
 (avant même de lancer la recherche OFF), lors d'un changement de caméra, et lors d'un changement
-d'écran dans l'application (`foods.stopActiveScanner()`, appelé depuis `js/app.js` — une
-`MediaStream` ne s'arrête jamais toute seule parce que son `<video>` disparaît du DOM). Une seule
+d'écran dans l'application (`stopActiveScanner()`, `js/views/barcode-panel.js`, appelé depuis
+`js/app.js` — une `MediaStream` ne s'arrête jamais toute seule parce que son `<video>` disparaît du
+DOM). Une seule
 détection est traitée par lecture (garde anti-répétition `settled`) : la caméra est coupée *avant*
 de transmettre le code à la recherche OFF, qui ne crée elle-même jamais d'aliment automatiquement —
 l'utilisateur garde la main jusqu'à l'enregistrement final, exactement comme pour une recherche
@@ -611,7 +614,7 @@ résolus côté CDN.
 l'utilisateur, jamais en arrière-plan).
 
 **Limites connues** : la liste de formats et la table de libellés avant/arrière
-(`js/core/barcode-scanner.js`, `js/views/foods.js`) sont volontairement restreintes et faciles à
+(`js/core/barcode-scanner.js`, `js/views/barcode-panel.js`) sont volontairement restreintes et faciles à
 étendre plutôt qu'exhaustives ; le décodage réel par caméra physique n'a pu
 être vérifié que par un navigateur réel avec caméra simulée (Playwright, drapeaux Chromium
 `--use-fake-device-for-media-stream`) — l'accès à `esm.sh` étant bloqué dans cet environnement de
@@ -619,6 +622,45 @@ développement, les bibliothèques ZXing elles-mêmes y ont été remplacées pa
 reproduisant leur API (vérifiée contre leur code source réel) : le flux caméra réel, le rendu vidéo
 et l'arrêt des pistes ont ainsi pu être vérifiés en conditions réelles, mais pas la fidélité de
 décodage d'un vrai code-barres imprimé — à confirmer par l'utilisateur sur un appareil réel.
+
+### Recherche d'un aliment existant par code-barres (repas et recettes)
+
+Le scanner lui-même (`js/views/barcode-panel.js`) est un composant **partagé** : extrait de l'écran
+Aliments (seul consommateur jusqu'ici) pour être réutilisé, sans aucune duplication de la mécanique
+caméra/flash/choix d'objectif, par deux nouveaux points d'entrée : l'ajout d'un ingrédient à un repas,
+un petit-déjeuner ou une collation (`js/views/editor.js`) et la composition d'une recette
+(`js/views/recipes.js`). Le panneau se superpose à tout le reste de l'écran (`document.body`),
+indépendamment de l'endroit qui l'a ouvert, et un seul scanner peut être actif à la fois.
+
+**Ce que la détection recherche diffère volontairement selon l'écran** : sur Aliments, un code-barres
+scanné alimente la recherche Open Food Facts existante (préremplissage d'une fiche). Sur un repas ou
+une recette, il interroge d'abord le **catalogue Nutriplan déjà enregistré**
+(`store.js::foodByBarcode()`) — jamais Open Food Facts directement, pour ne jamais confondre un
+résultat OFF avec un aliment déjà créé localement :
+- **trouvé** : la fiche (nom, marque, macros) s'affiche avec un bouton « Ajouter », qui réutilise
+  exactement le même chemin qu'un résultat de la recherche par nom (`onAddFood()`/
+  `wireIngredientAddButtons()`) — aucune logique d'ajout dupliquée, aucun doublon créé.
+- **absent du catalogue** : message explicite, puis un bouton « Créer un nouvel aliment » qui bascule
+  vers l'écran Aliments avec ce code-barres déjà renseigné dans la recherche Open Food Facts
+  (événement `nutriplan:off-barcode`, déjà prévu à cet effet dans `js/app.js` avant ce chantier mais
+  resté sans émetteur jusqu'ici). Rien n'est créé par cette seule bascule — l'utilisateur garde la
+  main jusqu'à l'enregistrement final du formulaire aliment.
+- **code illisible** (décodé mais sans aucun chiffre exploitable) : message distinct, avec un moyen de
+  réessayer — jamais confondu avec une absence de résultat catalogue.
+- **erreur caméra** (permission refusée, aucune caméra, etc.) : gérée par le panneau scanner
+  lui-même, en amont de cette recherche — qui ne démarre donc jamais sur une détection qui n'a pas eu
+  lieu.
+
+**Contexte préservé lors de la bascule vers la création d'aliment** : la composition en cours n'est
+jamais perdue, mais le mécanisme diffère selon l'écran, par construction de chacun —
+- Un repas/petit-déjeuner/collation (`editor.js`) écrit chaque ajout directement dans l'état
+  partagé au moment même du clic (`update()`), donc avant même qu'un scan ne soit tenté : fermer le
+  tiroir d'édition pour laisser place à l'écran Aliments ne perd rien, l'utilisateur rouvre
+  simplement ce même repas depuis Planning pour y revenir.
+- Une recette en cours de création (`recipes.js`) vit dans un brouillon non enregistré
+  (`formDraft`) tant que « Enregistrer » n'a pas été cliqué — rien n'est perdu ici non plus : ce
+  brouillon reste en mémoire pendant la bascule (jamais réinitialisé par la seule navigation) et
+  l'écran Recettes le rouvre automatiquement, tel quel, dès qu'on y revient.
 
 ### Suggestion automatique de catégorie
 
