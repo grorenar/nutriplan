@@ -80,6 +80,9 @@ items[]            id, foodId|null, recipeId|null (référence directe à une re
 shopping.purchased {foodId: bool}        ← simple case "acheté", aucun stock
 batch.overrides    {"session:foodId": grammes préparés} ou {"session:recipe:recipeId": grammes}
                    pour une recette préparée en batch (cf. §4, écran Batch cooking)
+dismissedDuplicates[]  clés de groupes de « doublons possibles » écartés par l'utilisateur
+                   (« pas un doublon », §4 écran Aliments) — chaîne = identifiants triés de tous
+                   les membres du groupe joints par "|" (similarity.js::duplicateGroupKey())
 ```
 
 Côté PostgreSQL, la même chose est normalisée dans `supabase/schema.sql` — 15 tables au total :
@@ -219,7 +222,7 @@ n'apparaît que dans l'éditeur de repas, jamais dans le planning.
 | Écran | Contenu |
 |---|---|
 | Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication (nom et `nameAuto` copiés ensemble), « Vider ce repas » (remet le repas à l'état vraiment vide, `nameAuto` repasse à `true`), bouton « Optimiser le cycle » (suggestions uniquement) |
-| Aliments | banque complète, recherche, favoris, création/modification/suppression — la suppression est bloquée si l'aliment est encore référencé dans une recette (composition live ou `recipeSnapshot` figé d'une préparation existante), avec un avertissement (non bloquant) s'il est seulement utilisé dans des repas/catalogues ; section dépliable « Doublons possibles » (même détection que la popup de création, `findSimilarFoods`/`findDuplicateGroups`) proposant pour chaque groupe un choix explicite de l'aliment à conserver puis une confirmation bloquante avant toute fusion — jamais de fusion automatique sur la seule similarité de nom |
+| Aliments | banque complète, recherche, favoris, création/modification/suppression — la suppression est bloquée si l'aliment est encore référencé dans une recette (composition live ou `recipeSnapshot` figé d'une préparation existante), avec un avertissement (non bloquant) s'il est seulement utilisé dans des repas/catalogues ; section dépliable « Doublons possibles » (même détection que la popup de création, `findSimilarFoods`/`findDuplicateGroups`) proposant pour chaque groupe un choix explicite de l'aliment à conserver puis une confirmation bloquante avant toute fusion — jamais de fusion automatique sur la seule similarité de nom — ou, pour un faux positif, de l'écarter définitivement (« Pas un doublon », réversible depuis « Doublons ignorés ») sans toucher aux aliments |
 | Recettes | composition à partir de la banque alimentaire, type `weight` (poids continu, échelle `baseGrams`) ou `portion` (unité indivisible), consignes de cuisson/conservation, `batchAllowed` ; la suppression est bloquée tant qu'une préparation existe pour cette recette, ou qu'elle est encore référencée directement (sans préparation) dans un repas ou un catalogue |
 | Préparations et distribution | matérialisation d'une recette en stock réel (quantité préparée, figée dans `recipeSnapshot`), répartition éditable vers les repas, mode zéro reste, jet total ou partiel du reliquat (historique des pertes jamais effacé), suppression définitive d'une préparation (avec avertissement si du stock reste, bloquée tant que des affectations existent) ; une préparation épuisée (stock à 0) est masquée de la liste active sans jamais être supprimée des données |
 | Petits-déjeuners | catalogue indépendant, sans jour ni date ; compteur d'utilisations **par personne**, avec contrôle de couverture du cycle |
@@ -410,6 +413,20 @@ garde intégralement ses propres valeurs nutritionnelles et métadonnées ; seul
 aliments fusionnés sont redirigées vers lui, puis ceux-ci sont supprimés. Le `recipeSnapshot` déjà
 figé d'une préparation existante n'est jamais réécrit par une fusion, pour la même raison que pour
 la suppression : il garde l'historique exact de ce qui a été réellement préparé.
+
+**« Pas un doublon »** : à côté du bouton de fusion, chaque groupe propose aussi d'être écarté
+définitivement — pour un faux positif (deux produits réellement différents que l'algorithme
+rapproche à tort). Contrairement à la fusion, cette action **ne touche à aucun aliment** (rien
+supprimé, rien fusionné) : elle supprime seulement l'avertissement lui-même, pour CE groupe précis.
+La décision est persistée (`state.dismissedDuplicates`, synchronisée comme le reste des
+réglages — colonne `settings.dismissed_duplicates`) et **réversible** : une section repliée
+« Doublons ignorés » liste les groupes écartés avec un bouton « Reconsidérer » par groupe, qui les
+fait réapparaître. La clé retenue par groupe est la liste triée des identifiants de TOUS ses
+membres (`similarity.js::duplicateGroupKey()`) : si la composition exacte du groupe change (un
+aliment supplémentaire vient s'y greffer, une modification de nom change les scores), le groupe
+peut réapparaître sous une nouvelle composition — décision assumée, un changement de composition
+mérite un nouvel avis plutôt que de risquer de masquer silencieusement un vrai doublon impliquant
+le nouveau venu.
 
 ### Recherche Open Food Facts (préremplissage à la création)
 

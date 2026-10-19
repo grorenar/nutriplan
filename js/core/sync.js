@@ -384,6 +384,13 @@ export function stateToTables(s) {
     cycle_duration: s.settings.cycle.duration,
     tolerance: s.settings.tolerance,
     auto_adjust: s.settings.autoAdjust,
+    // Groupes de doublons explicitement écartés (« pas un doublon ») —
+    // simple liste de clés stables (similarity.js::duplicateGroupKey()),
+    // partagée entre tous les appareils du compte comme le reste de
+    // `settings`. Colonne NOT NULL : doit être fournie explicitement (cf.
+    // commentaire juste en dessous, jsonb_populate_record n'applique pas les
+    // DEFAULT), jamais omise même pour une liste vide.
+    dismissed_duplicates: s.dismissedDuplicates || [],
     // jsonb_populate_record n'applique pas les DEFAULT : toute colonne NOT NULL
     // doit être fournie explicitement par le client.
     updated_at: new Date().toISOString(),
@@ -493,6 +500,7 @@ export function tablesToState(t) {
     s.settings.cycle = { startWeekday: Number(cfg.cycle_start_weekday), duration: Number(cfg.cycle_duration) };
     s.settings.tolerance = Number(cfg.tolerance) || 0.05;
     s.settings.autoAdjust = cfg.auto_adjust !== false;
+    s.dismissedDuplicates = Array.isArray(cfg.dismissed_duplicates) ? cfg.dismissed_duplicates : [];
   }
   for (const r of t.targets || []) {
     s.settings.targets[r.person] = s.settings.targets[r.person] || {};

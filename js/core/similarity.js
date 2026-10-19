@@ -81,3 +81,33 @@ export function findDuplicateGroups(foods, options = { threshold: 0.7 }) {
   }
   return groups;
 }
+
+/**
+ * Clé canonique et stable d'un groupe de doublons détecté (identifiants de
+ * TOUS ses membres, triés — indépendante de l'ordre dans lequel
+ * findDuplicateGroups() les a rencontrés). Sert à retenir qu'un utilisateur
+ * a explicitement écarté ce groupe précis (« pas un doublon »), sans qu'il
+ * faille persister autre chose qu'une chaîne par groupe écarté.
+ *
+ * Volontairement sensible à la COMPOSITION EXACTE du groupe : si un membre
+ * est ajouté ou retiré du regroupement (ex. un nouvel aliment vient s'y
+ * greffer, ou une modification de nom change les scores de similarité), la
+ * clé change et le groupe peut réapparaître — décision assumée, un
+ * changement de composition est une situation suffisamment différente pour
+ * mériter un nouvel avis, plutôt qu'un risque de masquer silencieusement un
+ * vrai doublon impliquant le nouveau venu.
+ */
+export function duplicateGroupKey(group) {
+  return [group.food.id, ...group.similar.map((x) => x.food.id)].sort().join('|');
+}
+
+/**
+ * Retire les groupes explicitement écartés par l'utilisateur. `dismissedKeys`
+ * est la liste persistée (state.dismissedDuplicates) — jamais mutée ici,
+ * cette fonction reste pure comme le reste du module.
+ */
+export function excludeDismissedGroups(groups, dismissedKeys) {
+  if (!dismissedKeys || !dismissedKeys.length) return groups;
+  const dismissed = new Set(dismissedKeys);
+  return groups.filter((g) => !dismissed.has(duplicateGroupKey(g)));
+}

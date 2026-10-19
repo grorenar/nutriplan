@@ -51,6 +51,13 @@ export function defaultState() {
     snacks: [], // catalogue unique : 16 h et soir ne sont que des affectations
     shopping: { purchased: {} }, // foodId -> bool
     batch: { overrides: {} }, // `${session}:${foodId}` -> grammes préparés
+    // Groupes de « doublons possibles » explicitement écartés par
+    // l'utilisateur (« pas un doublon ») — liste de clés stables
+    // (similarity.js::duplicateGroupKey()), jamais ré-affichés tant que la
+    // composition exacte du groupe ne change pas. Persisté côté Supabase
+    // sur la colonne settings.dismissed_duplicates (voir sync.js) : même
+    // décision partagée entre tous les appareils du compte.
+    dismissedDuplicates: [],
     // syncing : indicateur d'exécution, jamais une donnée à synchroniser —
     // toujours remis à false au chargement (cf. migrate()), une synchronisation
     // en cours ne survit jamais à un rechargement de page.
@@ -235,6 +242,7 @@ function migrate(s) {
   merged.settings.batch = { ...base.settings.batch, ...(s.settings?.batch || {}) };
   merged.shopping = { purchased: {}, ...(s.shopping || {}) };
   merged.batch = { overrides: {}, ...(s.batch || {}) };
+  merged.dismissedDuplicates = Array.isArray(merged.dismissedDuplicates) ? merged.dismissedDuplicates : [];
   merged.meta = { ...base.meta, ...(s.meta || {}) };
   // une synchronisation en cours ne survit jamais à un rechargement de page
   // (le code qui la pilotait n'existe plus) : jamais figée à `true` par une

@@ -2302,6 +2302,52 @@ if (toggleDup2 && !/Masquer/.test(toggleDup2.textContent)) { click(toggleDup2); 
 check('un aliment ajouté APRÈS un premier calcul apparaît bien dans les groupes (cache correctement invalidé)',
   $$('[data-merge-keep]').some((r) => r.value === laterAwayId));
 
+console.log('\n— Chantier P5 : écran Aliments — « Pas un doublon » écarte durablement un groupe, sans toucher aux aliments');
+let foodDiscardKeepId, foodDiscardAwayId;
+store.update((s) => {
+  const base = s.foods[0];
+  const keep = { ...base, id: 'food_p5discard_keep', name: 'Compote Pomme P5 Discard', brand: 'MarqueDiscard' };
+  const away = { ...base, id: 'food_p5discard_away', name: 'Compote Pomme P5 Discard', brand: 'MarqueDiscard' };
+  s.foods.push(keep, away);
+  foodDiscardKeepId = keep.id;
+  foodDiscardAwayId = away.id;
+});
+await wait();
+const toggleDup3 = $('[data-toggle-duplicates]');
+if (toggleDup3 && !/Masquer/.test(toggleDup3.textContent)) { click(toggleDup3); await wait(); }
+const discardGroupCard = () => $$('[data-discard-group]').find((b) => {
+  const card = b.closest('.card');
+  return /Compote Pomme P5 Discard/.test(card.textContent);
+});
+check('groupe de test détecté, bouton « Pas un doublon » proposé', !!discardGroupCard());
+check('aucune entrée dans state.dismissedDuplicates avant l’action', store.getState().dismissedDuplicates.length === 0);
+click(discardGroupCard());
+await wait();
+check('toast confirmant que le groupe est écarté', /écarté/i.test(lastToastText()));
+check('le groupe a disparu de la liste des doublons possibles', !discardGroupCard());
+check('AUCUN aliment supprimé ni fusionné : les deux existent toujours tels quels',
+  store.getState().foods.some((f) => f.id === foodDiscardKeepId) && store.getState().foods.some((f) => f.id === foodDiscardAwayId));
+check('la décision est bien persistée dans l’état (synchronisable)', store.getState().dismissedDuplicates.length === 1);
+
+const dismissedDetails = $$('details').find((d) => /Doublons ignorés/.test(d.textContent));
+check('section « Doublons ignorés » affichée avec le groupe écarté', !!dismissedDetails && /Compote Pomme P5 Discard/.test(dismissedDetails.textContent));
+const undiscardBtn = $('[data-undiscard-group]');
+check('bouton « Reconsidérer » proposé', !!undiscardBtn);
+click(undiscardBtn);
+await wait();
+check('toast confirmant que le groupe est de nouveau proposé', /proposé/i.test(lastToastText()));
+check('le groupe réapparaît bien dans la liste des doublons possibles', !!discardGroupCard());
+check('la liste des décisions écartées redevient vide', store.getState().dismissedDuplicates.length === 0);
+
+// reproduit le scénario pour de bon, et vérifie que la fusion reste
+// disponible et correcte APRÈS un écartement sur un autre groupe (aucune
+// interférence entre les deux actions, chacune son propre bouton).
+click(discardGroupCard());
+await wait();
+check('re-écarté : state.dismissedDuplicates contient de nouveau 1 entrée', store.getState().dismissedDuplicates.length === 1);
+const keepRadioP5 = $$('[data-merge-keep]').find((r) => r.value === foodKeepId || r.value === laterAwayId);
+check('un AUTRE groupe (déjà géré plus haut, Yaourt Nature) reste fusionnable normalement, sans interférence', !!keepRadioP5);
+
 console.log('\n— Chantier P4 : confirmation bloquante (confirm-action.js) — fermeture au clavier (Échap)');
 let recetteP4Id;
 store.update((s) => {

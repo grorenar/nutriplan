@@ -29,7 +29,7 @@ import {
   newMeal, normalizeMeal, autoMealName, normalizePreparation, newPreparationLoss,
   mergeFoods, normalizeFood,
 } from '../js/core/store.js';
-import { findSimilarFoods, findDuplicateGroups } from '../js/core/similarity.js';
+import { findSimilarFoods, findDuplicateGroups, duplicateGroupKey, excludeDismissedGroups } from '../js/core/similarity.js';
 import { stateToTables, tablesToState, TABLES } from '../js/core/sync.js';
 import { analyzeMealVolume } from '../js/core/meal-volume.js';
 
@@ -1444,6 +1444,61 @@ test('Doublons — avertissement à la création, jamais de fusion', () => {
   const groups = findDuplicateGroups(bank);
   info(`banque initiale : ${groups.length} groupe(s) signalé(s) — ${groups.map((g) => g.food.name).join(', ')}`);
   check('contrôle d’import : peu de faux positifs sur la banque livrée', groups.length <= 3);
+});
+
+test('P5 — duplicateGroupKey() : clé stable, indépendante de l’ordre des membres', () => {
+  const g1 = { food: { id: 'a' }, similar: [{ food: { id: 'b' } }, { food: { id: 'c' } }] };
+  const g2 = { food: { id: 'c' }, similar: [{ food: { id: 'a' } }, { food: { id: 'b' } }] }; // mêmes membres, ancre différente
+  check('même composition -> même clé, quel que soit l’ordre de rencontre', duplicateGroupKey(g1) === duplicateGroupKey(g2));
+  const g3 = { food: { id: 'a' }, similar: [{ food: { id: 'b' } }] }; // un membre en moins
+  check('composition différente -> clé différente', duplicateGroupKey(g1) !== duplicateGroupKey(g3));
+});
+
+test('P5 — excludeDismissedGroups() : retire uniquement les groupes explicitement écartés', () => {
+  const { st, foodA, foodB, keep } = mergeFixture();
+  const groups = findDuplicateGroups(st.foods);
+  const group = groups.find((g) => [g.food.id, ...g.similar.map((x) => x.food.id)].includes(foodA.id));
+  check('groupe de test bien détecté (précondition)', !!group);
+  const key = duplicateGroupKey(group);
+
+  check('sans clé écartée : le groupe reste présent', excludeDismissedGroups(groups, []).some((g) => duplicateGroupKey(g) === key));
+  check('liste vide/absente : jamais d’exception (repli sur la liste complète)', excludeDismissedGroups(groups, undefined).length === groups.length);
+
+  const filtered = excludeDismissedGroups(groups, [key]);
+  check('groupe écarté : absent du résultat', !filtered.some((g) => duplicateGroupKey(g) === key));
+  check('les autres groupes éventuels restent inchangés', filtered.length === groups.length - 1);
+
+  // composition différente (même ancre, membres différents) -> pas filtré par erreur
+  const unrelatedKey = duplicateGroupKey({ food: { id: foodA.id }, similar: [{ food: { id: 'inexistant' } }] });
+  check('une clé pour une composition DIFFÉRENTE ne filtre pas le vrai groupe', excludeDismissedGroups(groups, [unrelatedKey]).some((g) => duplicateGroupKey(g) === key));
+  info(`clé du groupe de test : ${key} (ancre ${foodA.name}, conservé attendu ${keep.id}, foodB ${foodB.id})`);
+});
+
+test('P5 — doublons écartés : persistance et synchronisation (stateToTables()/tablesToState())', () => {
+  const s = defaultState();
+  check('liste vide par défaut, jamais undefined/null', Array.isArray(s.dismissedDuplicates) && s.dismissedDuplicates.length === 0);
+  s.dismissedDuplicates = ['food_a|food_b', 'food_c|food_d|food_e'];
+
+  const tables = stateToTables(s);
+  check('colonne settings.dismissed_duplicates transmise (jamais omise, même non vide)', Array.isArray(tables.settings[0].dismissed_duplicates));
+  check('les deux clés écartées sont transmises telles quelles', JSON.stringify(tables.settings[0].dismissed_duplicates) === JSON.stringify(s.dismissedDuplicates));
+
+  const back = tablesToState(tables);
+  check('round-trip complet : les mêmes clés reviennent identiques', JSON.stringify(back.dismissedDuplicates) === JSON.stringify(s.dismissedDuplicates));
+
+  // une ligne settings sans la colonne (ancien client, ou valeur corrompue) ne doit jamais planter la lecture
+  const legacyTables = { ...tables, settings: [{ ...tables.settings[0], dismissed_duplicates: undefined }] };
+  const legacyState = tablesToState(legacyTables);
+  check('colonne absente -> repli sur liste vide, jamais une exception', Array.isArray(legacyState.dismissedDuplicates) && legacyState.dismissedDuplicates.length === 0);
+});
+
+test('P5 — doublons écartés : migrate() normalise toujours vers un tableau', () => {
+  const corrupted = migrateState({ dismissedDuplicates: 'pas-un-tableau' });
+  check('valeur corrompue (pas un tableau) -> repli sur liste vide', Array.isArray(corrupted.dismissedDuplicates) && corrupted.dismissedDuplicates.length === 0);
+  const absent = migrateState({});
+  check('champ totalement absent (état antérieur à cette fonctionnalité) -> liste vide, jamais une exception', Array.isArray(absent.dismissedDuplicates) && absent.dismissedDuplicates.length === 0);
+  const preserved = migrateState({ dismissedDuplicates: ['x|y'] });
+  check('valeur déjà valide : conservée telle quelle', JSON.stringify(preserved.dismissedDuplicates) === JSON.stringify(['x|y']));
 });
 
 /* ================================================================ LIBRES */

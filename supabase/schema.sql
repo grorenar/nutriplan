@@ -373,6 +373,19 @@ alter table foods add column if not exists off_url text;
 alter table foods add column if not exists off_quantity text;
 alter table foods add column if not exists off_fetched_at timestamptz;
 
+-- Groupes de « doublons possibles » explicitement écartés par l'utilisateur
+-- (« pas un doublon ») : simple liste de clés stables (une par groupe
+-- écarté, cf. js/core/similarity.js::duplicateGroupKey()), partagée entre
+-- tous les appareils du compte comme le reste de `settings`. NOT NULL avec
+-- DEFAULT : jsonb_populate_record() (nutriplan_replace_all ci-dessous)
+-- n'applique pas ce DEFAULT pour une ligne existante déjà écrite SANS cette
+-- colonne par un ancien client — sans cette colonne déjà NOT NULL avant
+-- toute écriture, un push depuis un client à jour échouerait sur une ligne
+-- plus ancienne ; avec DEFAULT '[]'::jsonb, la colonne existe et est déjà
+-- peuplée dès l'ALTER TABLE, donc jamais NULL même pour une ligne jamais
+-- réécrite depuis.
+alter table settings add column if not exists dismissed_duplicates jsonb not null default '[]'::jsonb;
+
 -- PostgreSQL ne propose pas "add constraint if not exists" : on supprime puis
 -- recrée (comme les policies RLS plus bas), pour que le script reste rejouable.
 do $$

@@ -3,7 +3,7 @@
 import { getState, update, mergeFoods } from '../core/store.js';
 import { CATEGORIES, STATES, computeYield } from '../core/nutrition.js';
 import { esc, num, normalize, toast, uid, euros, debounce } from '../core/util.js';
-import { findSimilarFoods, findDuplicateGroups } from '../core/similarity.js';
+import { findSimilarFoods, findDuplicateGroups, duplicateGroupKey, excludeDismissedGroups } from '../core/similarity.js';
 import { fetchProductByBarcode, searchProductsByText, normalizeBarcode } from '../core/off.js';
 import { isCameraSupported, listCameras, startScan } from '../core/barcode-scanner.js';
 import { similarConfirmModal } from './confirm-similar.js';
@@ -107,7 +107,7 @@ function renderFull(root, s) {
   else if (cat !== 'all') list = list.filter((f) => f.category === cat);
   if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
 
-  const duplicateGroups = getDuplicateGroups(s.foods);
+  const duplicateGroups = excludeDismissedGroups(getDuplicateGroups(s.foods), s.dismissedDuplicates);
 
   root.innerHTML = `
     <div class="row" style="margin-bottom:12px">
@@ -122,7 +122,7 @@ function renderFull(root, s) {
     ${duplicateGroups.length ? `<div class="row" style="margin-bottom:12px">
       <button class="btn btn--sm" data-toggle-duplicates>${duplicatesOpen ? 'Masquer' : 'Voir'} les doublons possibles (${duplicateGroups.length})</button>
     </div>` : ''}
-    ${duplicatesOpen ? duplicatesPanel(duplicateGroups) : ''}
+    ${duplicatesOpen ? duplicatesPanel(duplicateGroups, s) : ''}
     <div class="card">
       <table>
         <thead><tr>
@@ -152,14 +152,22 @@ function renderFull(root, s) {
  * groupe propose un choix explicite (lequel garder), puis une confirmation
  * bloquante avant toute fusion réelle. findDuplicateGroups() ne fait que
  * DÉTECTER (similarity.js, inchangé) ; la fusion elle-même est nouvelle.
+ *
+ * « Pas un doublon » (P5) : écarte DÉFINITIVEMENT ce groupe précis — jamais
+ * une suppression ni une fusion, juste une suppression de l'avertissement
+ * lui-même, persistée (state.dismissedDuplicates, synchronisée comme le
+ * reste de `settings`) et réversible via la liste « Doublons ignorés »
+ * ci-dessous (jamais un aller simple sans retour possible).
  */
-function duplicatesPanel(groups) {
+function duplicatesPanel(groups, s) {
+  const dismissedKeys = s.dismissedDuplicates || [];
+  const foodsById = new Map(s.foods.map((f) => [f.id, f]));
   return `<div class="card" style="margin-bottom:12px;border-color:#ecd7ae;background:var(--warn-bg)">
     <div class="card__head"><h3>Doublons possibles</h3></div>
-    <small style="display:block;margin-bottom:10px">Rien n'est fusionné automatiquement : choisis l'aliment à conserver dans chaque groupe, les autres y seront redirigés partout où ils sont utilisés (recettes, repas, catalogues, courses, batch), puis supprimés.</small>
+    <small style="display:block;margin-bottom:10px">Rien n'est fusionné automatiquement : choisis l'aliment à conserver dans chaque groupe, les autres y seront redirigés partout où ils sont utilisés (recettes, repas, catalogues, courses, batch), puis supprimés. Si ce n'est pas vraiment un doublon, écarte-le plutôt — il ne sera plus jamais proposé tel quel.</small>
     ${groups.map((g) => {
       const members = [g.food, ...g.similar.map((x) => x.food)];
-      const groupKey = g.food.id;
+      const groupKey = g.food.id; // clé d'affichage (radios/boutons de CE rendu) — distincte de duplicateGroupKey(), la clé STABLE persistée
       const keepId = mergeKeep[groupKey] || g.food.id;
       return `<div class="card" style="margin-bottom:8px">
         ${members.map((f) => `<label class="check" style="display:block;padding:4px 0">
@@ -169,9 +177,22 @@ function duplicatesPanel(groups) {
           </label>`).join('')}
         <div class="row" style="margin-top:8px">
           <button class="btn btn--sm btn--danger" data-merge-group="${groupKey}">Fusionner dans l'aliment coché</button>
+          <button class="btn btn--sm btn--ghost" data-discard-group="${groupKey}">Pas un doublon</button>
         </div>
       </div>`;
     }).join('')}
+    ${dismissedKeys.length ? `<details style="margin-top:10px">
+      <summary>Doublons ignorés (${dismissedKeys.length}) — ne sont plus proposés comme doublons possibles</summary>
+      <div style="margin-top:8px">
+        ${dismissedKeys.map((key) => {
+          const names = key.split('|').map((id) => foodsById.get(id)?.name || '(aliment supprimé)');
+          return `<div class="row" style="margin-top:6px">
+            <small style="flex:1">${esc(names.join(' · '))}</small>
+            <button class="btn btn--sm btn--ghost" data-undiscard-group="${esc(key)}">Reconsidérer</button>
+          </div>`;
+        }).join('')}
+      </div>
+    </details>` : ''}
   </div>`;
 }
 
@@ -1145,6 +1166,34 @@ function wireList(root) {
           render(root);
         },
       };
+      render(root);
+    })
+  );
+  // --- P5 : « pas un doublon » — écarte durablement un groupe précis, sans
+  // toucher aux aliments eux-mêmes (jamais une suppression ni une fusion).
+  root.querySelectorAll('[data-discard-group]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const groupKey = e.currentTarget.dataset.discardGroup;
+      const st = getState();
+      const groups = findDuplicateGroups(st.foods);
+      const group = groups.find((g) => g.food.id === groupKey);
+      if (!group) return;
+      const key = duplicateGroupKey(group);
+      update((s2) => {
+        if (!s2.dismissedDuplicates.includes(key)) s2.dismissedDuplicates.push(key);
+      });
+      delete mergeKeep[groupKey];
+      toast('Groupe écarté : ne sera plus proposé comme doublon possible');
+      render(root);
+    })
+  );
+  root.querySelectorAll('[data-undiscard-group]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const key = e.currentTarget.dataset.undiscardGroup;
+      update((s2) => {
+        s2.dismissedDuplicates = s2.dismissedDuplicates.filter((k) => k !== key);
+      });
+      toast('Groupe de nouveau proposé comme doublon possible');
       render(root);
     })
   );
