@@ -13,7 +13,7 @@ import {
   canConvert, conversionInfo, stateLabel, STATES, referenceFor, CATEGORY_PROFILE, CATEGORIES,
   recipeMacrosPer100g, canAddIngredientToRecipe, recipeAsVirtualFood, preparationAsVirtualFood,
   resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf, macroCost,
-  statusFor, statusForKey, MACRO_ROLE,
+  statusFor, statusForKey, MACRO_ROLE, PERSONS,
 } from '../js/core/nutrition.js';
 import {
   buildBatchPlan, buildShoppingList, batchCategory, cycleSources, cookingSummary, preparationNote,
@@ -1098,6 +1098,56 @@ test('Batch — mesure "cuit obtenu" face au rendement enregistré', () => {
   check('coefficient mesuré exposé (0,5)', Math.abs(cFar.measuredCookedFactor - 0.5) < 0.001);
   check('le rendement enregistré de la fiche aliment reste inchangé (jamais écrit automatiquement)',
     F('Blanc de poulet').cookedFactor === poulet.cookedFactor);
+});
+
+test('Batch — suggestion de répartition du surplus entre les gamelles (affichage seul, planning jamais modifié)', () => {
+  const poulet = F('Blanc de poulet'); // cookedFactor 0.70
+  const key = `0:${poulet.id}`;
+
+  // "Je prépare" 1500 g crus → besoin 1160 g crus / 812 g cuits (test existant),
+  // préparé 1500 g crus = 1050 g cuits théoriques → surplus de 238 g cuits.
+  const s = batchState({ [key]: 1500 });
+  const planBefore = JSON.stringify(s.meals);
+  const sess = buildBatchPlan(s, byId)[0];
+  check('planning jamais modifié par le calcul du plan', JSON.stringify(s.meals) === planBefore);
+
+  const pouletEntries = [];
+  for (const g of sess.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === poulet.id) pouletEntries.push(e);
+  check('8 gamelles de poulet trouvées sur la session (4 repas × 2 personnes)', pouletEntries.length === 8,
+    `${pouletEntries.length}`);
+
+  const totalBonus = pouletEntries.reduce((sum, e) => sum + (e.bonus || 0), 0);
+  check('le surplus réparti correspond exactement au surplus cuit (238 g)', totalBonus === 238, `${totalBonus}`);
+  check('la somme des quantités suggérées = quantité cuite théorique totale + surplus',
+    pouletEntries.reduce((sum, e) => sum + e.adjustedGrams, 0) === 812 + 238);
+
+  const first = pouletEntries[0]; // 126 g cuits (180 g crus × 0,70) — plus grosse part
+  check('bonus proportionnel à la part déjà prévue (126 g → +37 g)', first.bonus === 37, `${first.bonus} g`);
+  check('adjustedGrams = grams + bonus', first.adjustedGrams === first.grams + first.bonus);
+
+  const last = pouletEntries[pouletEntries.length - 1]; // 70 g cuits — plus petite part, absorbe l'arrondi
+  check('dernière entrée : absorbe le reliquat d’arrondi, jamais négative', last.bonus === 19 && last.bonus >= 0, `${last.bonus} g`);
+
+  // un aliment sans surplus (riz, "Je prépare" jamais touché) n'a aucune suggestion
+  const rizEntries = [];
+  for (const g of sess.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === F('Riz basmati').id) rizEntries.push(e);
+  check('aucun bonus inventé pour un aliment sans surplus', rizEntries.every((e) => e.bonus === undefined));
+
+  // un déficit (préparé < besoin) ne réduit jamais une gamelle
+  const sDeficit = batchState({ [key]: 500 }); // < 1160 g requis
+  const sessDeficit = buildBatchPlan(sDeficit, byId)[0];
+  const deficitEntries = [];
+  for (const g of sessDeficit.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === poulet.id) deficitEntries.push(e);
+  check('déficit : aucune réduction silencieuse d’une gamelle', deficitEntries.every((e) => e.bonus === undefined && e.adjustedGrams === undefined));
+
+  // la mesure réelle ("cuit obtenu") prime sur l'estimation théorique pour le surplus proposé
+  const sMeasured = batchState({ [key]: 1500 }, { [key]: 1300 }); // mesuré 1300 g cuits (> 1050 g théoriques)
+  const sessMeasured = buildBatchPlan(sMeasured, byId)[0];
+  const measuredEntries = [];
+  for (const g of sessMeasured.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === poulet.id) measuredEntries.push(e);
+  const measuredTotalBonus = measuredEntries.reduce((sum, e) => sum + (e.bonus || 0), 0);
+  check('surplus basé sur la mesure réelle quand elle existe (1300 − 812 = 488 g, pas 1050 − 812 = 238 g)',
+    measuredTotalBonus === 488, `${measuredTotalBonus}`);
 });
 
 test('Batch — "cuit obtenu" : round-trip stateToTables()/tablesToState() (synchronisation Supabase)', () => {

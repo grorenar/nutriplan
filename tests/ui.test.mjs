@@ -1125,11 +1125,22 @@ click($('[data-form-cancel]'));
 await wait();
 
 click($('[data-view="batch"]'));
-const prep = $$('[data-prep]')[0];
-check('composants de batch listés', !!prep);
+check('composants de batch listés', $$('[data-prep]').length > 0);
+// un composant consommé DIRECTEMENT dans au moins une gamelle (hors recette,
+// qui n'expose jamais le détail de ses ingrédients internes dans les
+// gamelles) : nécessaire pour tester la suggestion de répartition du surplus.
+const sessForPrep = derive.buildBatchPlan(store.getState(), store.foodsById(), store.recipesById(), store.preparationsById())[0];
+const directComponent = sessForPrep.components.find((c) =>
+  sessForPrep.gamelles.some((g) => Object.values(g.persons).some((list) => list.some((e) => e.food?.id === c.food.id)))
+);
+check('un composant consommé directement dans une gamelle est disponible pour le test', !!directComponent);
+const prep = $$('[data-prep]').find((el) => el.dataset.prep === directComponent.key);
+check('champ "je prépare" trouvé pour ce composant', !!prep);
 const batchKey = prep.dataset.prep;
-change(prep, '1500');
-check('quantité préparée modifiable', $$('[data-prep]')[0].value === '1500');
+const requiredRawDefault = Number(prep.value);
+const preparedRawTest = requiredRawDefault + 1000; // dépasse largement le besoin, quel que soit le composant choisi
+change(prep, String(preparedRawTest));
+check('quantité préparée modifiable', $$('[data-prep]').find((el) => el.dataset.prep === batchKey).value === String(preparedRawTest));
 check('note de préparation du poulet affichée', /filets entiers/.test($('#view').textContent));
 check('trois catégories affichées',
   /À préparer en batch/.test($('#view').textContent) &&
@@ -1148,15 +1159,15 @@ const registeredFactor = store.getState().foods.find((f) => f.id === measuredFoo
 const registeredPct = Math.round(registeredFactor * 100);
 
 // mesure alignée sur le rendement enregistré : aucun écart, pas d'alerte
-const closeMeasured = Math.round(1500 * registeredFactor);
+const closeMeasured = Math.round(preparedRawTest * registeredFactor);
 change(cookedInput, String(closeMeasured));
 check('rendement mesuré affiché', $('#view').textContent.includes(`rendement mesuré ${registeredPct} %`));
 check('écart nul : aucun bouton d’ajustement proposé', !$$('[data-adjust-yield]').some((b) => b.dataset.adjustYield === batchKey));
 
 // mesure à moitié du rendement enregistré (écart relatif ~50 %, toujours au-delà du seuil de 15 %)
 cookedInput = $$('[data-cooked]').find((el) => el.dataset.cooked === batchKey);
-const farMeasured = Math.round(1500 * registeredFactor * 0.5);
-const farPct = Math.round((farMeasured / 1500) * 100);
+const farMeasured = Math.round(preparedRawTest * registeredFactor * 0.5);
+const farPct = Math.round((farMeasured / preparedRawTest) * 100);
 change(cookedInput, String(farMeasured));
 check('rendement mesuré mis à jour', $('#view').textContent.includes(`rendement mesuré ${farPct} %`));
 check('alerte d’écart affichée au-delà du seuil',
@@ -1176,9 +1187,13 @@ check('annulation : la mesure saisie n’est pas perdue',
 click($$('[data-adjust-yield]').find((b) => b.dataset.adjustYield === batchKey));
 click($('[data-action-confirm]'));
 check('confirmation : rendement enregistré mis à jour sur la fiche aliment',
-  Math.abs(store.getState().foods.find((f) => f.id === measuredFoodId).cookedFactor - farMeasured / 1500) < 0.001);
+  Math.abs(store.getState().foods.find((f) => f.id === measuredFoodId).cookedFactor - farMeasured / preparedRawTest) < 0.001);
 check('rendement théorique désormais aligné sur la mesure : plus d’écart, plus de bouton',
   !$$('[data-adjust-yield]').some((b) => b.dataset.adjustYield === batchKey));
+
+console.log('\n— Batch : suggestion de répartition du surplus entre les gamelles');
+check('la répartition du surplus apparaît dans le détail des gamelles (affichage seul, planning intact)',
+  /\(surplus à servir\)/.test($('#view').textContent));
 
 console.log('\n— Impression');
 click($('#print-btn'));

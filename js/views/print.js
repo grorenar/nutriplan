@@ -166,7 +166,7 @@ function batchSection(s, byId, recipesMap = {}, preparationsMap = {}) {
                   .map((e) =>
                     e.free
                       ? `<li>${esc(e.name)} — ${esc(e.quantity || 'au goût')}</li>`
-                      : `<li>${grams(e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''}</li>`
+                      : `<li>${grams(e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''}${e.bonus > 0 ? ` (+${grams(e.bonus)} surplus)` : ''}</li>`
                   )
                   .join('') || '<li>rien</li>'
               }</ul>`

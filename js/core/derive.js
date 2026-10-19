@@ -892,6 +892,40 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
       ),
     }));
 
+    // ---- suggestion d'affichage : répartir le surplus de batch (« Je prépare »
+    // > besoin, ou rendement mesuré meilleur qu'attendu) entre les gamelles de
+    // la session qui consomment ce composant, au prorata de leur part déjà
+    // prévue. NE MODIFIE JAMAIS `meal.items` (cf. en-tête de fichier) : ajoute
+    // seulement `bonus`/`adjustedGrams` sur les entrées de `gamelles`
+    // fraîchement construites ci-dessus, à titre de suggestion de service.
+    // Mesure réelle (measuredCooked) prioritaire sur l'estimation théorique
+    // (preparedCooked) — si tu as pesé plus que prévu, la suggestion en tient
+    // compte. Un déficit (surplus négatif) n'est jamais répercuté ici : les
+    // gamelles gardent leur quantité planifiée, seul un VRAI surplus est
+    // proposé en plus (jamais une réduction silencieuse d'une portion).
+    for (const c of components) {
+      const available = c.measuredCooked ?? c.preparedCooked;
+      const surplus = available - c.requiredCooked;
+      if (!(surplus > 0.5) || !(c.requiredCooked > 0)) continue;
+      const entries = [];
+      for (const g of gamelles) {
+        for (const person of PERSONS) {
+          for (const e of g.persons[person]) {
+            if (!e.free && e.category === 'batch' && e.food?.id === c.food.id) entries.push(e);
+          }
+        }
+      }
+      if (!entries.length) continue;
+      let assigned = 0;
+      entries.forEach((e, i) => {
+        const isLast = i === entries.length - 1;
+        const bonus = isLast ? Math.max(0, surplus - assigned) : Math.round(surplus * (e.grams / c.requiredCooked));
+        assigned += bonus;
+        e.bonus = bonus;
+        e.adjustedGrams = e.grams + bonus;
+      });
+    }
+
     // alertes : composant (aliment ou recette) dont la conservation ne couvre
     // pas la session. `subBatches` (calculé ci-dessus) donne déjà le calendrier
     // concret de reprise ; l'alerte reste un résumé visible en tête de session.
