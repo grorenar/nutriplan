@@ -648,11 +648,14 @@ résultat OFF avec un aliment déjà créé localement :
 - **trouvé** : la fiche (nom, marque, macros) s'affiche avec un bouton « Ajouter », qui réutilise
   exactement le même chemin qu'un résultat de la recherche par nom (`onAddFood()`/
   `wireIngredientAddButtons()`) — aucune logique d'ajout dupliquée, aucun doublon créé.
-- **absent du catalogue** : message explicite, puis un bouton « Créer un nouvel aliment » qui bascule
-  vers l'écran Aliments avec ce code-barres déjà renseigné dans la recherche Open Food Facts
-  (événement `nutriplan:off-barcode`, déjà prévu à cet effet dans `js/app.js` avant ce chantier mais
-  resté sans émetteur jusqu'ici). Rien n'est créé par cette seule bascule — l'utilisateur garde la
-  main jusqu'à l'enregistrement final du formulaire aliment.
+- **absent du catalogue** : une **pop-up de confirmation bloquante** (`confirm-action.js`, le même
+  composant que les autres confirmations de l'application, jamais un `confirm()` natif) s'ouvre
+  **directement** — sans palier intermédiaire à cliquer en plus — expliquant qu'aucun aliment ne
+  correspond et ce que la bascule va faire. « Annuler » referme la pop-up sans aucun effet ; seul
+  « Créer l'aliment » bascule vers l'écran Aliments avec ce code-barres déjà renseigné dans la
+  recherche Open Food Facts (événement `nutriplan:off-barcode`, déjà prévu à cet effet dans
+  `js/app.js` avant ce chantier mais resté sans émetteur jusqu'ici). Rien n'est créé par cette seule
+  bascule — l'utilisateur garde la main jusqu'à l'enregistrement final du formulaire aliment.
 - **code illisible** (décodé mais sans aucun chiffre exploitable) : message distinct, avec un moyen de
   réessayer — jamais confondu avec une absence de résultat catalogue.
 - **erreur caméra** (permission refusée, aucune caméra, etc.) : gérée par le panneau scanner

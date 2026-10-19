@@ -657,8 +657,9 @@ function renderPicker(state, entity, recipesMap, preparationsMap) {
 /**
  * Résultat du dernier scan de code-barres (voir handleBarcodeDetected()) :
  * aliment déjà présent dans la banque (sélectionnable directement, jamais de
- * doublon créé), code absent de la banque (proposition de basculer vers la
- * création d'aliment), ou code illisible (repli : réessayer le scan).
+ * doublon créé), ou code illisible (repli : réessayer le scan). Un code
+ * absent de la banque n'a PAS d'état affiché ici : il ouvre directement la
+ * pop-up de confirmation (pendingConfirm) sans étape intermédiaire.
  */
 function barcodeResultHtml() {
   if (!barcodeResult) return '';
@@ -671,15 +672,6 @@ function barcodeResultHtml() {
           <div class="cat">${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} G / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})</div>
         </div>
         <button class="btn btn--sm btn--primary" data-add="${f.id}">Ajouter</button>
-        <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
-      </div>
-    </div>`;
-  }
-  if (barcodeResult.kind === 'not-found') {
-    return `<div class="card" style="margin:10px 0;border-color:#ecd7ae;background:var(--warn-bg)">
-      <div class="row">
-        <small style="flex:1">Aucun aliment avec ce code-barres dans la banque Nutriplan.</small>
-        <button class="btn btn--sm" data-create-food-from-barcode="${esc(barcodeResult.code)}" type="button">Créer un nouvel aliment</button>
         <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
       </div>
     </div>`;
@@ -698,15 +690,27 @@ function barcodeResultHtml() {
  * Nutriplan existant, jamais dans Open Food Facts (ne pas confondre un
  * résultat OFF avec un aliment déjà créé localement). Ne crée et n'ajoute
  * jamais rien automatiquement : seule une action explicite de l'utilisateur
- * (bouton « Ajouter » ou « Créer un nouvel aliment ») a un effet.
+ * (bouton « Ajouter », ou confirmation de la pop-up « Créer un nouvel
+ * aliment ? ») a un effet. Code absent de la banque : la pop-up de
+ * confirmation s'ouvre directement (demande utilisateur), sans palier
+ * intermédiaire à cliquer en plus.
  */
 function handleBarcodeDetected(rawCode) {
   const code = normalizeBarcode(rawCode);
-  if (!code) { barcodeResult = { kind: 'invalid' }; }
-  else {
-    const food = foodByBarcode(code);
-    barcodeResult = food ? { kind: 'found', food } : { kind: 'not-found', code };
-  }
+  if (!code) { barcodeResult = { kind: 'invalid' }; renderEditor(); return; }
+  const food = foodByBarcode(code);
+  if (food) { barcodeResult = { kind: 'found', food }; renderEditor(); return; }
+  barcodeResult = null;
+  pendingConfirm = {
+    title: 'Créer un nouvel aliment ?',
+    message: 'Aucun aliment avec ce code-barres dans la banque Nutriplan. Cette composition va se fermer pour ouvrir la création d\'aliment sur l\'écran Aliments, code-barres déjà renseigné. Ce qui est déjà ajouté ici reste enregistré — tu pourras rouvrir cette composition depuis Planning.',
+    confirmLabel: 'Créer l\'aliment',
+    danger: false,
+    onConfirm: () => {
+      closeEditor();
+      document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode: code } }));
+    },
+  };
   renderEditor();
 }
 
@@ -1033,28 +1037,6 @@ function wire(root, entity) {
 
   root.querySelector('[data-dismiss-barcode-result]')?.addEventListener('click', () => {
     barcodeResult = null;
-    renderEditor();
-  });
-
-  // Code absent du catalogue Nutriplan : seul chemin vers la création d'un
-  // aliment, qui vit sur l'écran Aliments (recherche OFF comprise) — jamais
-  // réimplémentée ici. Avertissement explicite avant de quitter le tiroir
-  // (demande utilisateur) : le repas/la collation en cours n'est pas perdu
-  // (tout ajout déjà fait est déjà écrit dans l'état, cf. mutate()), mais
-  // fermer ce tiroir reste une vraie interruption qui mérite une
-  // confirmation plutôt qu'un simple toast.
-  root.querySelector('[data-create-food-from-barcode]')?.addEventListener('click', (e) => {
-    const barcode = e.currentTarget.dataset.createFoodFromBarcode;
-    pendingConfirm = {
-      title: 'Créer un nouvel aliment ?',
-      message: 'Cette composition va se fermer pour ouvrir la création d\'aliment sur l\'écran Aliments, code-barres déjà renseigné. Ce qui est déjà ajouté ici reste enregistré — tu pourras rouvrir cette composition depuis Planning.',
-      confirmLabel: 'Créer l\'aliment',
-      danger: false,
-      onConfirm: () => {
-        closeEditor();
-        document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
-      },
-    };
     renderEditor();
   });
 

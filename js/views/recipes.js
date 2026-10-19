@@ -137,9 +137,10 @@ function ingredientPicker(state) {
 /**
  * Résultat du dernier scan de code-barres — même convention que editor.js
  * (handleBarcodeDetected()) : aliment déjà présent dans la banque
- * (sélectionnable directement, jamais de doublon créé), code absent de la
- * banque (proposition de basculer vers la création d'aliment, sur l'écran
- * Aliments — jamais réimplémentée ici), ou code illisible.
+ * (sélectionnable directement, jamais de doublon créé), ou code illisible.
+ * Un code absent de la banque n'a PAS d'état affiché ici : il ouvre
+ * directement la pop-up de confirmation (pendingConfirm), sans étape
+ * intermédiaire.
  */
 function barcodeResultHtml() {
   if (!barcodeResult) return '';
@@ -156,15 +157,6 @@ function barcodeResultHtml() {
       </div>
     </div>`;
   }
-  if (barcodeResult.kind === 'not-found') {
-    return `<div class="card" style="margin-top:8px;border-color:#ecd7ae;background:var(--warn-bg)">
-      <div class="row">
-        <small style="flex:1">Aucun aliment avec ce code-barres dans la banque Nutriplan.</small>
-        <button class="btn btn--sm" data-create-food-from-barcode="${esc(barcodeResult.code)}" type="button">Créer un nouvel aliment</button>
-        <button class="btn btn--sm btn--ghost" data-dismiss-barcode-result type="button">✕</button>
-      </div>
-    </div>`;
-  }
   return `<div class="card" style="margin-top:8px;border-color:#eebeb9">
     <div class="row">
       <small style="flex:1">Code-barres illisible.</small>
@@ -174,14 +166,27 @@ function barcodeResultHtml() {
   </div>`;
 }
 
-/** Appelé après une lecture réussie du scanner : recherche dans le catalogue Nutriplan existant, jamais dans Open Food Facts. */
+/**
+ * Appelé après une lecture réussie du scanner : recherche dans le catalogue
+ * Nutriplan existant, jamais dans Open Food Facts. Code absent de la
+ * banque : la pop-up de confirmation s'ouvre directement (demande
+ * utilisateur), sans palier intermédiaire à cliquer en plus.
+ */
 function handleBarcodeDetected(root, rawCode) {
   const code = normalizeBarcode(rawCode);
-  if (!code) { barcodeResult = { kind: 'invalid' }; }
-  else {
-    const food = foodByBarcode(code);
-    barcodeResult = food ? { kind: 'found', food } : { kind: 'not-found', code };
-  }
+  if (!code) { barcodeResult = { kind: 'invalid' }; render(root); return; }
+  const food = foodByBarcode(code);
+  if (food) { barcodeResult = { kind: 'found', food }; render(root); return; }
+  barcodeResult = null;
+  pendingConfirm = {
+    title: 'Créer un nouvel aliment ?',
+    message: 'Aucun aliment avec ce code-barres dans la banque Nutriplan. Tu vas être redirigé vers l\'écran Aliments, code-barres déjà renseigné. Ton brouillon de recette non enregistré est conservé et se réaffichera automatiquement à ton retour.',
+    confirmLabel: 'Créer l\'aliment',
+    danger: false,
+    onConfirm: () => {
+      document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode: code } }));
+    },
+  };
   render(root);
 }
 
@@ -493,28 +498,6 @@ function wireDrawerBody(root, s) {
 
   root.querySelector('[data-dismiss-barcode-result]')?.addEventListener('click', () => {
     barcodeResult = null;
-    render(root);
-  });
-
-  // Code absent du catalogue Nutriplan : seul chemin vers la création d'un
-  // aliment, qui vit sur l'écran Aliments (recherche OFF comprise) — jamais
-  // réimplémentée ici. Avertissement explicite avant de quitter l'écran
-  // (demande utilisateur) : le brouillon de recette en cours n'est pas
-  // perdu (formDraft reste en mémoire, module non réinitialisé par la
-  // navigation, et render() le réaffiche automatiquement tel quel au
-  // retour), mais la bascule reste une vraie interruption qui mérite une
-  // confirmation plutôt qu'un simple toast.
-  root.querySelector('[data-create-food-from-barcode]')?.addEventListener('click', (e) => {
-    const barcode = e.currentTarget.dataset.createFoodFromBarcode;
-    pendingConfirm = {
-      title: 'Créer un nouvel aliment ?',
-      message: 'Tu vas être redirigé vers l\'écran Aliments, code-barres déjà renseigné. Ton brouillon de recette non enregistré est conservé et se réaffichera automatiquement à ton retour.',
-      confirmLabel: 'Créer l\'aliment',
-      danger: false,
-      onConfirm: () => {
-        document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
-      },
-    };
     render(root);
   });
 
