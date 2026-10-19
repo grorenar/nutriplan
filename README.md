@@ -461,7 +461,11 @@ Résultat : une liste de produits (vignette, nom, marque, quantité, macros pour
 quand disponible). **Aucune création automatique** : il faut cliquer explicitement sur « Utiliser ce
 produit » pour préremplir le formulaire — qui reste entièrement modifiable avant l'enregistrement
 final, comme une saisie manuelle. Si le formulaire contenait déjà une saisie réelle, une confirmation
-bloquante est demandée avant de la remplacer.
+bloquante est demandée avant de la remplacer — jamais sur un formulaire fraîchement ouvert et encore
+vierge (`readForm()`, `js/views/foods.js`, conserve `null` pour un champ texte jamais rempli dont la
+valeur par défaut est `null` — barcode, Nutri-Score, Eco-Score, ingrédients, allergènes —, même
+principe déjà appliqué aux champs numériques, pour que la comparaison « formulaire modifié ? » ne
+confonde jamais une valeur jamais saisie avec une chaîne vide explicitement entrée).
 
 **Doublon par code-barres** : si le produit trouvé correspond déjà à un aliment de la banque (même
 code-barres — critère fort, pas une simple ressemblance de nom), la recherche ne propose jamais de

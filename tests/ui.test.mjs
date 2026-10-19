@@ -3078,10 +3078,29 @@ console.log('\n— Chantier recherche catalogue par code-barres : éditeur de re
   check('code-barres déjà renseigné (recherche Open Food Facts rouverte directement sur ce code)', $('[data-off-barcode]')?.value === '9999999999999');
   check('jamais présenté comme déjà créé : le formulaire reste à compléter, rien n’est encore enregistré',
     !store.getState().foods.some((f) => f.barcode === '9999999999999'));
+
+  // Retour utilisateur (capture d'écran) : sur un formulaire fraîchement
+  // ouvert via cette bascule, sélectionner un produit trouvé sur Open Food
+  // Facts déclenchait à tort « Remplacer la saisie actuelle ? » — le
+  // formulaire n'avait pourtant jamais été touché. Cause réelle :
+  // readForm() transformait un champ texte jamais rempli (barcode, ici)
+  // en '' au lieu de conserver le `null` d'origine, ce que la comparaison
+  // de modification (isDirty) interprétait à tort comme une vraie saisie.
+  globalThis.fetch = async () => jsonRes({
+    status: 1, code: '9999999999999',
+    product: { product_name: 'Chips Test Régression', nutriments: { 'energy-kcal_100g': 500 } },
+  });
+  click($('[data-off-barcode-go]'));
+  await wait();
+  check('produit trouvé affiché', /Chips Test Régression/.test($('[data-off-backdrop]')?.textContent || ''));
+  click($('[data-off-use]'));
+  await wait();
+  check('aucune pop-up « Remplacer la saisie actuelle » sur un formulaire jamais touché (régression corrigée)',
+    !$('[data-action-confirm]'));
+  check('la fiche se préremplit directement', $('[data-f="name"]')?.value === 'Chips Test Régression');
   globalThis.fetch = realFetch;
   scannerLib.__setTestLib(null);
 }
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 

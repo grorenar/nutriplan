@@ -866,7 +866,18 @@ function readForm(root, base) {
     else if (input.type === 'number') {
       const v = input.value === '' ? null : Number(input.value);
       out[key] = v;
-    } else out[key] = input.value.trim();
+    } else {
+      const v = input.value.trim();
+      // Un champ vide reste `null` si c'était déjà sa valeur d'origine
+      // (barcode, nutriScore, ecoScore, ingredientsText, allergensText — cf.
+      // blank()/normalizeFood() : `null` tant que rien n'a été récupéré ou
+      // saisi, jamais ''). Sans cette distinction, relire un formulaire
+      // jamais touché transformait silencieusement ces `null` en '' et le
+      // signalait à tort comme modifié (isDirty()) dès qu'un champ texte
+      // existait dans le DOM — même principe déjà appliqué ci-dessus aux
+      // champs numériques (value === '' -> null, jamais 0).
+      out[key] = v === '' && base[key] === null ? null : v;
+    }
   });
   if (!out.cookedFactor) out.cookedFactor = 1;
   if (!out.gramsPerUnit) out.gramsPerUnit = 0;
