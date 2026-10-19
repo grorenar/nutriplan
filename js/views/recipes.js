@@ -498,14 +498,24 @@ function wireDrawerBody(root, s) {
 
   // Code absent du catalogue Nutriplan : seul chemin vers la création d'un
   // aliment, qui vit sur l'écran Aliments (recherche OFF comprise) — jamais
-  // réimplémentée ici. Le brouillon de recette en cours n'est pas perdu :
-  // formDraft reste en mémoire (module non réinitialisé par la navigation),
-  // et render() le réaffiche automatiquement tel quel au retour sur
-  // l'écran Recettes.
+  // réimplémentée ici. Avertissement explicite avant de quitter l'écran
+  // (demande utilisateur) : le brouillon de recette en cours n'est pas
+  // perdu (formDraft reste en mémoire, module non réinitialisé par la
+  // navigation, et render() le réaffiche automatiquement tel quel au
+  // retour), mais la bascule reste une vraie interruption qui mérite une
+  // confirmation plutôt qu'un simple toast.
   root.querySelector('[data-create-food-from-barcode]')?.addEventListener('click', (e) => {
     const barcode = e.currentTarget.dataset.createFoodFromBarcode;
-    toast('Aliment à créer — reviens sur cette recette depuis l\'écran Recettes pour l\'ajouter ensuite.');
-    document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
+    pendingConfirm = {
+      title: 'Créer un nouvel aliment ?',
+      message: 'Tu vas être redirigé vers l\'écran Aliments, code-barres déjà renseigné. Ton brouillon de recette non enregistré est conservé et se réaffichera automatiquement à ton retour.',
+      confirmLabel: 'Créer l\'aliment',
+      danger: false,
+      onConfirm: () => {
+        document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
+      },
+    };
+    render(root);
   });
 
   root.querySelectorAll('[data-ing-unit-toggle]').forEach((btn) => {

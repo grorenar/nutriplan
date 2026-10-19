@@ -3060,6 +3060,15 @@ console.log('\n— Chantier recherche catalogue par code-barres : éditeur de re
   globalThis.fetch = async () => jsonRes({ status: 0, code: '9999999999999', status_verbose: 'product not found' });
   click($('[data-create-food-from-barcode]'));
   await wait();
+  check('pop-up d’avertissement affichée avant de quitter la composition en cours', !!$('[data-action-confirm]'));
+  check('toujours sur l’écran Planning tant que la pop-up n’est pas confirmée', $('[data-view="planning"]')?.getAttribute('aria-current') === 'true');
+  click($('[data-action-cancel]'));
+  await wait();
+  check('« Annuler » referme la pop-up sans aucune bascule', !$('[data-action-confirm]') && $('[data-view="planning"]')?.getAttribute('aria-current') === 'true');
+  click($('[data-create-food-from-barcode]'));
+  await wait();
+  click($('[data-action-confirm]'));
+  await wait();
   check('le repas en cours de composition n’est pas perdu (déjà persisté avant la bascule)',
     mealById().items.length === mealItemCountBeforeBarcodeScan + 1);
   check('bascule effective vers l’écran Aliments', $('[data-view="foods"]')?.getAttribute('aria-current') === 'true');
@@ -3154,6 +3163,10 @@ console.log('\n— Chantier recherche catalogue par code-barres : composition d�
   await wait();
   globalThis.fetch = async () => jsonRes({ status: 0, code: '8888888888888', status_verbose: 'product not found' });
   click($('[data-create-food-from-barcode]'));
+  await wait();
+  check('pop-up d’avertissement affichée avant de quitter la recette en cours', !!$('[data-action-confirm]'));
+  check('toujours sur l’écran Recettes tant que la pop-up n’est pas confirmée', $('[data-view="recipes"]')?.getAttribute('aria-current') === 'true');
+  click($('[data-action-confirm]'));
   await wait();
   check('bascule effective vers l’écran Aliments', $('[data-view="foods"]')?.getAttribute('aria-current') === 'true');
   check('code-barres déjà renseigné (recherche Open Food Facts rouverte directement sur ce code)', $('[data-off-barcode]')?.value === '8888888888888');

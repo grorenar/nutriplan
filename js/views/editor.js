@@ -21,6 +21,7 @@ import { analyzeMealVolume } from '../core/meal-volume.js';
 import { preparationAvailable, zeroWasteSlotsFor } from '../core/derive.js';
 import { normalizeBarcode } from '../core/off.js';
 import { isScannerSupported, openScannerPanel, closeScannerPanel } from './barcode-panel.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 let ctx = null; // { kind, id }
 let pickerQuery = '';
@@ -31,6 +32,7 @@ let host = null;
 // Résultat du dernier scan de code-barres dans le picker — voir handleBarcodeDetected().
 // { kind: 'found', food } | { kind: 'not-found', code } | { kind: 'invalid' } | null
 let barcodeResult = null;
+let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — avertissement avant une action qui quitte le tiroir
 
 /**
  * Intitulé unique affiché à la place des sections (Entrée/Plat/…) pour un
@@ -54,6 +56,7 @@ export function openEditor(kind, id) {
   addFor = 'both';
   addSection = DEFAULT_SECTION;
   barcodeResult = null;
+  pendingConfirm = null;
   renderEditor();
 }
 
@@ -195,7 +198,8 @@ export function renderEditor() {
   const body = `
     ${renderSummary(entity, byId, targets, tol, state, recipesMap, preparationsMap)}
     ${renderItems(entity, byId, recipesMap, preparationsMap)}
-    ${renderPicker(state, entity, recipesMap, preparationsMap)}`;
+    ${renderPicker(state, entity, recipesMap, preparationsMap)}
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 
   // Le panneau n'est créé qu'à l'ouverture : les re-rendus suivants remplacent
   // seulement son contenu, donc pas de réapparition ni d'animation rejouée.
@@ -1034,16 +1038,27 @@ function wire(root, entity) {
 
   // Code absent du catalogue Nutriplan : seul chemin vers la création d'un
   // aliment, qui vit sur l'écran Aliments (recherche OFF comprise) — jamais
-  // réimplémentée ici. Le repas/la collation en cours n'est pas perdu : tout
-  // ajout déjà fait est déjà écrit dans l'état (mutate()), et fermer ce
-  // tiroir ne supprime rien, seulement l'affichage ; il suffit de rouvrir ce
-  // même repas depuis Planning pour reprendre où on en était.
+  // réimplémentée ici. Avertissement explicite avant de quitter le tiroir
+  // (demande utilisateur) : le repas/la collation en cours n'est pas perdu
+  // (tout ajout déjà fait est déjà écrit dans l'état, cf. mutate()), mais
+  // fermer ce tiroir reste une vraie interruption qui mérite une
+  // confirmation plutôt qu'un simple toast.
   root.querySelector('[data-create-food-from-barcode]')?.addEventListener('click', (e) => {
     const barcode = e.currentTarget.dataset.createFoodFromBarcode;
-    toast('Aliment à créer — reviens sur cette composition depuis Planning pour l\'ajouter ensuite.');
-    closeEditor();
-    document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
+    pendingConfirm = {
+      title: 'Créer un nouvel aliment ?',
+      message: 'Cette composition va se fermer pour ouvrir la création d\'aliment sur l\'écran Aliments, code-barres déjà renseigné. Ce qui est déjà ajouté ici reste enregistré — tu pourras rouvrir cette composition depuis Planning.',
+      confirmLabel: 'Créer l\'aliment',
+      danger: false,
+      onConfirm: () => {
+        closeEditor();
+        document.dispatchEvent(new CustomEvent('nutriplan:off-barcode', { detail: { barcode } }));
+      },
+    };
+    renderEditor();
   });
+
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render: renderEditor });
 
   root.querySelector('[data-free-add]')?.addEventListener('click', () => {
     const nameEl = root.querySelector('[data-free-name]');
