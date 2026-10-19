@@ -5,9 +5,12 @@
  */
 
 import { getState, update, foodsById, recipesById, preparationsById } from '../core/store.js';
-import { buildBatchPlan, BATCH_CATEGORY_LABEL } from '../core/derive.js';
+import { buildBatchPlan, BATCH_CATEGORY_LABEL, YIELD_DEVIATION_THRESHOLD_PCT } from '../core/derive.js';
 import { dayName, esc, grams, num, toast } from '../core/util.js';
 import { MEAL_TYPES, PERSONS, PERSON_LABEL } from '../core/nutrition.js';
+import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
+
+let pendingConfirm = null; // { title, message, onConfirm } — ajustement du rendement enregistré d'un aliment
 
 export function render(root) {
   const s = getState();
@@ -24,6 +27,7 @@ export function render(root) {
       <span class="pill pill--accent">Conservation : ${s.settings.batch.maxDays} jours par session</span>
     </div>
     ${plan.map((sess) => sessionCard(sess, startWeekday)).join('')}
+    ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
   `;
   wire(root);
 }
@@ -106,6 +110,32 @@ function subBatchRows(subBatches, startWeekday) {
   </table>`;
 }
 
+/**
+ * Mesure ponctuelle "cuit obtenu" face au rendement théorique de la fiche
+ * aliment (c.yieldPct, food.cookedFactor) — jamais calculée pour un
+ * composant qui ne se cuit pas (pas de poids crû/cuit distinct à comparer).
+ * N'écrit jamais `food.cookedFactor` elle-même : seule l'action explicite
+ * derrière `data-adjust-yield` (voir wire()) le fait, après confirmation.
+ */
+function cookedObtainedCell(c) {
+  if (!c.needsCooking) return '<span class="muted">—</span>';
+  const warn = c.yieldDeviationSignificant
+    ? `<div class="tag sync-error" style="display:block;margin-top:4px">
+        ⚠️ écart ≥ ${YIELD_DEVIATION_THRESHOLD_PCT} % avec le rendement enregistré (${num(c.yieldPct, 0)} %)
+      </div>
+      <button type="button" class="btn btn--ghost" style="margin-top:4px;white-space:normal"
+        data-adjust-yield="${c.key}" data-food-id="${esc(c.food.id)}" data-food-name="${esc(c.food.name)}"
+        data-measured-factor="${c.measuredCookedFactor}" data-current-pct="${c.yieldPct}" data-measured-pct="${c.measuredYieldPct}">
+        Ajuster le rendement enregistré
+      </button>`
+    : '';
+  return `<input type="number" step="10" min="0" placeholder="non mesuré"
+            value="${c.measuredCooked != null ? num(c.measuredCooked, 0).replace(',', '.') : ''}"
+            data-cooked="${c.key}" data-raw="${c.preparedRaw}" style="width:104px" aria-label="Quantité cuite obtenue"> g
+          ${c.measuredYieldPct != null ? `<div class="tag">rendement mesuré ${num(c.measuredYieldPct, 0)} %</div>` : ''}
+          ${warn}`;
+}
+
 function componentsBlock(sess, startWeekday) {
   if (!sess.components.length) {
     return `<h3>${BATCH_CATEGORY_LABEL.batch}</h3><p class="muted">Aucun composant batchable sur cette session.</p>`;
@@ -141,6 +171,7 @@ function componentsBlock(sess, startWeekday) {
         <td><input type="number" step="10" min="0" value="${num(c.preparedRaw, 0).replace(',', '.')}"
                data-prep="${c.key}" style="width:104px" aria-label="Quantité préparée"> g</td>
         <td class="nums">${grams(c.preparedCooked)}</td>
+        <td class="nums">${cookedObtainedCell(c)}</td>
         <td class="nums">${surplus >= 0 ? `+ ${grams(surplus)}` : `manque ${grams(-surplus)}`}<div class="tag">${num(coverage, 0)} %</div></td>
       </tr>`;
     })
@@ -150,7 +181,7 @@ function componentsBlock(sess, startWeekday) {
     <table>
       <thead><tr>
         <th>Composant et méthode</th><th>À sortir</th><th>Quantité cuite nécessaire</th>
-        <th>Je prépare</th><th>Cuit attendu</th><th>Surplus</th>
+        <th>Je prépare</th><th>Cuit attendu</th><th>Cuit obtenu</th><th>Surplus</th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
@@ -324,4 +355,45 @@ function wire(root) {
       toast('Quantité préparée mise à jour');
     })
   );
+
+  root.querySelectorAll('[data-cooked]').forEach((input) =>
+    input.addEventListener('change', (e) => {
+      const key = e.target.dataset.cooked;
+      const raw = Number(e.target.dataset.raw) || 0;
+      const value = e.target.value === '' ? null : Math.max(0, Number(e.target.value) || 0);
+      update((s) => {
+        // Verrouille la quantité crue affichée au moment de la mesure : sans
+        // ça, une ligne "cuit obtenu" sans "je prépare" explicite n'aurait
+        // aucune quantité crue de référence à synchroniser (sync.js).
+        if (!(key in s.batch.overrides)) s.batch.overrides[key] = raw;
+        if (value === null) delete s.batch.cookedOverrides[key];
+        else s.batch.cookedOverrides[key] = value;
+      });
+      toast('Quantité cuite obtenue enregistrée');
+    })
+  );
+
+  root.querySelectorAll('[data-adjust-yield]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const { foodId, foodName, measuredFactor, currentPct, measuredPct } = e.currentTarget.dataset;
+      pendingConfirm = {
+        title: 'Ajuster le rendement enregistré ?',
+        message: `Le rendement mesuré pour « ${foodName} » est de ${measuredPct} %, contre ${currentPct} % ` +
+          `actuellement enregistré dans la fiche aliment. Mettre à jour la fiche avec ce nouveau rendement ? ` +
+          `Cela changera le calcul de TOUS les repas, recettes et sessions de batch futurs utilisant cet ` +
+          `aliment — pas seulement celui-ci.`,
+        confirmLabel: 'Mettre à jour la fiche aliment',
+        onConfirm: () => {
+          update((s) => {
+            const food = s.foods.find((f) => f.id === foodId);
+            if (food) food.cookedFactor = Math.round(Number(measuredFactor) * 100) / 100;
+          });
+          toast('Rendement mis à jour sur la fiche aliment');
+          render(root);
+        },
+      };
+      render(root);
+    })
+  );
+  wireActionConfirm(root, { getPending: () => pendingConfirm, setPending: (v) => { pendingConfirm = v; }, render });
 }

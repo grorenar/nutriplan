@@ -447,11 +447,21 @@ export function stateToTables(s) {
   // le premier ':' — un split(':') naïf tronquait silencieusement tout ce
   // qui suit un deuxième ':' (bug réel, corrigé avant qu'aucune donnée ne
   // soit perdue en synchronisation).
+  // cookedOverrides (quantité cuite obtenue, mesure ponctuelle — voir
+  // batch.js) partage exactement les mêmes clés que overrides : l'écran
+  // n'écrit jamais l'une sans l'autre, donc une ligne par clé suffit.
   const batch_items = Object.entries(s.batch.overrides).map(([key, grams]) => {
     const sep = key.indexOf(':');
     const session = sep === -1 ? key : key.slice(0, sep);
     const foodId = sep === -1 ? '' : key.slice(sep + 1);
-    return { id: `batch:${key}`, preparation_session: Number(session), food_id: foodId, preparation_quantity: grams };
+    const cookedQuantity = s.batch.cookedOverrides?.[key];
+    return {
+      id: `batch:${key}`,
+      preparation_session: Number(session),
+      food_id: foodId,
+      preparation_quantity: grams,
+      cooked_quantity: cookedQuantity ?? null,
+    };
   });
 
   const recipes = s.recipes.map(recipeRow);
@@ -548,6 +558,11 @@ export function tablesToState(t) {
   s.shopping.purchased = Object.fromEntries((t.shopping_items || []).map((r) => [r.food_id, r.purchased]));
   s.batch.overrides = Object.fromEntries(
     (t.batch_items || []).map((r) => [`${r.preparation_session}:${r.food_id}`, Number(r.preparation_quantity)])
+  );
+  s.batch.cookedOverrides = Object.fromEntries(
+    (t.batch_items || [])
+      .filter((r) => r.cooked_quantity != null)
+      .map((r) => [`${r.preparation_session}:${r.food_id}`, Number(r.cooked_quantity)])
   );
   return s;
 }

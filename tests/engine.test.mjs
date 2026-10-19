@@ -954,7 +954,7 @@ test('Cru / cuit — conversions et macros', () => {
 
 const mkMeal = (day, type, items) => ({ id: `m${day}${type}`, dayIndex: day, mealType: type, name: '', sameComposition: true, items });
 
-function batchState(overrides = {}) {
+function batchState(overrides = {}, cookedOverrides = {}) {
   return {
     foods,
     settings: {
@@ -964,7 +964,7 @@ function batchState(overrides = {}) {
       tolerance: 0.05,
       targets: { thomas: { lunch: LUNCH.thomas, dinner: LUNCH.thomas }, julie: { lunch: LUNCH.julie, dinner: LUNCH.julie } },
     },
-    batch: { overrides },
+    batch: { overrides, cookedOverrides },
     shopping: { purchased: {} },
     meals: [
       mkMeal(0, 'lunch', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 }), item(F('Riz basmati'), 0, { thomas: 90, julie: 70 })]),
@@ -1071,6 +1071,54 @@ test('Batch — plan opératoire : méthode, rendement, gamelles', () => {
     gWrap.persons.thomas.find(isWrap).category === 'assemble');
   check('une gamelle vide reste vide côté Julie si la quantité est nulle',
     sess.gamelles.every((g) => g.persons.julie.every((e) => e.free || e.grams > 0)));
+});
+
+test('Batch — mesure "cuit obtenu" face au rendement enregistré', () => {
+  const poulet = F('Blanc de poulet'); // cookedFactor 0.70 → yieldPct 70
+  const key = `0:${poulet.id}`;
+
+  // 1. aucune mesure saisie : rien n'est inventé
+  const sNone = batchState();
+  const cNone = buildBatchPlan(sNone, byId)[0].components.find((c) => c.food.id === poulet.id);
+  check('pas de mesure : measuredCooked/measuredYieldPct null', cNone.measuredCooked === null && cNone.measuredYieldPct === null);
+  check('pas de mesure : aucune alerte', cNone.yieldDeviationSignificant === false);
+
+  // 2. mesure proche du rendement enregistré (75 % vs 70 % — écart ~7 %, sous le seuil de 15 %)
+  const sClose = batchState({ [key]: 1000 }, { [key]: 750 });
+  const cClose = buildBatchPlan(sClose, byId)[0].components.find((c) => c.food.id === poulet.id);
+  check('rendement mesuré calculé (750/1000 = 75 %)', cClose.measuredYieldPct === 75);
+  check('écart faible : aucune alerte', cClose.yieldDeviationSignificant === false);
+  check('coefficient mesuré exposé (0,75)', Math.abs(cClose.measuredCookedFactor - 0.75) < 0.001);
+
+  // 3. mesure très éloignée du rendement enregistré (50 % vs 70 % — écart ~29 %, au-delà du seuil)
+  const sFar = batchState({ [key]: 1000 }, { [key]: 500 });
+  const cFar = buildBatchPlan(sFar, byId)[0].components.find((c) => c.food.id === poulet.id);
+  check('rendement mesuré calculé (500/1000 = 50 %)', cFar.measuredYieldPct === 50);
+  check('écart important : alerte déclenchée', cFar.yieldDeviationSignificant === true);
+  check('coefficient mesuré exposé (0,5)', Math.abs(cFar.measuredCookedFactor - 0.5) < 0.001);
+  check('le rendement enregistré de la fiche aliment reste inchangé (jamais écrit automatiquement)',
+    F('Blanc de poulet').cookedFactor === poulet.cookedFactor);
+});
+
+test('Batch — "cuit obtenu" : round-trip stateToTables()/tablesToState() (synchronisation Supabase)', () => {
+  const s = defaultState();
+  s.batch.overrides = { '0:f1': 1000, '0:f2': 400 };
+  s.batch.cookedOverrides = { '0:f1': 750 }; // f2 jamais mesuré : pas de ligne cooked_quantity
+
+  const tables = stateToTables(s);
+  const row1 = tables.batch_items.find((r) => r.id === 'batch:0:f1');
+  const row2 = tables.batch_items.find((r) => r.id === 'batch:0:f2');
+  check('ligne mesurée : cooked_quantity transmis', row1.cooked_quantity === 750);
+  check('ligne non mesurée : cooked_quantity explicitement null (jamais 0 inventé)', row2.cooked_quantity === null);
+
+  const back = tablesToState(tables);
+  check('round-trip : overrides identiques', JSON.stringify(back.batch.overrides) === JSON.stringify(s.batch.overrides));
+  check('round-trip : cookedOverrides identiques, seule la clé mesurée revient', JSON.stringify(back.batch.cookedOverrides) === JSON.stringify(s.batch.cookedOverrides));
+
+  // ancien client / ligne jamais écrite avec cette colonne : jamais une exception, jamais une fausse mesure à 0
+  const legacyTables = { ...tables, batch_items: tables.batch_items.map((r) => ({ ...r, cooked_quantity: undefined })) };
+  const legacyState = tablesToState(legacyTables);
+  check('colonne absente -> aucune clé cookedOverrides inventée', Object.keys(legacyState.batch.cookedOverrides).length === 0);
 });
 
 test('Fiche aliment — paramètres de cuisson personnalisés repris dans le plan', () => {
@@ -3847,7 +3895,10 @@ function mergeFixture() {
     breakfasts: [breakfast],
     snacks: [snack],
     shopping: { purchased: { [foodA.id]: true, [foodB.id]: false } },
-    batch: { overrides: { [`0:${foodA.id}`]: 300, [`0:0-1:${foodB.id}`]: 120 } },
+    batch: {
+      overrides: { [`0:${foodA.id}`]: 300, [`0:0-1:${foodB.id}`]: 120 },
+      cookedOverrides: { [`0:${foodA.id}`]: 210 },
+    },
   };
   return { st, foodA, foodB, keep, recipe, prep, meal, breakfast, snack };
 }
@@ -3877,6 +3928,9 @@ test('P3.1.3 — mergeFoods() : batch.overrides réécrit sur le dernier segment
   check('clé simple "session:foodId" réécrite avec le nouvel id', keys.includes(`0:${keep.id}`) && st.batch.overrides[`0:${keep.id}`] === 300);
   check('clé de sous-préparation "session:plage:foodId" réécrite', keys.includes(`0:0-1:${keep.id}`) && st.batch.overrides[`0:0-1:${keep.id}`] === 120);
   check('aucune clé fantôme de l’ancien id', !keys.some((k) => k.includes(foodA.id) || k.includes(foodB.id)));
+  const cookedKeys = Object.keys(st.batch.cookedOverrides);
+  check('cookedOverrides : clé réécrite sur le dernier segment aussi', cookedKeys.includes(`0:${keep.id}`) && st.batch.cookedOverrides[`0:${keep.id}`] === 210);
+  check('cookedOverrides : aucune clé fantôme de l’ancien id', !cookedKeys.some((k) => k.includes(foodA.id) || k.includes(foodB.id)));
 });
 
 test('P3.1.4 — mergeFoods() : le recipeSnapshot déjà figé d’une préparation N’EST JAMAIS réécrit', () => {

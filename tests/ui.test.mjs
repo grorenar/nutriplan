@@ -1127,6 +1127,7 @@ await wait();
 click($('[data-view="batch"]'));
 const prep = $$('[data-prep]')[0];
 check('composants de batch listés', !!prep);
+const batchKey = prep.dataset.prep;
 change(prep, '1500');
 check('quantité préparée modifiable', $$('[data-prep]')[0].value === '1500');
 check('note de préparation du poulet affichée', /filets entiers/.test($('#view').textContent));
@@ -1136,6 +1137,48 @@ check('trois catégories affichées',
   /À assembler le jour même/.test($('#view').textContent));
 check('plan opératoire : méthode et température', /Four/.test($('#view').textContent) && /180 °C/.test($('#view').textContent));
 check('détail des gamelles présent', /Détail des gamelles/.test($('#view').textContent));
+
+console.log('\n— Batch : mesure « cuit obtenu » face au rendement enregistré');
+let cookedInput = $$('[data-cooked]').find((el) => el.dataset.cooked === batchKey);
+check('champ "cuit obtenu" présent pour un composant qui se cuit', !!cookedInput);
+check('non mesuré par défaut : champ vide, jamais une valeur inventée', cookedInput.value === '' && cookedInput.placeholder === 'non mesuré');
+
+const measuredFoodId = batchKey.slice(batchKey.indexOf(':') + 1);
+const registeredFactor = store.getState().foods.find((f) => f.id === measuredFoodId).cookedFactor;
+const registeredPct = Math.round(registeredFactor * 100);
+
+// mesure alignée sur le rendement enregistré : aucun écart, pas d'alerte
+const closeMeasured = Math.round(1500 * registeredFactor);
+change(cookedInput, String(closeMeasured));
+check('rendement mesuré affiché', $('#view').textContent.includes(`rendement mesuré ${registeredPct} %`));
+check('écart nul : aucun bouton d’ajustement proposé', !$$('[data-adjust-yield]').some((b) => b.dataset.adjustYield === batchKey));
+
+// mesure à moitié du rendement enregistré (écart relatif ~50 %, toujours au-delà du seuil de 15 %)
+cookedInput = $$('[data-cooked]').find((el) => el.dataset.cooked === batchKey);
+const farMeasured = Math.round(1500 * registeredFactor * 0.5);
+const farPct = Math.round((farMeasured / 1500) * 100);
+change(cookedInput, String(farMeasured));
+check('rendement mesuré mis à jour', $('#view').textContent.includes(`rendement mesuré ${farPct} %`));
+check('alerte d’écart affichée au-delà du seuil',
+  new RegExp(`écart ≥ 15 %.*rendement enregistré.*${registeredPct} %`).test($('#view').textContent.replace(/\s+/g, ' ')));
+const adjustBtn = $$('[data-adjust-yield]').find((b) => b.dataset.adjustYield === batchKey);
+check('bouton d’ajustement proposé (jamais appliqué seul)', !!adjustBtn);
+
+const factorBefore = store.getState().foods.find((f) => f.id === measuredFoodId).cookedFactor;
+click(adjustBtn);
+check('confirmation demandée avant toute écriture', !!$('[data-action-confirm]'));
+check('la fiche aliment n’est pas modifiée avant confirmation', store.getState().foods.find((f) => f.id === measuredFoodId).cookedFactor === factorBefore);
+click($('[data-action-cancel]'));
+check('annulation : rendement enregistré toujours inchangé', store.getState().foods.find((f) => f.id === measuredFoodId).cookedFactor === factorBefore);
+check('annulation : la mesure saisie n’est pas perdue',
+  $$('[data-cooked]').find((el) => el.dataset.cooked === batchKey).value === String(farMeasured));
+
+click($$('[data-adjust-yield]').find((b) => b.dataset.adjustYield === batchKey));
+click($('[data-action-confirm]'));
+check('confirmation : rendement enregistré mis à jour sur la fiche aliment',
+  Math.abs(store.getState().foods.find((f) => f.id === measuredFoodId).cookedFactor - farMeasured / 1500) < 0.001);
+check('rendement théorique désormais aligné sur la mesure : plus d’écart, plus de bouton',
+  !$$('[data-adjust-yield]').some((b) => b.dataset.adjustYield === batchKey));
 
 console.log('\n— Impression');
 click($('#print-btn'));

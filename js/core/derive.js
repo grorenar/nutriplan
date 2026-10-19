@@ -9,6 +9,11 @@ import {
 } from './nutrition.js';
 import { dayName } from './util.js';
 
+// Écart relatif (%) entre rendement mesuré et rendement enregistré
+// (food.cookedFactor) à partir duquel l'écran Batch propose d'ajuster la
+// fiche aliment — en dessous, c'est la variabilité normale d'une cuisson.
+export const YIELD_DEVIATION_THRESHOLD_PCT = 15;
+
 /** Utilisations totales d'une option de catalogue, par personne. */
 export function optionUses(option, kind) {
   if (kind === 'breakfast') {
@@ -688,6 +693,16 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
       const key = `${s.index}:${food.id}`;
       const prepared = state.batch.overrides[key];
       const preparedRaw = prepared ?? refGrams;
+      // Mesure ponctuelle "cuit obtenu" (session courante uniquement, jamais
+      // reportée sur food.cookedFactor sans action explicite — cf. batch.js) :
+      // ne s'applique qu'aux aliments effectivement cuits depuis le cru.
+      const measurable = needsCooking(food) && food.referenceState === 'cru' && preparedRaw > 0;
+      const measuredCooked = measurable ? (state.batch.cookedOverrides?.[key] ?? null) : null;
+      const yieldPct = Math.round((Number(food.cookedFactor) || 1) * 100);
+      const measuredYieldPct = measuredCooked != null ? Math.round((measuredCooked / preparedRaw) * 100) : null;
+      const yieldDeviationPct = measuredYieldPct != null && yieldPct > 0
+        ? Math.round((Math.abs(measuredYieldPct - yieldPct) / yieldPct) * 100)
+        : null;
       components.push({
         key,
         food,
@@ -697,7 +712,11 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
         preparedCooked: needsCooking(food) && food.referenceState === 'cru'
           ? convertGrams(food, preparedRaw, 'cru', 'cuit')
           : preparedRaw,
-        yieldPct: Math.round((Number(food.cookedFactor) || 1) * 100),
+        yieldPct,
+        measuredCooked,
+        measuredYieldPct,
+        measuredCookedFactor: measuredCooked != null ? measuredCooked / preparedRaw : null,
+        yieldDeviationSignificant: yieldDeviationPct != null && yieldDeviationPct >= YIELD_DEVIATION_THRESHOLD_PCT,
         method: food.cookingMethod || '',
         temperature: food.cookingTemp ?? null,
         duration: food.cookingTime ?? null,

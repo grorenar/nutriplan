@@ -50,7 +50,14 @@ export function defaultState() {
     breakfasts: [],
     snacks: [], // catalogue unique : 16 h et soir ne sont que des affectations
     shopping: { purchased: {} }, // foodId -> bool
-    batch: { overrides: {} }, // `${session}:${foodId}` -> grammes préparés
+    batch: {
+      overrides: {}, // `${session}:${foodId}` -> grammes crus préparés
+      // Mesure ponctuelle "cuit obtenu" pour cette séance — jamais appliquée
+      // automatiquement au rendement enregistré de l'aliment (food.cookedFactor,
+      // global, utilisé par tous les calculs nutritionnels) : seule une action
+      // explicite de l'utilisateur (voir js/views/batch.js) le fait.
+      cookedOverrides: {}, // `${session}:${foodId}` -> grammes cuits obtenus
+    },
     // Groupes de « doublons possibles » explicitement écartés par
     // l'utilisateur (« pas un doublon ») — liste de clés stables
     // (similarity.js::duplicateGroupKey()), jamais ré-affichés tant que la
@@ -241,7 +248,7 @@ function migrate(s) {
   merged.settings.cycle = { ...base.settings.cycle, ...(s.settings?.cycle || {}) };
   merged.settings.batch = { ...base.settings.batch, ...(s.settings?.batch || {}) };
   merged.shopping = { purchased: {}, ...(s.shopping || {}) };
-  merged.batch = { overrides: {}, ...(s.batch || {}) };
+  merged.batch = { overrides: {}, cookedOverrides: {}, ...(s.batch || {}) };
   merged.dismissedDuplicates = Array.isArray(merged.dismissedDuplicates) ? merged.dismissedDuplicates : [];
   merged.meta = { ...base.meta, ...(s.meta || {}) };
   // une synchronisation en cours ne survit jamais à un rechargement de page
@@ -646,7 +653,7 @@ export function resetCycle() {
     }
     s.meals = [];
     s.shopping = { purchased: {} };
-    s.batch = { overrides: {} };
+    s.batch = { overrides: {}, cookedOverrides: {} };
     // les catalogues sont conservés : seuls leurs compteurs d'utilisation repartent à zéro
     for (const o of s.breakfasts) o.uses = emptyBreakfastUses();
     for (const o of s.snacks) o.uses = emptySnackUses();
@@ -716,6 +723,15 @@ export function mergeFoods(state, keepId, mergeIds) {
     if (!(newKey in overrides)) overrides[newKey] = value;
     delete overrides[key];
     summary.batch++;
+  }
+  // cookedOverrides : même logique de clés, même garde anti-écrasement.
+  const cookedOverrides = state.batch?.cookedOverrides || {};
+  for (const [key, value] of Object.entries(cookedOverrides)) {
+    const lastSegment = key.split(':').pop();
+    if (!ids.has(lastSegment)) continue;
+    const newKey = `${key.slice(0, key.length - lastSegment.length)}${keepId}`;
+    if (!(newKey in cookedOverrides)) cookedOverrides[newKey] = value;
+    delete cookedOverrides[key];
   }
 
   const before = state.foods.length;

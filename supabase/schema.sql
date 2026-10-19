@@ -386,6 +386,11 @@ alter table foods add column if not exists off_fetched_at timestamptz;
 -- réécrite depuis.
 alter table settings add column if not exists dismissed_duplicates jsonb not null default '[]'::jsonb;
 
+-- Quantité cuite réellement obtenue (mesure ponctuelle de la séance de batch),
+-- à côté de preparation_quantity (quantité crue mise en œuvre) — nullable :
+-- absente tant que l'utilisateur n'a rien mesuré, jamais déduite.
+alter table batch_items add column if not exists cooked_quantity numeric;
+
 -- PostgreSQL ne propose pas "add constraint if not exists" : on supprime puis
 -- recrée (comme les policies RLS plus bas), pour que le script reste rejouable.
 do $$
