@@ -26,7 +26,7 @@
  * yaourt aux fruits contient du lait ET du fruit, ça n'aide pas à trancher).
  */
 
-import { normalize } from './util.js';
+import { normalize, normalizeWords } from './util.js';
 import { CATEGORIES } from './nutrition.js';
 
 const VALID_CATEGORY_IDS = new Set(CATEGORIES.map((c) => c.id));
@@ -164,12 +164,6 @@ function normalizeTag(tag) {
   return normalize(String(tag ?? '')).replace(/^[a-z]{2,3}:/, '').trim();
 }
 
-/** Texte normalisé, mots séparés par un espace unique, encadré d'espaces (frontières de mot par simple inclusion de chaîne). */
-function normalizeText(s) {
-  const cleaned = normalize(String(s ?? '')).replace(/[^a-z0-9]+/g, ' ').trim();
-  return cleaned ? ` ${cleaned} ` : '';
-}
-
 /**
  * Un mot-clé (normalisé, encadré d'espaces) apparaît-il comme mot entier
  * dans le texte (lui aussi encadré d'espaces) ? Le padding par espaces est
@@ -177,7 +171,7 @@ function normalizeText(s) {
  * (ex. « oeuf » ne matche jamais à l'intérieur de « boeuf »).
  */
 function textHasKeyword(paddedText, keyword) {
-  return paddedText.includes(normalizeText(keyword));
+  return paddedText.includes(normalizeWords(keyword));
 }
 
 /**
@@ -218,7 +212,7 @@ function matchByTags(categoriesTags) {
  * traités comme deux signaux distincts et donc faussement « ambigus ».
  */
 function matchByName(name) {
-  const padded = normalizeText(name);
+  const padded = normalizeWords(name);
   if (!padded.trim()) return null;
   const rawHits = [];
   for (const [category, keywords] of NAME_KEYWORDS) {

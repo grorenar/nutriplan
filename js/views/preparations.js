@@ -70,8 +70,8 @@ export function render(root) {
     ${discarding ? discardPanel(s) : ''}
     ${deletePrep ? deletePrepModal(s) : ''}
     ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
-    ${wizard ? distributeWizard(s, recipesMap) : ''}
-    ${quickUse ? quickUseCard(s, recipesMap) : ''}
+    ${wizard ? distributeWizard(s) : ''}
+    ${quickUse ? quickUseCard(s) : ''}
     ${
       active.length
         ? active.map((p) => prepCard(p, s, recipesMap)).join('')
@@ -168,7 +168,7 @@ function assignmentsSection(p, assignments) {
     </div>`;
   }).join('');
   return `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
-    <small class="muted">Modifier une quantité réécrit l'affectation existante (aucun doublon). La retirer libère entièrement le disponible.</small>
+    <small class="muted">Modifier une quantité met à jour l'affectation existante. La retirer libère le disponible.</small>
     <div class="items" style="margin-top:6px">${rows}</div>
   </div>`;
 }
@@ -348,7 +348,7 @@ function discardPanel(s) {
 
 const catalogKeyOf = (c) => `${c.kind}:${c.optionId}:${c.slot ?? 'x'}`;
 
-function distributeWizard(s, recipesMap) {
+function distributeWizard(s) {
   const p = s.preparations.find((x) => x.id === wizard.preparationId);
   if (!p) return '';
   const disponible = preparationAvailable(s, p);
@@ -446,7 +446,7 @@ function distributeWizard(s, recipesMap) {
 /* « + Utiliser dans un repas » (assignation directe, sans solveur)     */
 /* ------------------------------------------------------------------ */
 
-function quickUseCard(s, recipesMap) {
+function quickUseCard(s) {
   const p = s.preparations.find((x) => x.id === quickUse.preparationId);
   if (!p) return '';
   const disponible = preparationAvailable(s, p);

@@ -220,7 +220,7 @@ function refreshOpenForm(root, s) {
 }
 
 function overlaysHtml(s) {
-  return `${editing && yieldCalc ? yieldPanel() : ''}${editing && offSearch ? offSearchPanel(s) : ''}${editing && offSearch && scanner ? scannerPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
+  return `${editing && yieldCalc ? yieldPanel() : ''}${editing && offSearch ? offSearchPanel() : ''}${editing && offSearch && scanner ? scannerPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 }
 
 /** L'aliment affiché dans le formulaire actuellement ouvert (brouillon ou fiche existante). */
@@ -497,7 +497,7 @@ function existingFoodForBarcode(code) {
   return getState().foods.find((f) => f.barcode && f.barcode === code) || null;
 }
 
-function offSearchPanel(s) {
+function offSearchPanel() {
   const o = offSearch;
   return `<div class="drawer" data-off-backdrop>
     <div class="drawer__panel" style="width:min(640px,100%)">

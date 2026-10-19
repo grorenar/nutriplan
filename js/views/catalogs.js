@@ -53,7 +53,7 @@ export function renderSnacks(root) {
     ${coverageCard([report.snack_afternoon, report.snack_evening], s)}
     <div class="row" style="margin:14px 0 10px">
       <span class="pill pill--accent">Collations</span>
-      <small>Une collation a une composition unique : 16 h et Soir ne sont que des affectations dans le cycle.</small>
+      <small>Une collation a une seule composition, utilisable aussi bien à 16 h que le soir.</small>
       <span class="spacer"></span>
       <button class="btn btn--primary" data-new>Nouvelle option</button>
     </div>
@@ -111,8 +111,6 @@ function coverageCard(slots, s) {
     }
   }
 
-  const incomplete = slots.some((sl) => PERSONS.some((p) => sl.persons[p].status === 'missing'));
-
   return `<div class="card">
     <div class="card__head">
       <h2>Couverture du cycle</h2>
@@ -120,13 +118,6 @@ function coverageCard(slots, s) {
     </div>
     <table style="max-width:420px">${header}<tbody>${rows}</tbody></table>
     ${messages.length ? `<div style="margin-top:10px;display:flex;flex-direction:column;gap:4px">${messages.join('')}</div>` : ''}
-    ${
-      incomplete
-        ? `<div class="row" style="margin-top:10px">
-             <small>Le cycle reste utilisable : l’avertissement reste affiché, rien n’est complété automatiquement.</small>
-           </div>`
-        : ''
-    }
   </div>`;
 }
 

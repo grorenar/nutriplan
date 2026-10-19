@@ -9,7 +9,7 @@
  *  - la conversion cru <-> cuit utilise le coefficient de l'aliment (cookedFactor).
  */
 
-import { clamp, round } from './util.js';
+import { clamp } from './util.js';
 
 export const CATEGORIES = [
   { id: 'proteine', label: 'Protéine' },

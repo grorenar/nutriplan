@@ -1,6 +1,6 @@
 /** Écran PLANNING — cycles de courses/batch, sans aucune date réelle. */
 
-import { getState, update, foodsById, ensureCycleMeals, newMeal, recipesById, preparationsById, itemLabel } from '../core/store.js';
+import { getState, update, foodsById, recipesById, preparationsById, itemLabel } from '../core/store.js';
 import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, autoAdjust } from '../core/nutrition.js';
 import { optimizeSuggestions, dayTotals } from '../core/derive.js';
 import { dayName, esc, num, toast, uid } from '../core/util.js';

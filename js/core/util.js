@@ -5,8 +5,6 @@ export const uid = (prefix = 'id') =>
 
 export const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
-export const round = (v, step = 1) => Math.round(v / step) * step;
-
 /** Formatage d'un nombre sans décimale inutile. */
 export function num(v, decimals = 0) {
   if (v === null || v === undefined || Number.isNaN(v)) return '—';
@@ -67,6 +65,16 @@ export function normalize(s) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Texte normalis\u00e9, mots s\u00e9par\u00e9s par un espace unique, encadr\u00e9 d'espaces
+ * (fronti\u00e8res de mot par simple inclusion de cha\u00eene \u2014 ex. utile pour qu'un
+ * mot-cl\u00e9 ne \u00ab matche \u00bb jamais \u00e0 l'int\u00e9rieur d'un autre qui le contient).
+ */
+export function normalizeWords(s) {
+  const cleaned = normalize(String(s ?? '')).replace(/[^a-z0-9]+/g, ' ').trim();
+  return cleaned ? ` ${cleaned} ` : '';
 }
 
 /** Télécharge un contenu texte sous forme de fichier. */

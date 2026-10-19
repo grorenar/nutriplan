@@ -869,9 +869,3 @@ export async function syncNow({ editing = false } = {}) {
     setSyncMeta({ syncing: false });
   }
 }
-
-/** Compatibilité : envoi automatique si des modifications locales sont en attente. */
-export async function syncIfNeeded() {
-  const { action } = await syncNow();
-  return action === 'push';
-}

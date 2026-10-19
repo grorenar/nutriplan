@@ -9,7 +9,6 @@ import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 const TYPES = ['day', 'breakfast', 'lunch', 'snack_afternoon', 'dinner', 'snack_evening'];
 let importReport = null; // doublons probables repérés au dernier import
-let account = { user: null, checked: false };
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
 export async function render(root) {
@@ -222,14 +221,12 @@ async function renderAccount(root) {
   if (!box) return;
 
   if (!sync.isConfigured()) {
-    box.innerHTML = `<p>Mode local uniquement : les données sont enregistrées dans ce navigateur.</p>
-      <small>Pour activer la synchronisation, renseigne <code>SUPABASE_URL</code> et <code>SUPABASE_ANON_KEY</code> dans <code>js/config.js</code>, puis exécute <code>supabase/schema.sql</code> dans l'éditeur SQL de Supabase.</small>`;
+    box.innerHTML = `<p>Mode local uniquement : les données sont enregistrées dans ce navigateur.</p>`;
     return;
   }
 
   let user = null;
   try { user = await sync.currentUser(); } catch { /* hors ligne */ }
-  account = { user, checked: true };
   const s = getState();
 
   const backup = backupInfo();

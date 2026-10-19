@@ -3,12 +3,12 @@
  * codée en dur). Sert à AVERTIR, jamais à fusionner ou supprimer quoi que ce soit.
  */
 
-import { normalize } from './util.js';
+import { normalize, normalizeWords } from './util.js';
 
 /** Similarité de Dice sur les trigrammes du nom normalisé (0 → 1). */
 export function nameSimilarity(a, b) {
   const grams = (s) => {
-    const t = ` ${normalize(s).replace(/[^a-z0-9]+/g, ' ').trim()} `;
+    const t = normalizeWords(s);
     const set = new Set();
     for (let i = 0; i < t.length - 2; i++) set.add(t.slice(i, i + 3));
     return set;

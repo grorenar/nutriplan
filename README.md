@@ -22,16 +22,23 @@ js/core/store.js          état applicatif, localStorage, export/import
 js/core/derive.js         batch cooking, liste de courses, budget, suggestions
 js/core/similarity.js     détection d'aliments similaires (avertissement uniquement)
 js/core/sync.js           Supabase : auth + envoi/récupération atomiques
+js/core/off.js            recherche Open Food Facts (code-barres, nom/marque)
+js/core/off-category.js   suggestion de catégorie Nutriplan depuis une fiche Open Food Facts
+js/core/barcode-scanner.js lecture de codes-barres par caméra (démarrage/arrêt du flux vidéo)
 js/views/*.js             une vue par écran (dont recipes.js, preparations.js) + l'éditeur de
                           repas partagé (editor.js) + les dialogues de confirmation réutilisables
                           (confirm-unsaved.js, confirm-similar.js, confirm-action.js — toute
                           action destructrice/irréversible passe par ce dernier, plus de
                           `confirm()` natif nulle part dans l'application)
 supabase/schema.sql       schéma PostgreSQL + RLS par compte + fonction transactionnelle
+cloudflare-worker/        proxy CORS pour Open Food Facts (voir §7, recherche par nom/marque)
 tests/engine.test.mjs     moteur nutritionnel, batch, courses, recettes/préparations (aucune dépendance)
 tests/volume.test.mjs     analyse du volume d'un repas (aucune dépendance)
 tests/sync.test.mjs       schéma + transaction + RLS, sur un PostgreSQL local
 tests/autosync.test.mjs   synchronisation automatique (client Supabase simulé, aucune dépendance)
+tests/off.test.mjs        recherche Open Food Facts (aucune dépendance)
+tests/off-category.test.mjs  suggestion de catégorie depuis une fiche Open Food Facts (aucune dépendance)
+tests/barcode-scanner.test.mjs  lecture de codes-barres par caméra (aucune dépendance)
 tests/ui.test.mjs         parcours complet de l'interface (jsdom)
 ```
 
@@ -761,7 +768,7 @@ suite de tests). Les autres suites qui touchent la synchronisation (`autosync.te
 ont pas besoin.
 
 `npm test` n'inclut volontairement **pas** `tests/sync.test.mjs` : cette suite a besoin d'un service
-PostgreSQL local (voir ci-dessous), pas toujours disponible, alors que les 4 autres ne dépendent de
+PostgreSQL local (voir ci-dessous), pas toujours disponible, alors que les 7 autres ne dépendent de
 rien d'externe et doivent donc rester exécutables partout, y compris en intégration continue.
 
 Le test de synchronisation vérifie le schéma, la transaction et les policies RLS sur un

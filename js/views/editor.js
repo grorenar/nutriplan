@@ -7,7 +7,7 @@ import {
   getState, update, foodsById, newItem, newFreeItem, catalogKey,
   SECTIONS, SECTION_LABEL, DEFAULT_SECTION, sectionsUsed,
   recipesById, preparationsById, newRecipeMealItem, newPreparationItem,
-  autoMealName,
+  autoMealName, normalizeFood,
 } from '../core/store.js';
 import {
   CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
@@ -715,7 +715,7 @@ function renderRecipesPanel(state, recipesMap, preparationsMap) {
         <small style="display:block;margin-bottom:6px">Recettes sans préparation disponible :</small>
         ${dropdown}
       </div>` : ''}
-    <small style="display:block;margin-top:10px">Crée une nouvelle préparation depuis l'écran « Préparations » (production, stock et répartition y sont désormais centralisés).</small>
+    <small style="display:block;margin-top:10px">Crée une nouvelle préparation depuis l'écran « Préparations ».</small>
   </div>`;
 }
 
@@ -914,13 +914,10 @@ function wire(root, entity) {
       if (!item) return;
       const foodId = `f_${uid('custom')}`;
       update((s) => {
-        s.foods.push({
+        s.foods.push(normalizeFood({
           id: foodId, name: item.free.name, category: 'autre', brand: '',
-          kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0,
-          referenceState: 'pret', cookedFactor: 1, unitName: '', gramsPerUnit: 0,
-          fractionable: true, price: null, packageWeight: null, batchAllowed: false,
-          favorite: false, lastUsed: null,
-        });
+          kcal: 0, protein: 0, carbs: 0, fat: 0,
+        }));
       });
       toast(`« ${item.free.name} » créé dans la banque — complète ses valeurs dans Aliments.`);
     });

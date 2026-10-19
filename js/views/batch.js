@@ -22,7 +22,6 @@ export function render(root) {
   root.innerHTML = `
     <div class="row" style="margin-bottom:12px">
       <span class="pill pill--accent">Conservation : ${s.settings.batch.maxDays} jours par session</span>
-      <small>Le plan est une conséquence du planning : le modifier ici ne change jamais les repas.</small>
     </div>
     ${plan.map((sess) => sessionCard(sess, startWeekday)).join('')}
   `;
@@ -65,7 +64,7 @@ function conservationBlock(sess) {
     <ul style="margin:6px 0 0;padding-left:18px">
       ${sess.conservationAlerts.map((a) => `<li>${esc(a.message)}</li>`).join('')}
     </ul>
-    <small>Rien n'est retiré et le planning n'est pas modifié : à toi de scinder la session, de réduire la durée de conservation dans les paramètres, ou de cuisiner ces composants plus tard.</small>
+    <small>Pour résoudre : scinde la session, réduis la durée de conservation dans les paramètres, ou cuisine ces composants plus tard.</small>
   </div>`;
 }
 

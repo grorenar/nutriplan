@@ -224,6 +224,18 @@ click($('#drawer [data-free-add]'));
 check('curry ajouté au repas', $$('#drawer .item').length === 5 && /Curry/.test($('#drawer').textContent));
 check('curry marqué hors macros', /non compté dans les macros/.test($('#drawer').textContent));
 
+console.log('\n— Chantier rationalisation : « Créer l’aliment » depuis un ingrédient libre (normalizeFood(), jamais un objet partiel)');
+const curryItem = store.getState().meals[0].items.find((it) => it.free?.name === 'Curry');
+const promoteBtn = $$('#drawer [data-promote]').find((b) => b.dataset.promote === curryItem.id);
+click(promoteBtn);
+await wait();
+const promotedFood = store.getState().foods.find((f) => f.name === 'Curry');
+check('aliment créé dans la banque', !!promotedFood);
+check('défauts normalizeFood() appliqués (pas un objet partiel à champs undefined)',
+  promotedFood.brand === '' && promotedFood.fiber === 0 && promotedFood.cookedFactor === 1 &&
+  promotedFood.referenceState === 'pret' && promotedFood.requiresCooking === false &&
+  promotedFood.barcode === null && promotedFood.unitEntry === false);
+
 console.log('\n— Saisie protégée de la synchronisation');
 check('modale ouverte → saisie considérée en cours', app.isEditing() === true);
 const searchField = $('#drawer [data-search]');

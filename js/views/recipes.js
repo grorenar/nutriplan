@@ -60,7 +60,6 @@ function renderFull(root, s, byId) {
         </tbody>
       </table>
     </div>
-    <small>Les macros d'une recette sont toujours recalculées depuis ses ingrédients, jamais stockées.</small>
     ${editing ? formPanel(s, byId) : ''}
   `;
   wireList(root, s);
@@ -229,7 +228,7 @@ function formBodyHtml(r, s, byId) {
         r.kind === 'weight'
           ? `<label class="field">Poids de référence (g)
                <input type="number" min="1" step="1" data-r="baseGrams" value="${num(r.baseGrams, 0)}"></label>
-             <small style="grid-column:1/-1">Calculé automatiquement depuis la composition (${num(portionBase, 0)} g) — modifie-le uniquement si le poids RÉELLEMENT obtenu après cuisson diffère (perte/gain à la cuisson). Sert de référence à l'optimiseur, jamais une contrainte.</small>`
+             <small style="grid-column:1/-1">Calculé automatiquement depuis la composition (${num(portionBase, 0)} g) — modifie-le uniquement si le poids RÉELLEMENT obtenu après cuisson diffère (perte/gain à la cuisson).</small>`
           : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). Utilisée dans un repas, la recette se sélectionne en nombre entier de portions.</small>`
       }
     </div>
@@ -239,7 +238,7 @@ function formBodyHtml(r, s, byId) {
     <div class="items" style="margin:10px 0">${ingredientRows}</div>
     ${
       r.kind === 'weight'
-        ? `<small style="display:block;margin-bottom:6px">Une recette « au poids » ne peut pas contenir d'aliment non fractionnable (décision verrouillée) — une telle recette doit être créée en type « Portion ».</small>`
+        ? `<small style="display:block;margin-bottom:6px">Une recette « au poids » ne peut pas contenir d'aliment non fractionnable — crée-la en type « Portion » pour cet aliment.</small>`
         : ''
     }
     ${ingredientPicker(s)}
