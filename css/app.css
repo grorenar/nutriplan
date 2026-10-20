@@ -177,6 +177,10 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent);
 .pill--warn { background: var(--warn-bg); border-color: #ecd7ae; color: var(--warn); }
 .pill--off { background: var(--off-bg); border-color: #eebeb9; color: var(--off); }
 .pill--accent { background: var(--accent-soft); border-color: #c6ded8; color: var(--accent); }
+/* Variante pour un message plus long qu'un badge (ex. bandeau "quantité
+   prévisionnelle") : .pill reste en nowrap par défaut pour les courts
+   badges existants (×0,70, "batch", etc.) — jamais touché ici. */
+.pill--wrap { display: block; white-space: normal; }
 
 .tag { font-size: var(--fs-xs); color: var(--ink-soft); }
 
@@ -194,6 +198,13 @@ input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent);
 }
 
 table { width: 100%; border-collapse: collapse; font-size: var(--fs-sm); }
+/* Conteneur de défilement horizontal pour un tableau trop large (ex. plan
+   opératoire du batch cooking, nombreuses colonnes numériques) : le tableau
+   garde toutes ses colonnes et défile DANS ce conteneur, jamais la page
+   entière. N'affecte que les tableaux explicitement enveloppés ici — la
+   règle `table` ci-dessus reste inchangée pour tous les autres écrans. */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll table { width: max-content; min-width: 100%; }
 th { text-align: left; font-weight: 560; color: var(--ink-soft); padding: 6px 8px; border-bottom: 1px solid var(--line); }
 td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 tr:last-child td { border-bottom: 0; }

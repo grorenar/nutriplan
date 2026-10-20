@@ -1186,6 +1186,11 @@ await wait();
 
 click($('[data-view="batch"]'));
 check('composants de batch listés', $$('[data-prep]').length > 0);
+check('le tableau "à préparer en batch" est enveloppé dans .table-scroll (débordement contenu, pas la page entière)',
+  !!$('.table-scroll table'));
+check('toutes les colonnes du tableau restent présentes, dont "Cuit obtenu" (jamais masquée pour éviter le débordement)',
+  ['Composant et méthode', 'À sortir', 'Quantité cuite nécessaire', 'Je prépare', 'Cuit attendu', 'Cuit obtenu', 'Surplus']
+    .every((h) => $$('.table-scroll thead th').some((th) => th.textContent.trim() === h)));
 // un composant consommé DIRECTEMENT dans au moins une gamelle (hors recette,
 // qui n'expose jamais le détail de ses ingrédients internes dans les
 // gamelles) : nécessaire pour tester la suggestion de répartition du surplus.
@@ -1286,6 +1291,8 @@ check('formulaire ouvert avec la bonne recette présélectionnée', $('[data-cre
 check('quantité prévisionnelle préremplie (identique à preparedRaw de Batch)', Number($('[data-create-qty]')?.value) === expectedGrams);
 check('la quantité est clairement identifiée comme prévisionnelle, pas réelle',
   /prévisionnelle/.test($('#view').textContent) && /RÉELLEMENT cuisiné/.test($('#view').textContent));
+check('le bandeau prévisionnel peut passer à la ligne (jamais tronqué, .pill--wrap plutôt que .pill nowrap)',
+  !!$('.pill--wrap'));
 
 // la corriger (ce qui a été RÉELLEMENT cuisiné) avant de valider
 change($('[data-create-qty]'), String(expectedGrams + 50));

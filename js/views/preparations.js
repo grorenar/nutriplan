@@ -253,7 +253,7 @@ function createPanel(s) {
     : '';
 
   const fromBatchNote = creating.fromBatch
-    ? `<div class="pill pill--accent" style="display:block;margin-bottom:8px">
+    ? `<div class="pill pill--accent pill--wrap" style="margin-bottom:8px">
          Quantité <strong>prévisionnelle</strong> proposée par Batch cooking${isPortion ? ' (convertie en portions)' : ''} — corrige-la ci-dessous pour indiquer ce que tu as RÉELLEMENT cuisiné.
        </div>`
     : '';

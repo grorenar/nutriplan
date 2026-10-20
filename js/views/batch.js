@@ -184,13 +184,15 @@ function componentsBlock(sess, startWeekday) {
     .join('');
 
   return `<h3>${BATCH_CATEGORY_LABEL.batch}</h3>
-    <table>
-      <thead><tr>
-        <th>Composant et méthode</th><th>À sortir</th><th>Quantité cuite nécessaire</th>
-        <th>Je prépare</th><th>Cuit attendu</th><th>Cuit obtenu</th><th>Surplus</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Composant et méthode</th><th>À sortir</th><th>Quantité cuite nécessaire</th>
+          <th>Je prépare</th><th>Cuit attendu</th><th>Cuit obtenu</th><th>Surplus</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 /* ---------------------------------------------- A' — recettes à préparer en batch (P0.2) */
@@ -233,10 +235,12 @@ function recipesToPrepareBlock(sess, startWeekday) {
     .join('');
 
   return `<h3>Recettes à préparer en batch</h3>
-    <table>
-      <thead><tr><th>Recette et méthode</th><th>Quantité nette nécessaire</th><th>Je prépare</th><th>Surplus</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Recette et méthode</th><th>Quantité nette nécessaire</th><th>Je prépare</th><th>Surplus</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 /**
