@@ -1234,6 +1234,86 @@ console.log('\n— Batch : suggestion de répartition du surplus entre les gamel
 check('la répartition du surplus apparaît dans le détail des gamelles (affichage seul, planning intact)',
   /\(surplus à servir\)/.test($('#view').textContent));
 
+console.log('\n— Plan d’amélioration : lien Batch cooking -> Préparations (A)');
+let aRecipeId;
+const aBeefId = store.getState().foods.find((f) => /Steak haché/.test(f.name)).id;
+store.update((s) => {
+  const r = store.newRecipe('Chili batch A', 'weight');
+  r.items = [store.newRecipeItem(aBeefId, 500, 'cru')];
+  r.baseGrams = 500;
+  r.batchAllowed = true;
+  aRecipeId = r.id;
+  s.recipes.push(r);
+  s.meals[0].items = [...s.meals[0].items, { ...store.newRecipeMealItem(aRecipeId, 600), qty: { thomas: 600, julie: 0 } }];
+});
+await wait();
+click($('[data-view="batch"]'));
+await wait();
+const prepsBefore = store.getState().preparations.length;
+const createPrepBtn = $$('[data-create-prep]').find((b) => b.dataset.createPrep === aRecipeId);
+check('bouton « Créer une préparation » proposé sur la ligne de la recette (A)', !!createPrepBtn);
+const expectedGrams = Number(createPrepBtn.dataset.createPrepGrams);
+check('quantité transmise = quantité prévisionnelle affichée par Batch (preparedRaw)', expectedGrams > 0, `${expectedGrams}`);
+
+click(createPrepBtn);
+await wait();
+check('bascule effective vers l’écran Préparations', $('[data-view="preparations"]')?.getAttribute('aria-current') === 'true');
+check('aucune préparation créée par ce seul clic (jamais automatique)', store.getState().preparations.length === prepsBefore);
+check('formulaire ouvert avec la bonne recette présélectionnée', $('[data-create-recipe]')?.value === aRecipeId);
+check('quantité prévisionnelle préremplie (identique à preparedRaw de Batch)', Number($('[data-create-qty]')?.value) === expectedGrams);
+check('la quantité est clairement identifiée comme prévisionnelle, pas réelle',
+  /prévisionnelle/.test($('#view').textContent) && /RÉELLEMENT cuisiné/.test($('#view').textContent));
+
+// la corriger (ce qui a été RÉELLEMENT cuisiné) avant de valider
+change($('[data-create-qty]'), String(expectedGrams + 50));
+check('quantité prévisionnelle corrigeable comme un champ normal', $('[data-create-qty]').value === String(expectedGrams + 50));
+check('mention « prévisionnelle » retirée dès que l’utilisateur corrige la quantité', !/prévisionnelle/.test($('#view').textContent));
+
+click($('[data-create-cancel]'));
+await wait();
+check('« Fermer » sans confirmer : aucune préparation créée, toujours pas de stock généré',
+  store.getState().preparations.length === prepsBefore);
+
+// on recommence depuis Batch et on va jusqu’au bout cette fois
+click($('[data-view="batch"]'));
+await wait();
+click($$('[data-create-prep]').find((b) => b.dataset.createPrep === aRecipeId));
+await wait();
+click($('[data-create-confirm]'));
+await wait();
+const createdPrep = store.getState().preparations.find((p) => p.recipeId === aRecipeId);
+check('confirmation explicite : la préparation est créée avec la quantité prévisionnelle non corrigée cette fois',
+  !!createdPrep && createdPrep.preparedQuantity === expectedGrams);
+check('le stock est bien actualisé (disponible > 0)', createdPrep && createdPrep.preparedQuantity > 0);
+
+// besoin supplémentaire (deuxième session de batch légitime) pour que la
+// recette redevienne « à préparer » malgré la préparation déjà créée —
+// sinon Batch cooking couvre déjà exactement le besoin et ne propose plus
+// rien à préparer (comportement normal, pas un bug).
+store.update((s) => {
+  s.meals[2].items = [...s.meals[2].items, { ...store.newRecipeMealItem(aRecipeId, 400), qty: { thomas: 400, julie: 0 } }];
+});
+await wait();
+
+// un deuxième passage par Batch -> Préparations pour la MÊME recette doit
+// signaler le doublon possible, sans jamais bloquer une création légitime
+click($('[data-view="batch"]'));
+await wait();
+const secondCreateBtn = $$('[data-create-prep]').find((b) => b.dataset.createPrep === aRecipeId);
+check('la recette redevient « à préparer » : un nouveau besoin non couvert par la préparation existante', !!secondCreateBtn);
+click(secondCreateBtn);
+await wait();
+check('doublon possible signalé (préparation encore disponible pour cette recette)',
+  /encore disponible/.test($('#view').textContent));
+check('le signalement n’est jamais bloquant : le bouton de confirmation reste utilisable', !$('[data-create-confirm]').disabled);
+click($('[data-create-cancel]'));
+await wait();
+
+click($('[data-view="preparations"]'));
+await wait();
+check('l’onglet Préparations reste utilisable directement, sans passer par Batch (création classique toujours là)',
+  !!$('[data-open-create]'));
+
 console.log('\n— Impression');
 click($('#print-btn'));
 click($('#modal [data-print-all]'));

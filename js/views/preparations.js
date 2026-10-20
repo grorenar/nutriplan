@@ -33,7 +33,10 @@ import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 let wizard = null;   // { preparationId, amount, mealIds: Set<string>, catalog: Map<key, {picked, perServiceQty}> }
 let quickUse = null; // { preparationId, mealId, qty }
 let lastResult = null;
-let creating = null;    // { recipeId, qty } — P1.A, création depuis une recette
+let creating = null;    // { recipeId, qty, fromBatch? } — P1.A, création depuis une recette ;
+                         // fromBatch:true quand qty vient d'une quantité prévisionnelle de Batch
+                         // cooking (openCreateFromRecipe ci-dessous) — affiché comme tel, jamais
+                         // confondu avec une quantité déjà réellement cuisinée.
 let createBaseline = null; // instantané de `creating` à l'ouverture (P1 — garde non-sauvegardé)
 let confirmingCloseCreate = false; // le dialogue « Modifications non sauvegardées » est affiché sur ce panneau
 let discardConfirm = null; // { preparationId } — jet de LA TOTALITÉ du disponible, un seul dialogue (2 clics)
@@ -42,6 +45,31 @@ let exhaustedOpen = false; // la section "préparations épuisées" (disponible 
 let deletePrep = null; // { preparationId } — suppression DÉFINITIVE de la préparation elle-même
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif (jet partiel)
 const assignmentsOpen = new Set(); // ids de préparation dont la liste d'affectations est dépliée
+
+/**
+ * Ouvre le panneau « Nouvelle préparation » préremplie depuis l'écran Batch
+ * (bouton « Créer une préparation » sur une ligne de recipesToPrepare) —
+ * même mécanisme de préservation de contexte entre écrans que l'événement
+ * `nutriplan:off-barcode` (app.js). `batchGrams` est TOUJOURS en grammes
+ * (convention de `preparedRaw` côté Batch, cf. derive.js::recipeNeededFrom) ;
+ * converti en nombre de portions ici si la recette est de type `portion`,
+ * pour ne jamais confondre les deux unités entre les deux écrans.
+ * N'écrit RIEN : ouvre seulement le formulaire, pré-rempli et modifiable —
+ * la préparation n'est créée qu'après confirmation explicite (data-create-confirm).
+ */
+export function openCreateFromRecipe(root, recipeId, batchGrams) {
+  const st = getState();
+  const recipe = st.recipes.find((r) => r.id === recipeId);
+  if (!recipe) { toast('Recette introuvable (peut-être supprimée depuis)', 'error'); return; }
+  const isPortion = recipe.kind === 'portion';
+  const refGrams = isPortion ? portionGramsOf(recipe) : (Number(recipe.baseGrams) || 0);
+  const qty = isPortion
+    ? (refGrams > 0 ? Math.max(1, Math.round((Number(batchGrams) || 0) / refGrams)) : '')
+    : Math.max(0, Math.round(Number(batchGrams) || 0));
+  creating = { recipeId, qty, fromBatch: true };
+  createBaseline = { ...creating };
+  render(root);
+}
 
 export function render(root) {
   const s = getState();
@@ -210,6 +238,26 @@ function createPanel(s) {
       </div>`)
     .join('');
 
+  // Doublon possible (information, jamais un blocage) : une autre préparation
+  // de CETTE recette a encore du stock disponible. L'utilisateur reste seul
+  // décisionnaire — préparer deux fois la même recette dans le cycle est
+  // légitime (ex. deux sessions de batch) ; on se contente de le signaler
+  // avec de quoi vérifier avant de continuer.
+  const existingActive = s.preparations.filter((p) => p.recipeId === recipe.id && preparationAvailable(s, p) > 0);
+  const duplicateNote = existingActive.length
+    ? `<div class="tag" style="display:block;margin:8px 0">
+         ⚠️ ${existingActive.length > 1 ? `${existingActive.length} préparations` : 'Une préparation'} de « ${esc(recipe.name)} » encore disponible${existingActive.length > 1 ? 's' : ''} :
+         ${existingActive.map((p) => `${num(preparationAvailable(s, p), 0)} g (${esc(new Date(p.createdAt).toLocaleDateString('fr-FR'))})`).join(', ')}.
+         Vérifie qu'il ne s'agit pas d'un doublon avant de continuer — rien n'empêche une nouvelle préparation légitime de la même recette.
+       </div>`
+    : '';
+
+  const fromBatchNote = creating.fromBatch
+    ? `<div class="pill pill--accent" style="display:block;margin-bottom:8px">
+         Quantité <strong>prévisionnelle</strong> proposée par Batch cooking${isPortion ? ' (convertie en portions)' : ''} — corrige-la ci-dessous pour indiquer ce que tu as RÉELLEMENT cuisiné.
+       </div>`
+    : '';
+
   return `<div class="drawer" data-create-backdrop>
     <div class="drawer__panel" style="width:min(520px,100%)">
       <div class="drawer__head"><div class="row">
@@ -217,12 +265,14 @@ function createPanel(s) {
         <button class="btn btn--ghost" data-create-cancel>Fermer</button>
       </div></div>
       <div class="drawer__body">
+        ${fromBatchNote}
         <label class="field">Recette
           <select data-create-recipe>
             ${s.recipes.map((r) => `<option value="${r.id}" ${r.id === recipe.id ? 'selected' : ''}>${esc(r.name)} (${r.kind === 'portion' ? 'portion' : 'au poids'})</option>`).join('')}
           </select>
         </label>
         <small style="display:block;margin-top:6px">${isPortion ? `Référence : 1 portion = ${num(refGrams, 0)} g` : `Référence : ${num(refGrams, 0)} g`} · ${recipe.items.length} ingrédient(s)</small>
+        ${duplicateNote}
         <div class="items" style="margin:8px 0">${refRows}</div>
 
         <label class="field" style="margin-top:10px">${isPortion ? 'Nombre de portions obtenues' : 'Quantité obtenue (g)'}
@@ -640,10 +690,12 @@ function wire(root, s) {
   root.querySelector('[data-create-recipe]')?.addEventListener('change', (e) => {
     creating.recipeId = e.target.value;
     creating.qty = ''; // changer de recette invalide la quantité (unité différente possible : g vs portions)
+    creating.fromBatch = false; // la prévision de Batch concernait l'ancienne recette, plus celle-ci
     render(root);
   });
   root.querySelector('[data-create-qty]')?.addEventListener('change', (e) => {
     creating.qty = e.target.value === '' ? '' : Math.max(0, Number(e.target.value) || 0);
+    creating.fromBatch = false; // dès que l'utilisateur corrige la quantité, ce n'est plus la prévision telle quelle
     render(root);
   });
   root.querySelector('[data-create-confirm]')?.addEventListener('click', () => {

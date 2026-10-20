@@ -205,6 +205,8 @@ function recipesToPrepareBlock(sess, startWeekday) {
       return `<tr>
         <td>
           <strong>${esc(c.recipe.name)}</strong> <span class="tag">recette</span>
+          <button type="button" class="btn btn--sm" style="margin-left:6px"
+            data-create-prep="${esc(c.recipe.id)}" data-create-prep-grams="${c.preparedRaw}">Créer une préparation</button>
           ${method ? `<div class="tag">${method}</div>` : '<div class="tag muted">aucune consigne de cuisson définie dans la fiche recette</div>'}
           ${c.note ? `<div class="tag">${esc(c.note)}</div>` : ''}
           ${
@@ -347,6 +349,20 @@ const shortCat = (category) =>
   ({ batch: 'batch', cook: 'cuisson du jour', assemble: 'assemblage', free: 'libre' }[category] || '');
 
 function wire(root) {
+  // Lien Batch -> Préparations (lecture seule ici : ce bouton ne crée RIEN
+  // par lui-même — il ouvre juste l'écran Préparations avec le formulaire
+  // prérempli ; la création reste une action explicite de l'utilisateur sur
+  // CET écran-là). Même mécanisme de contexte inter-écrans que
+  // `nutriplan:off-barcode` (app.js) : un événement DOM, écouté une seule
+  // fois au niveau de l'application.
+  root.querySelectorAll('[data-create-prep]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      document.dispatchEvent(new CustomEvent('nutriplan:create-preparation', {
+        detail: { recipeId: e.currentTarget.dataset.createPrep, grams: Number(e.currentTarget.dataset.createPrepGrams) || 0 },
+      }));
+    })
+  );
+
   root.querySelectorAll('[data-prep]').forEach((input) =>
     input.addEventListener('change', (e) => {
       const key = e.target.dataset.prep;

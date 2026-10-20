@@ -153,6 +153,14 @@ function boot() {
     foods.openFoodFormWithBarcode(document.getElementById('view'), e.detail?.barcode);
   });
 
+  // Lien Batch cooking -> Préparations (bouton « Créer une préparation » sur
+  // une ligne de recettes à préparer) : ouvre le formulaire de création
+  // prérempli, jamais une création automatique (cf. batch.js/preparations.js).
+  document.addEventListener('nutriplan:create-preparation', (e) => {
+    navigate('preparations');
+    preparations.openCreateFromRecipe(document.getElementById('view'), e.detail?.recipeId, e.detail?.grams);
+  });
+
   const hash = location.hash.replace('#', '');
   if (VIEWS.some((v) => v.id === hash)) current = hash;
   window.addEventListener('hashchange', () => {
