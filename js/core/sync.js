@@ -694,6 +694,19 @@ export async function pull() {
   if (!c) throw new Error('Supabase non configuré');
   if (!(await currentUser())) throw new Error('Non connecté');
 
+  // Capturé AVANT les requêtes séquentielles ci-dessous, pour la vérification
+  // plus bas : seule une modification locale survenue PENDANT ce pull (donc
+  // après cette ligne) doit faire basculer vers push() au lieu de remplacer.
+  // Un « dirty » déjà vrai avant même l'appel — notamment parce qu'un push
+  // automatique précédent a été bloqué par assertNotStale() (conflit) sans
+  // jamais retomber à false — ne doit jamais empêcher une récupération
+  // explicitement demandée par l'utilisateur : c'est exactement ce que le
+  // bouton « Récupérer depuis le cloud » sert à résoudre (bug réel corrigé :
+  // sans cette distinction, pull() rebasculait systématiquement vers push(),
+  // qui échouait aussitôt avec la même erreur de conflit — la récupération
+  // semblait ne jamais fonctionner).
+  const dirtyBeforePull = getState().meta.dirty;
+
   const data = {};
   for (const table of TABLES) {
     const { data: rows, error } = await c.from(table).select('*');
@@ -714,7 +727,9 @@ export async function pull() {
   // verrouillée), mais rien ne protégeait la fenêtre PENDANT ces requêtes :
   // un remplacement en fin de pull() écrasait alors silencieusement l'ajout
   // local, sans erreur, sans le renvoyer jamais (bug réel reproduit).
-  if (getState().meta.dirty) {
+  // On ne compare qu'à l'état AVANT cet appel (dirtyBeforePull) : un « dirty »
+  // déjà présent avant le début du pull ne doit pas rediriger vers push().
+  if (!dirtyBeforePull && getState().meta.dirty) {
     await push();
     return { seeded: false, pushedInstead: true };
   }

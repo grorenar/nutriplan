@@ -332,6 +332,49 @@ await test('« Récupérer du cloud » reste un forçage manuel opérationnel', 
   check('aucune erreur de synchronisation', !getState().meta.syncError);
 });
 
+await test('« Récupérer du cloud » résout bien un conflit, même si dirty était déjà vrai avant le clic (bug réel corrigé)', async () => {
+  // Reproduction exacte du scénario signalé : l'appareil A a déjà poussé une
+  // modification que cet appareil (B) n'a jamais vue ; B a lui-même une
+  // modification locale non envoyée. La synchronisation automatique tente
+  // donc un push, qui est bloqué par assertNotStale() (conflit) — meta.dirty
+  // reste vrai puisque le push n'a jamais abouti. L'utilisateur clique alors
+  // sur « Récupérer depuis le cloud » pour résoudre ce conflit : avant le
+  // correctif, pull() voyait dirty=true et rebasculait silencieusement vers
+  // push(), qui échouait aussitôt avec la MÊME erreur de conflit — la
+  // récupération semblait ne jamais fonctionner.
+  const avantB = defaultState();
+  const remoteAvantB = { tables: remoteFrom(avantB) };
+  remoteAvantB.tables.settings[0].updated_at = '2026-01-01T00:00:00.000Z';
+  const stampAvantB = asPostgresStamp(remoteAvantB.tables.settings[0].updated_at);
+
+  const distant = defaultState();
+  distant.foods.push({ ...distant.foods[0], id: 'f_A', name: 'Version distante (appareil A)' });
+  const remote = useRemote({ tables: remoteFrom(distant) });
+  remote.tables.settings[0].updated_at = '2026-01-02T00:00:00.000Z';
+
+  const local = defaultState();
+  local.foods.push({ ...local.foods[0], id: 'f_B', name: 'Modification locale (appareil B)' });
+  setLocal(local, { dirty: true, remoteStamp: stampAvantB });
+
+  // 1) la synchronisation automatique tente un push, bloqué par le conflit —
+  // reproduit exactement l'état affiché dans l'écran Paramètres (bandeau rouge).
+  const auto = await syncNow();
+  check('synchro auto : conflit détecté, rien écrasé', auto.action === 'error' && getState().meta.syncErrorKind === 'conflict');
+  check('dirty reste vrai : le push n’a jamais abouti', getState().meta.dirty === true);
+
+  // 2) l'utilisateur clique sur « Récupérer depuis le cloud » (sync.pull())
+  const res = await pull();
+  check('pull() réussit enfin : plus aucune exception remontée', res && res.seeded === false);
+  check('les données distantes (A) ont bien été appliquées en local',
+    !!foodNamed(getState(), 'Version distante (appareil A)'));
+  check('la modification locale non envoyée (B) n’est plus l’état courant (remplacement assumé, comme annoncé par la confirmation)',
+    !foodNamed(getState(), 'Modification locale (appareil B)'));
+  check('l’état est marqué synchronisé, plus aucune erreur de conflit résiduelle',
+    getState().meta.dirty === false && !getState().meta.syncError && !getState().meta.syncErrorKind);
+  check('le métadonnée remoteStamp provient bien de la version réellement récupérée',
+    sameStamp(getState().meta.remoteStamp, stampOf(remote)));
+});
+
 await test('Saisie en cours : aucune récupération ne détruit le formulaire', async () => {
   const base = { configured: true, online: true, authenticated: true };
   check('saisie en cours + base distante modifiée → récupération reportée',
