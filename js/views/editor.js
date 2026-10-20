@@ -16,12 +16,13 @@ import {
   conversionInfo, stateLabel, recipeAsVirtualFood, preparationAsVirtualFood, resolveItemFood,
   resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf,
 } from '../core/nutrition.js';
-import { esc, num, normalize, toast, uid } from '../core/util.js';
+import { esc, num, toast, uid } from '../core/util.js';
 import { analyzeMealVolume } from '../core/meal-volume.js';
 import { preparationAvailable, zeroWasteSlotsFor } from '../core/derive.js';
 import { normalizeBarcode } from '../core/off.js';
 import { isScannerSupported, openScannerPanel, closeScannerPanel } from './barcode-panel.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
+import { filterFoods, foodFilterChips, wireFoodFilterChips } from './food-picker.js';
 
 let ctx = null; // { kind, id }
 let pickerQuery = '';
@@ -566,15 +567,9 @@ function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
       </div>`;
 }
 
-/** Liste filtrée des aliments proposés (recherche + filtres). */
+/** Liste filtrée des aliments proposés (recherche + filtres — food-picker.js, partagé avec recipes.js). */
 function pickerList(state) {
-  const q = normalize(pickerQuery);
-  let list = state.foods;
-  if (pickerCategory === 'fav') list = list.filter((f) => f.favorite);
-  else if (pickerCategory === 'recent') list = list.filter((f) => f.lastUsed).sort((a, b) => (b.lastUsed > a.lastUsed ? 1 : -1));
-  else if (pickerCategory !== 'all') list = list.filter((f) => f.category === pickerCategory);
-  if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
-  return list.slice(0, 40);
+  return filterFoods(state.foods, { query: pickerQuery, category: pickerCategory }).slice(0, 40);
 }
 
 /** HTML de la seule liste de résultats. */
@@ -607,17 +602,7 @@ function updateResults() {
 }
 
 function renderPicker(state, entity, recipesMap, preparationsMap) {
-  const chips = [
-    ['all', 'Tous'],
-    ['fav', 'Favoris'],
-    ['recent', 'Récents'],
-    ...CATEGORIES.map((c) => [c.id, c.label]),
-  ]
-    .map(
-      ([id, label]) =>
-        `<button class="chip" data-cat="${id}" aria-pressed="${pickerCategory === id}">${esc(label)}</button>`
-    )
-    .join('');
+  const chips = foodFilterChips(pickerCategory);
 
   const personSelector = entity.sameComposition
     ? ''
@@ -1005,15 +990,7 @@ function wire(root, entity) {
     updateResults();
   });
 
-  root.querySelectorAll('[data-cat]').forEach((chip) => {
-    chip.addEventListener('click', (e) => {
-      pickerCategory = e.currentTarget.dataset.cat;
-      for (const c of root.querySelectorAll('[data-cat]')) {
-        c.setAttribute('aria-pressed', String(c.dataset.cat === pickerCategory));
-      }
-      updateResults();
-    });
-  });
+  wireFoodFilterChips(root, 'data-cat', (id) => { pickerCategory = id; updateResults(); });
 
   root.querySelectorAll('[data-target-person]').forEach((chip) => {
     chip.addEventListener('click', (e) => {

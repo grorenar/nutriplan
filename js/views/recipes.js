@@ -12,17 +12,19 @@ import {
   portionGramsOf,
 } from '../core/nutrition.js';
 import { unitLabel, unitHint } from './editor.js';
-import { esc, num, normalize, toast, deepCopy } from '../core/util.js';
+import { esc, num, toast, deepCopy } from '../core/util.js';
 import { normalizeBarcode } from '../core/off.js';
 import { isScannerSupported, openScannerPanel, closeScannerPanel } from './barcode-panel.js';
 import { isDirty, unsavedConfirmModal } from './confirm-unsaved.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
+import { filterFoods, foodFilterChips, wireFoodFilterChips } from './food-picker.js';
 
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
 let editing = null; // id de recette, ou 'new'
 let formDraft = null; // copie de travail, jamais écrite dans l'état avant "Enregistrer"
 let ingQuery = '';
+let ingCategory = 'all'; // 'all' | 'fav' | 'recent' | id de catégorie — même filtre que l'éditeur de repas (food-picker.js)
 let formBaseline = null;   // P2 : instantané du brouillon à l'ouverture, pour détecter une modification non sauvegardée
 let confirmingClose = false; // P2 : le dialogue « Modifications non sauvegardées » est affiché
 let escBound = false;      // P2 : évite d'empiler plusieurs écouteurs Échap entre deux rendus
@@ -111,13 +113,10 @@ function currentDraft(s) {
 
 /** HTML de la seule liste de résultats (réutilisée telle quelle par updateIngredientResults()). */
 function ingredientResults(state) {
-  const q = normalize(ingQuery);
-  let list = state.foods;
-  if (q) list = list.filter((f) => normalize(`${f.name} ${f.brand}`).includes(q));
-  list = list.slice(0, 30);
+  const list = filterFoods(state.foods, { query: ingQuery, category: ingCategory }).slice(0, 30);
   return list.length
     ? list.map((f) => `<button data-ing-add="${f.id}">
-        <strong>${esc(f.name)}</strong>${isWholeUnitFood(f) ? ' <span class="tag">non fractionnable</span>' : ''}
+        <strong>${esc(f.name)}</strong>${f.favorite ? ' ★' : ''}${isWholeUnitFood(f) ? ' <span class="tag">non fractionnable</span>' : ''}
         <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal / 100 g</div>
       </button>`).join('')
     : `<div style="padding:12px" class="muted">Aucun ingrédient ne correspond.</div>`;
@@ -128,6 +127,7 @@ function ingredientPicker(state) {
     <input type="text" data-ing-search value="${esc(ingQuery)}" placeholder="Rechercher un ingrédient…" style="flex:1;min-width:180px">
     ${isScannerSupported() ? '<button class="btn btn--sm" data-scan-barcode type="button">📷 Scanner un code-barres</button>' : ''}
   </div>
+  <div class="chips" style="margin:8px 0">${foodFilterChips(ingCategory, 'data-ing-cat')}</div>
   ${barcodeResultHtml()}
   <div class="picker__results" style="position:static;border:1px solid var(--line);border-radius:var(--radius-sm);max-height:200px;margin-top:6px">
     ${ingredientResults(state)}
@@ -359,6 +359,7 @@ function resetForm() {
   editing = null;
   formDraft = null;
   ingQuery = '';
+  ingCategory = 'all';
   barcodeResult = null;
   formBaseline = null;
   confirmingClose = false;
@@ -489,6 +490,8 @@ function wireDrawerBody(root, s) {
     ingQuery = e.target.value;
     updateIngredientResults(root);
   });
+
+  wireFoodFilterChips(root, 'data-ing-cat', (id) => { ingCategory = id; updateIngredientResults(root); });
 
   wireIngredientAddButtons(root);
 

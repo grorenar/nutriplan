@@ -779,6 +779,45 @@ check('toast de confirmation', /Recette enregistrée/.test(document.getElementBy
 check('la recette apparaît dans la liste', /Riz aux légumes/.test($('#view').textContent));
 check('type et référence affichés', /Au poids/.test($('#view').textContent) && /800 g/.test($('#view').textContent));
 
+console.log('\n— Écran Recettes : filtres de recherche d’ingrédients (catégories/favoris/récents), harmonisés avec l’éditeur de repas');
+click($('[data-new]'));
+await wait();
+check('chips de filtre proposées (Tous/Favoris/Récents + catégories)', $$('[data-ing-cat]').length > 3);
+const allCount = $$('[data-ing-add]').length;
+
+const favChip = $$('[data-ing-cat]').find((b) => b.dataset.ingCat === 'fav');
+click(favChip);
+await wait();
+check('chip Favoris activée (aria-pressed)', favChip.getAttribute('aria-pressed') === 'true');
+const favResults = $$('[data-ing-add]');
+check('filtre Favoris : au moins un résultat dans les données de test', favResults.length > 0, `${favResults.length}`);
+check('filtre Favoris : tous les résultats sont bien marqués favoris (★)', favResults.every((b) => /★/.test(b.textContent)));
+
+const recentChip = $$('[data-ing-cat]').find((b) => b.dataset.ingCat === 'recent');
+click(recentChip);
+await wait();
+check('chip Récents activée, Favoris désactivée (une seule sélection à la fois)',
+  recentChip.getAttribute('aria-pressed') === 'true' && favChip.getAttribute('aria-pressed') === 'false');
+check('filtre Récents : au moins un résultat (des aliments ont déjà été utilisés plus haut dans ce scénario)',
+  $$('[data-ing-add]').length > 0, `${$$('[data-ing-add]').length}`);
+
+const catChip = $$('[data-ing-cat]').find((b) => b.dataset.ingCat === 'feculent');
+click(catChip);
+await wait();
+check('filtre par catégorie (féculent) : au moins un résultat', $$('[data-ing-add]').length > 0);
+
+const allChip = $$('[data-ing-cat]').find((b) => b.dataset.ingCat === 'all');
+click(allChip);
+await wait();
+check('retour à « Tous » : la recherche textuelle reste combinable avec les filtres',
+  $$('[data-ing-add]').length === allCount);
+type($('[data-ing-search]'), 'poulet');
+check('recherche texte + filtre « Tous » combinés sans erreur', $$('[data-ing-add]').every((b) => /poulet/i.test(b.textContent)));
+type($('[data-ing-search]'), '');
+await wait();
+click($('[data-form-cancel]')); // brouillon vierge (jamais modifié dans ce bloc) : ferme sans confirmation
+await wait();
+
 console.log('\n— Écran Recettes : recherche d’ingrédient, frappe caractère par caractère (régression « clipping »)');
 // Reproduit une VRAIE saisie clavier (un événement `input` par caractère,
 // contrairement à type()/change() qui posent la valeur finale en un seul
@@ -1226,6 +1265,33 @@ check('cycle passé à 6 jours', $$('.day').length === 6);
 click($('[data-view="settings"]'));
 await wait();
 check('mode local expliqué dans le compte', /Mode local uniquement/.test($('#view').textContent));
+
+console.log('\n— Plan d’amélioration : clarifications ergonomiques (3A, 3B, D, F, H)');
+check('« Ajustement automatique » déplacé dans Objectifs nutritionnels (3B)',
+  $('[data-autoadjust]')?.closest('.card')?.querySelector('h2')?.textContent === 'Objectifs nutritionnels');
+check('la case « Ajustement automatique » fonctionne toujours après déplacement',
+  $('[data-autoadjust]').checked === store.getState().settings.autoAdjust);
+check('export/import JSON distingué de l’enregistrement auto et du cloud (D)',
+  /distinct de l.enregistrement automatique/.test($('#view').textContent.replace(/’/g, "'")));
+
+click($('[data-view="planning"]'));
+await wait();
+check('bouton renommé « Suggestions du cycle », jamais « Optimiser » (3A)',
+  /Suggestions du cycle/.test($('#view').textContent) && !/Optimiser le cycle/.test($('#view').textContent));
+
+click($('[data-view="breakfasts"]'));
+await wait();
+check('compteur catalogue : précision "à saisir toi-même" affichée (F)',
+  /à saisir toi-même/.test($('#view').textContent));
+
+check('pastille de statut mobile présente dans la barre du haut (H)', !!$('#status-mobile'));
+check('pastille mobile dans le même état que la pastille desktop (ici : mode local, aucune classe d’erreur)',
+  $('#status-mobile').className === 'topbar__status ');
+click($('#status-mobile'));
+check('tap sur la pastille mobile ouvre Paramètres (H)', $('[data-view="settings"]')?.getAttribute('aria-current') === 'true');
+
+click($('[data-view="settings"]'));
+await wait();
 
 console.log('\n— P4 : écran « Préparations » — stock et assistant de répartition');
 const p4Beef = store.getState().foods.find((f) => /Steak haché/.test(f.name));

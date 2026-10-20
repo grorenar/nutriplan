@@ -24,6 +24,8 @@ export async function render(root) {
         <button class="btn btn--sm" data-reset-targets>Rétablir les objectifs par défaut</button>
       </div>
       <small>Les objectifs de la journée sont indicatifs : l'application vise les objectifs par repas, sans corriger les éventuelles incohérences.</small>
+      <label class="check" style="margin-top:10px"><input type="checkbox" data-autoadjust ${s.settings.autoAdjust ? 'checked' : ''}> Ajustement automatique des quantités</label>
+      <small>Recalcule automatiquement les quantités d'un repas pour viser ces objectifs, à chaque modification. Peut aussi être activé/désactivé ponctuellement depuis l'éditeur de repas.</small>
     </div>
 
     <div class="card">
@@ -45,7 +47,6 @@ export async function render(root) {
         <label class="field" style="max-width:220px">Conservation maximale (jours)
           <input type="number" min="1" max="7" data-batch-days value="${s.settings.batch.maxDays}"></label>
       </div>
-      <label class="check" style="margin-top:8px"><input type="checkbox" data-autoadjust ${s.settings.autoAdjust ? 'checked' : ''}> Ajustement automatique des quantités</label>
     </div>
 
     <div class="card">
@@ -59,6 +60,7 @@ export async function render(root) {
         <button class="btn btn--danger" data-reset-cycle>Réinitialiser le cycle</button>
       </div>
       <small>La réinitialisation du cycle efface le planning, les achats cochés, les quantités de batch et les compteurs d'utilisation des catalogues. Elle ne touche ni à la banque alimentaire, ni aux objectifs, ni aux options des catalogues.</small>
+      <small style="display:block;margin-top:8px" class="muted">Export/Import JSON : un fichier portable que tu télécharges ou réimportes toi-même — distinct de l'enregistrement automatique dans ce navigateur (silencieux, à chaque modification) et du compte cloud ci-dessous (partagé entre appareils).</small>
       ${
         importReport
           ? `<div class="card" style="margin-top:12px;border-color:#ecd7ae;background:var(--warn-bg)">
@@ -244,6 +246,7 @@ async function renderAccount(root) {
          <span class="spacer"></span>
          <button class="btn" data-signout>Déconnexion</button>
        </div>
+       <small class="muted">La synchronisation se fait déjà automatiquement en arrière-plan après chaque modification ; ces deux boutons servent à forcer un envoi/une récupération immédiats (ex. après une coupure réseau) — « Récupérer » remplace les données de cet appareil par celles du cloud.</small>
        <div class="row" style="margin-top:12px">
          <input type="password" data-newpw placeholder="Nouveau mot de passe" style="max-width:240px">
          <button class="btn btn--sm" data-changepw>Modifier le mot de passe</button>

@@ -93,11 +93,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 .rail__nav button:hover { background: #1f313b; color: #fff; }
 .rail__nav button[aria-current="true"] { background: var(--accent); color: #fff; font-weight: 560; }
-.rail__foot { margin-top: auto; padding: 14px; font-size: var(--fs-xs); color: #8fa3ad; }
-.rail__foot .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #6b7f89; }
-.rail__foot .dot.is-sync { background: #4cae7f; }
-.rail__foot .dot.is-dirty { background: #d8a13a; }
-.rail__foot .dot.is-error { background: #d15b52; }
+.rail__foot { margin-top: auto; padding: 14px; font-size: var(--fs-xs); color: #8fa3ad; cursor: pointer; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #6b7f89; }
+.dot.is-sync { background: #4cae7f; }
+.dot.is-dirty { background: #d8a13a; }
+.dot.is-error { background: #d15b52; }
+/* Pastille de statut repliée dans la barre du haut : visible seulement là où
+   .rail__foot est masqué (mobile, cf. media query plus bas) — même code
+   couleur, sans le libellé texte (pas de place), cliquable vers Paramètres. */
+.topbar__status { display: none; width: 9px; height: 9px; border-radius: 50%; background: #6b7f89; cursor: pointer; flex: none; }
+.topbar__status.is-sync { background: #4cae7f; }
+.topbar__status.is-dirty { background: #d8a13a; }
+.topbar__status.is-error { background: #d15b52; }
 
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
@@ -344,6 +351,7 @@ tr:last-child td { border-bottom: 0; }
     flex-direction: row; z-index: 30; border-top: 1px solid #0e171d;
   }
   .rail__brand, .rail__foot { display: none; }
+  .topbar__status { display: inline-block; }
   .rail__nav {
     flex-direction: row; width: 100%; padding: 4px 2px;
     overflow-x: auto; gap: 0;

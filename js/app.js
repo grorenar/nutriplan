@@ -110,6 +110,12 @@ function renderStatus() {
   }
   box.innerHTML = `<span class="dot ${cls}"></span>${label}`;
   box.title = s.meta.syncError || label;
+  // Pastille repliée pour mobile/iPad (.rail__foot est masqué sous 860px,
+  // cf. app.css) : même état, sans le libellé (pas de place dans la barre du
+  // haut) — un tap ouvre Paramètres, où le détail technique est déjà affiché
+  // en toutes lettres (jamais seulement au survol, inaccessible au tactile).
+  const mobile = document.getElementById('status-mobile');
+  if (mobile) { mobile.className = `topbar__status ${cls}`; mobile.title = s.meta.syncError || label; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -126,6 +132,13 @@ function boot() {
   });
 
   document.getElementById('print-btn').addEventListener('click', openPrintDialog);
+
+  // Tap/clic sur le statut de synchro (rail ou pastille mobile) : ouvre
+  // Paramètres, où le détail technique d'une éventuelle erreur est déjà
+  // affiché en clair (cf. renderAccount() dans settings.js) — remplace le
+  // seul `title` (survol, jamais accessible au tactile) comme moyen d'accès.
+  document.getElementById('status')?.addEventListener('click', () => navigate('settings'));
+  document.getElementById('status-mobile')?.addEventListener('click', () => navigate('settings'));
 
   // depuis l'écran Courses : ouvrir la fiche d'un aliment sans prix
   document.addEventListener('nutriplan:open-food', (e) => {

@@ -197,6 +197,7 @@ function optionCard(opt, kind, byId, s, recipesMap = {}, preparationsMap = {}) {
         ? `Total : Thomas ${total.thomas} · Julie ${total.julie} → comptée dans les courses`
         : 'Non utilisée dans ce cycle → hors courses'
     }</small>
+    <small class="muted" style="display:block;margin-top:2px">Nombre de fois où tu prévois de la consommer ce cycle — à saisir toi-même avec les + / − ci-dessus, ce n'est pas déduit automatiquement du planning.</small>
     <div class="meal-card__actions">
       <button class="btn btn--sm btn--primary" data-edit="${opt.id}">Modifier</button>
       <button class="btn btn--sm" data-dup="${opt.id}">Dupliquer</button>

@@ -42,7 +42,7 @@ export function render(root) {
     <div class="row" style="margin-bottom:14px">
       <span class="pill pill--accent">Cycle de ${duration} jours — démarrage ${esc(dayName(startWeekday, 0).toLowerCase())}</span>
       <span class="spacer"></span>
-      <button class="btn" data-optimize>Optimiser le cycle</button>
+      <button class="btn" data-optimize>Suggestions du cycle</button>
     </div>
     ${showSuggestions ? suggestionsPanel(s, byId, recipesMap, preparationsMap) : ''}
     ${days.join('')}
