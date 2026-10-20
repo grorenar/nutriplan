@@ -451,22 +451,31 @@ function renderRecipeOrPreparationRow(it, byId, recipesMap, preparationsMap) {
       ${composition ? `<small>${esc(composition)}</small>` : ''}
     </div>`;
   }).join('');
-  return `<div class="item">
-    <div class="item__main">
-      <div class="item__name">${esc(name)} ${badge}</div>
-      <div class="item__meta">${isPrep ? stockLabel(prep, disponible) : 'Référence directe — pas encore préparée (calcul inverse)'}</div>
+  // P1.B : même principe que renderItemRow() — zéro reste et section réglés
+  // une fois, rarement retouchés, regroupés dans le menu contextuel plutôt
+  // que posés en permanence sur la ligne.
+  const prepMenu = `<details class="item-menu">
+    <summary aria-label="Plus d'options pour ${esc(name)}">⋯</summary>
+    <div class="item-menu__body">
       ${
         isPrep
-          ? `<label class="check" style="margin-top:6px">
+          ? `<label class="check">
                <input type="checkbox" data-zero-waste="${it.id}" ${it.zeroWaste ? 'checked' : ''}>
                Mode zéro reste (écouler cette préparation en priorité, même au-delà des objectifs)
              </label>`
           : ''
       }
+      ${sectionSelect(it)}
+    </div>
+  </details>`;
+  return `<div class="item">
+    <div class="item__main">
+      <div class="item__name">${esc(name)} ${badge}</div>
+      <div class="item__meta">${isPrep ? stockLabel(prep, disponible) : 'Référence directe — pas encore préparée (calcul inverse)'}${isPrep && it.zeroWaste ? ' · zéro reste' : ''}</div>
       <div class="item__qty" style="margin-top:8px">${qtyBoxes}</div>
     </div>
     <div class="item__tools">
-      ${sectionSelect(it)}
+      ${prepMenu}
       <button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button>
     </div>
   </div>`;
@@ -509,6 +518,20 @@ function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
               : `valeurs pour 100 g ${esc(stateLabel(food.referenceState).toLowerCase())}`
         }</small>
       </div>`;
+      // P1.B : options secondaires (réglées une fois, rarement retouchées —
+      // état pesé, saisie en unités, section) regroupées dans un menu
+      // contextuel (<details>, même mécanisme de repli que foods.js) plutôt
+      // que posées en permanence sur la ligne. Quantités/verrous/suppression
+      // restent directement visibles : ce sont les seules actions touchées
+      // à CHAQUE édition.
+      const itemMenu = `<details class="item-menu">
+        <summary aria-label="Plus d'options pour ${esc(food.name)}">⋯</summary>
+        <div class="item-menu__body">
+          ${stateBox}
+          ${isUnitFood(food) ? `<button class="btn btn--sm" data-unit-toggle="${food.id}">Saisie : ${food.unitEntry ? esc(unitLabel(food, 1)) : 'grammes'}</button>` : ''}
+          ${sectionSelect(it)}
+        </div>
+      </details>`;
 
       // Saisie en unités ou en grammes ; dans les deux cas, la quantité stockée
       // reste un multiple entier de gramsPerUnit pour un aliment non fractionnable.
@@ -543,25 +566,17 @@ function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
       return `<div class="item">
         <div class="item__main">
           <div class="item__name">${esc(food.name)}${food.brand ? ` <span class="tag">${esc(food.brand)}</span>` : ''}</div>
-          <div class="item__meta">${esc(cat)}${food.batchAllowed ? '' : ' · cuisson du jour'}</div>
-          <div class="row row--tight" style="margin-top:6px">
-            ${
-              isUnitFood(food)
-                ? `<button class="btn btn--sm" data-unit-toggle="${food.id}">Saisie : ${food.unitEntry ? esc(unitLabel(food, 1)) : 'grammes'}</button>`
-                : ''
-            }
-            ${isWholeUnitFood(food) ? `<span class="tag">multiples de ${num(food.gramsPerUnit, 0)} g (pas du curseur)</span>` : ''}
-          </div>
+          <div class="item__meta">${esc(cat)}${food.batchAllowed ? '' : ' · cuisson du jour'}${isWholeUnitFood(food) ? ` · multiples de ${num(food.gramsPerUnit, 0)} g` : ''}</div>
           ${
             conv.needed && !conv.possible
               ? `<div class="card sync-error" style="margin-top:8px;padding:8px;border-color:#eebeb9;background:var(--off-bg)">${esc(conv.message)}</div>`
               : ''
           }
-          <div class="item__qty" style="margin-top:8px">${qtyBoxes}${stateBox}</div>
+          <div class="item__qty" style="margin-top:8px">${qtyBoxes}</div>
           ${conv.message ? `<div class="tag sync-error" style="margin-top:6px">⚠️ ${esc(conv.message)}</div>` : ''}
         </div>
         <div class="item__tools">
-          ${sectionSelect(it)}
+          ${itemMenu}
           <button class="btn btn--sm btn--danger" data-del="${it.id}">Retirer</button>
         </div>
       </div>`;

@@ -233,7 +233,7 @@ n'apparaît que dans l'éditeur de repas, jamais dans le planning.
 
 | Écran | Contenu |
 |---|---|
-| Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication (nom et `nameAuto` copiés ensemble), « Vider ce repas » (remet le repas à l'état vraiment vide, `nameAuto` repasse à `true`), bouton « Optimiser le cycle » (suggestions uniquement) |
+| Planning | cycle de N jours, déjeuner + dîner par jour, macros des deux personnes visibles sur chaque carte, duplication (nom et `nameAuto` copiés ensemble), « Vider ce repas » (remet le repas à l'état vraiment vide, `nameAuto` repasse à `true`), bouton « Suggestions du cycle » (n'affiche que des suggestions, jamais appliquées automatiquement) |
 | Aliments | banque complète, recherche, favoris, création/modification/suppression — la suppression est bloquée si l'aliment est encore référencé dans une recette (composition live ou `recipeSnapshot` figé d'une préparation existante), avec un avertissement (non bloquant) s'il est seulement utilisé dans des repas/catalogues ; section dépliable « Doublons possibles » (même détection que la popup de création, `findSimilarFoods`/`findDuplicateGroups`) proposant pour chaque groupe un choix explicite de l'aliment à conserver puis une confirmation bloquante avant toute fusion — jamais de fusion automatique sur la seule similarité de nom — ou, pour un faux positif, de l'écarter définitivement (« Pas un doublon », réversible depuis « Doublons ignorés ») sans toucher aux aliments |
 | Recettes | composition à partir de la banque alimentaire, recherche d'ingrédients avec filtres Tous/Favoris/Récents/catégorie (combinables avec la recherche texte, mêmes capacités que l'éditeur de repas — `js/views/food-picker.js`), type `weight` (poids continu, échelle `baseGrams`) ou `portion` (unité indivisible), consignes de cuisson/conservation, `batchAllowed` ; la suppression est bloquée tant qu'une préparation existe pour cette recette, ou qu'elle est encore référencée directement (sans préparation) dans un repas ou un catalogue |
 | Préparations et distribution | matérialisation d'une recette en stock réel (quantité préparée, figée dans `recipeSnapshot`), répartition éditable vers les repas, mode zéro reste, jet total ou partiel du reliquat (historique des pertes jamais effacé), suppression définitive d'une préparation (avec avertissement si du stock reste, bloquée tant que des affectations existent) ; une préparation épuisée (stock à 0) est masquée de la liste active sans jamais être supprimée des données ; accessible aussi depuis Batch cooking (bouton « Créer une préparation » sur une recette à préparer — voir ci-dessous), qui ne fait qu'ouvrir ce formulaire préremplie avec la recette et la quantité prévisionnelle, jamais une création automatique |
@@ -284,6 +284,20 @@ millisecondes dès quelques centaines d'aliments, elle ne tournait auparavant qu
 la recherche ou chaque clic de filtre — sans aucun rapport avec les doublons — ce qui aurait gelé
 l'interface sur une banque alimentaire conséquente. Elle ne se recalcule désormais que si la banque
 a réellement changé.
+
+### Éditeur de repas : menu contextuel des options secondaires
+
+Chaque ligne d'ingrédient de l'éditeur de repas (`views/editor.js`) ne garde directement visibles
+que les actions touchées à chaque édition : quantité par personne, verrou, suppression (et, pour un
+ingrédient libre, « Créer l'aliment »). Les options réglées une fois et rarement retouchées — état
+pesé (cru/cuit/égoutté/prêt), saisie en unités/grammes, section du repas, mode zéro reste d'une
+préparation — sont regroupées dans un menu contextuel (`<summary>⋯</summary>`, bouton `.item-menu`
+de 38×38 px pour rester facile à viser au doigt). Implémenté avec `<details>`, le même mécanisme de
+repli déjà utilisé par les sections dépliables de l'écran Aliments (`views/foods.js`) : aucun
+JavaScript d'ouverture/fermeture à écrire. La valeur courante d'une option repliée reste néanmoins
+toujours visible ailleurs sur la ligne (état pesé dans le texte des macros, unité à côté du champ de
+quantité, section via le regroupement par en-tête, « · zéro reste » dans la ligne de méta-info) :
+replier le contrôle ne masque jamais l'information.
 
 ## 5. Mise en service
 

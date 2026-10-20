@@ -165,6 +165,22 @@ check('le total remonte une fois un état convertible choisi', totalBack > total
 check('plus aucun avertissement de conversion',
   !/Conversion impossible/.test($('#drawer .drawer__body').textContent));
 
+console.log('\n— Plan d’amélioration : menu contextuel des options secondaires (B)');
+const pastaRowMenu = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
+const menu = pastaRowMenu.querySelector('.item-menu');
+check('menu contextuel présent sur la ligne d’ingrédient', !!menu);
+check('fermé par défaut (options secondaires repliées)', !menu.hasAttribute('open'));
+check('état pesé déplacé DANS le menu (plus directement sur la ligne)', !!menu.querySelector('[data-state]'));
+check('quantité, verrou et suppression restent DIRECTEMENT accessibles (jamais dans le menu)',
+  !!pastaRowMenu.querySelector('[data-qty]') && !menu.querySelector('[data-qty]') &&
+  !!pastaRowMenu.querySelector('[data-lock]') && !menu.querySelector('[data-lock]') &&
+  !!pastaRowMenu.querySelector('[data-del]') && !menu.querySelector('[data-del]'));
+click(menu.querySelector('summary'));
+check('un clic sur le déclencheur ouvre le menu', menu.hasAttribute('open'));
+check('le sélecteur d’état pesé reste utilisable une fois le menu ouvert', menu.querySelector('[data-state]').options.length === 4);
+click(menu.querySelector('summary'));
+check('un second clic referme le menu', !menu.hasAttribute('open'));
+
 console.log('\n— Verrouillage automatique après modification manuelle (P1.2)');
 const qty = () => $$('#drawer [data-qty]').map((i) => i.value);
 const lockPressed = () => $$('#drawer [data-lock]').map((b) => b.getAttribute('aria-pressed'));
@@ -692,6 +708,10 @@ const rizRow1 = () => $$('#drawer .item').find((el) => /Riz simple/.test(el.text
 click(rizRow1().querySelector('[data-zero-waste]'));
 await wait();
 check('la case "mode zéro reste" est cochée sur ce créneau', rizRow1().querySelector('[data-zero-waste]').checked);
+check('case "zéro reste" dans le menu contextuel, pas directement sur la ligne (B)',
+  !!rizRow1().querySelector('.item-menu [data-zero-waste]') && !rizRow1().querySelector('.item__main > [data-zero-waste]'));
+check('état "zéro reste" actif visible même menu fermé (jamais caché sans indice)',
+  /zéro reste/.test(rizRow1().querySelector('.item__meta')?.textContent || ''));
 click($('#drawer [data-close]'));
 await wait();
 
