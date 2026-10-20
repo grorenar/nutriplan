@@ -1098,6 +1098,43 @@ test('Batch — mesure "cuit obtenu" face au rendement enregistré', () => {
   check('coefficient mesuré exposé (0,5)', Math.abs(cFar.measuredCookedFactor - 0.5) < 0.001);
   check('le rendement enregistré de la fiche aliment reste inchangé (jamais écrit automatiquement)',
     F('Blanc de poulet').cookedFactor === poulet.cookedFactor);
+
+  // 4. mesure EXACTEMENT identique à la théorique : écart nul, pas d'arrondi
+  // qui ferait apparaître une alerte fantôme sur un cas parfaitement couvert.
+  const theoreticalCooked = 1000 * poulet.cookedFactor; // 700 g
+  const sExact = batchState({ [key]: 1000 }, { [key]: theoreticalCooked });
+  const cExact = buildBatchPlan(sExact, byId)[0].components.find((c) => c.food.id === poulet.id);
+  check('écart exact : measuredYieldPct = yieldPct', cExact.measuredYieldPct === cExact.yieldPct);
+  check('écart exact : yieldDeviationGrams = 0', cExact.yieldDeviationGrams === 0);
+  check('écart exact : aucune alerte', cExact.yieldDeviationSignificant === false);
+
+  // 5. écart en grammes exposé pour les cas 2 et 3 ci-dessus (exigence §I.3 :
+  // écart en grammes ET en %, pas seulement en %)
+  check('écart en grammes, cas proche (750 cuit mesuré − 700 cuit théorique = +50 g)',
+    cClose.yieldDeviationGrams === 50, `${cClose.yieldDeviationGrams}`);
+  check('écart en grammes, cas éloigné (500 cuit mesuré − 700 cuit théorique = −200 g)',
+    cFar.yieldDeviationGrams === -200, `${cFar.yieldDeviationGrams}`);
+
+  // 6. données manquantes / division par zéro : une quantité crue nulle ne
+  // doit jamais produire NaN/Infinity ni inventer une mesure à partir d'un
+  // cookedOverride devenu sans objet (clé dont le "je prépare" a été remis à 0).
+  const sZeroRaw = batchState({ [key]: 0 }, { [key]: 100 });
+  const cZeroRaw = buildBatchPlan(sZeroRaw, byId)[0].components.find((c) => c.food.id === poulet.id);
+  check('quantité crue nulle : aucune mesure prise en compte (jamais de division par zéro)',
+    cZeroRaw.measuredCooked === null && cZeroRaw.measuredYieldPct === null &&
+    cZeroRaw.measuredCookedFactor === null && cZeroRaw.yieldDeviationGrams === null);
+  check('quantité crue nulle : aucune valeur NaN/Infinity exposée',
+    Number.isFinite(cZeroRaw.preparedCooked) && Number.isFinite(cZeroRaw.requiredCooked));
+
+  // 7. le calcul du rendement constaté n'a strictement aucun effet de bord :
+  // ni sur la fiche aliment (déjà vérifié ci-dessus), ni sur les macros des
+  // repas qui utilisent cet aliment ailleurs dans l'app (toujours calculées
+  // à partir du SEUL cookedFactor réellement enregistré sur la fiche).
+  const macrosBefore = macrosFor(poulet, 180, 'cru');
+  buildBatchPlan(sFar, byId); // recalcule le plan avec un écart important déjà mesuré
+  const macrosAfter = macrosFor(F('Blanc de poulet'), 180, 'cru');
+  check('macros d’un repas utilisant cet aliment strictement inchangées après une mesure de rendement',
+    macrosBefore.kcal === macrosAfter.kcal && macrosBefore.protein === macrosAfter.protein);
 });
 
 test('Batch — suggestion de répartition du surplus entre les gamelles (affichage seul, planning jamais modifié)', () => {

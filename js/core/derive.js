@@ -699,22 +699,27 @@ export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsB
       const measurable = needsCooking(food) && food.referenceState === 'cru' && preparedRaw > 0;
       const measuredCooked = measurable ? (state.batch.cookedOverrides?.[key] ?? null) : null;
       const yieldPct = Math.round((Number(food.cookedFactor) || 1) * 100);
+      const preparedCooked = needsCooking(food) && food.referenceState === 'cru'
+        ? convertGrams(food, preparedRaw, 'cru', 'cuit')
+        : preparedRaw;
       const measuredYieldPct = measuredCooked != null ? Math.round((measuredCooked / preparedRaw) * 100) : null;
       const yieldDeviationPct = measuredYieldPct != null && yieldPct > 0
         ? Math.round((Math.abs(measuredYieldPct - yieldPct) / yieldPct) * 100)
         : null;
+      // écart en grammes (cuit obtenu vs cuit théorique attendu pour CE
+      // preparedRaw) — exigé à côté de l'écart en %, cf. plan d'amélioration §I.3.
+      const yieldDeviationGrams = measuredCooked != null ? measuredCooked - preparedCooked : null;
       components.push({
         key,
         food,
         requiredRaw: refGrams,
         requiredCooked: cooked,
         preparedRaw,
-        preparedCooked: needsCooking(food) && food.referenceState === 'cru'
-          ? convertGrams(food, preparedRaw, 'cru', 'cuit')
-          : preparedRaw,
+        preparedCooked,
         yieldPct,
         measuredCooked,
         measuredYieldPct,
+        yieldDeviationGrams,
         measuredCookedFactor: measuredCooked != null ? measuredCooked / preparedRaw : null,
         yieldDeviationSignificant: yieldDeviationPct != null && yieldDeviationPct >= YIELD_DEVIATION_THRESHOLD_PCT,
         method: food.cookingMethod || '',

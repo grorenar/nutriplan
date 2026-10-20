@@ -119,20 +119,26 @@ function subBatchRows(subBatches, startWeekday) {
  */
 function cookedObtainedCell(c) {
   if (!c.needsCooking) return '<span class="muted">—</span>';
+  // Convention d'affichage du rendement alignée sur la fiche aliment
+  // (foods.js : coefficient décimal "×X,XX", jamais un pourcentage) — seul
+  // le seuil de déclenchement de l'alerte reste exprimé en écart relatif (%),
+  // concept interne au calcul, pas une valeur de rendement affichée telle quelle.
+  const deviationGrams = c.yieldDeviationGrams;
   const warn = c.yieldDeviationSignificant
     ? `<div class="tag sync-error" style="display:block;margin-top:4px">
-        ⚠️ écart ≥ ${YIELD_DEVIATION_THRESHOLD_PCT} % avec le rendement enregistré (${num(c.yieldPct, 0)} %)
+        ⚠️ écart ≥ ${YIELD_DEVIATION_THRESHOLD_PCT} % avec le rendement enregistré (×${num(c.food.cookedFactor, 2)}),
+        soit ${deviationGrams >= 0 ? '+' : ''}${grams(deviationGrams)} par rapport au cuit attendu
       </div>
       <button type="button" class="btn btn--ghost" style="margin-top:4px;white-space:normal"
         data-adjust-yield="${c.key}" data-food-id="${esc(c.food.id)}" data-food-name="${esc(c.food.name)}"
-        data-measured-factor="${c.measuredCookedFactor}" data-current-pct="${c.yieldPct}" data-measured-pct="${c.measuredYieldPct}">
+        data-measured-factor="${c.measuredCookedFactor}" data-current-factor="${c.food.cookedFactor}">
         Ajuster le rendement enregistré
       </button>`
     : '';
   return `<input type="number" step="10" min="0" placeholder="non mesuré"
             value="${c.measuredCooked != null ? num(c.measuredCooked, 0).replace(',', '.') : ''}"
             data-cooked="${c.key}" data-raw="${c.preparedRaw}" style="width:104px" aria-label="Quantité cuite obtenue"> g
-          ${c.measuredYieldPct != null ? `<div class="tag">rendement mesuré ${num(c.measuredYieldPct, 0)} %</div>` : ''}
+          ${c.measuredCookedFactor != null ? `<div class="tag">rendement mesuré ×${num(c.measuredCookedFactor, 2)}</div>` : ''}
           ${warn}`;
 }
 
@@ -391,10 +397,11 @@ function wire(root) {
 
   root.querySelectorAll('[data-adjust-yield]').forEach((btn) =>
     btn.addEventListener('click', (e) => {
-      const { foodId, foodName, measuredFactor, currentPct, measuredPct } = e.currentTarget.dataset;
+      const { foodId, foodName, measuredFactor, currentFactor } = e.currentTarget.dataset;
       pendingConfirm = {
         title: 'Ajuster le rendement enregistré ?',
-        message: `Le rendement mesuré pour « ${foodName} » est de ${measuredPct} %, contre ${currentPct} % ` +
+        message: `Le rendement mesuré pour « ${foodName} » est de ${num(Number(measuredFactor), 2)} ` +
+          `(100 g cru → ${num(Number(measuredFactor) * 100, 0)} g cuit), contre ${num(Number(currentFactor), 2)} ` +
           `actuellement enregistré dans la fiche aliment. Mettre à jour la fiche avec ce nouveau rendement ? ` +
           `Cela changera le calcul de TOUS les repas, recettes et sessions de batch futurs utilisant cet ` +
           `aliment — pas seulement celui-ci.`,

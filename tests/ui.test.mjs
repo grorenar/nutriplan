@@ -47,6 +47,7 @@ window.addEventListener('error', (e) => jsErrors.push(e.message));
 const app = await import(join(root, 'js/app.js'));
 const store = await import(join(root, 'js/core/store.js')); // même instance de module que celle utilisée par app.js
 const derive = await import(join(root, 'js/core/derive.js')); // lecture seule, pour valider les quantités affichées sans reparser le texte rendu
+const util = await import(join(root, 'js/core/util.js')); // num() — reproduit le formatage exact affiché, sans le redupliquer à la main
 const sync = await import(join(root, 'js/core/sync.js'));
 const scannerLib = await import(join(root, 'js/core/barcode-scanner.js')); // même instance que celle utilisée par foods.js
 // js/config.js contient volontairement les vraies clés Supabase du projet
@@ -1220,17 +1221,19 @@ const registeredPct = Math.round(registeredFactor * 100);
 // mesure alignée sur le rendement enregistré : aucun écart, pas d'alerte
 const closeMeasured = Math.round(preparedRawTest * registeredFactor);
 change(cookedInput, String(closeMeasured));
-check('rendement mesuré affiché', $('#view').textContent.includes(`rendement mesuré ${registeredPct} %`));
+check('rendement mesuré affiché, en coefficient décimal (convention de la fiche aliment, pas un %)',
+  /rendement mesuré ×[\d,]+/.test($('#view').textContent));
 check('écart nul : aucun bouton d’ajustement proposé', !$$('[data-adjust-yield]').some((b) => b.dataset.adjustYield === batchKey));
 
 // mesure à moitié du rendement enregistré (écart relatif ~50 %, toujours au-delà du seuil de 15 %)
 cookedInput = $$('[data-cooked]').find((el) => el.dataset.cooked === batchKey);
 const farMeasured = Math.round(preparedRawTest * registeredFactor * 0.5);
-const farPct = Math.round((farMeasured / preparedRawTest) * 100);
 change(cookedInput, String(farMeasured));
-check('rendement mesuré mis à jour', $('#view').textContent.includes(`rendement mesuré ${farPct} %`));
-check('alerte d’écart affichée au-delà du seuil',
-  new RegExp(`écart ≥ 15 %.*rendement enregistré.*${registeredPct} %`).test($('#view').textContent.replace(/\s+/g, ' ')));
+check('rendement mesuré mis à jour', $('#view').textContent.includes(`rendement mesuré ×${util.num(farMeasured / preparedRawTest, 2)}`));
+const registeredFactorStr = util.num(registeredFactor, 2).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+check('alerte d’écart affichée au-delà du seuil, avec l’écart en grammes',
+  new RegExp(`écart ≥ 15 %.*rendement enregistré.*×${registeredFactorStr}.*g par rapport au cuit attendu`)
+    .test($('#view').textContent.replace(/\s+/g, ' ')));
 const adjustBtn = $$('[data-adjust-yield]').find((b) => b.dataset.adjustYield === batchKey);
 check('bouton d’ajustement proposé (jamais appliqué seul)', !!adjustBtn);
 
