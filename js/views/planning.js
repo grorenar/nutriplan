@@ -136,9 +136,9 @@ function mealSlot(meal, byId, s, recipesMap, preparationsMap) {
     </div>`;
   }).join('');
 
-  return `<div class="meal-slot" data-slot="${meal.id}" data-drop-meal="${meal.id}" draggable="true" data-drag-meal="${meal.id}">
+  return `<div class="meal-slot" data-slot="${meal.id}" data-drop-meal="${meal.id}">
     <div class="meal-slot__dropzone">Déposer ici</div>
-    <span class="meal-slot__drag-handle" aria-hidden="true" title="Glisser vers un autre créneau">⠿</span>
+    <span class="meal-slot__drag-handle" draggable="true" data-drag-meal="${meal.id}" title="Glisser vers un autre créneau" aria-label="Glisser ce repas vers un autre créneau">⠿</span>
     <details class="item-menu meal-slot__menu">
       <summary aria-label="Options du repas">⋯</summary>
       <div class="meal-slot__menu__body">
@@ -447,13 +447,23 @@ function wire(root) {
 
 /** Glisser-déposer : repère les deux sources possibles (repas déjà composé, élément de la bibliothèque) et les créneaux cibles. */
 function wireDragAndDrop(root) {
-  root.querySelectorAll('[data-drag-meal]').forEach((el) => {
-    el.addEventListener('dragstart', (e) => {
-      dragPayload = { kind: 'meal', mealId: el.dataset.dragMeal };
-      el.classList.add('is-dragging');
-      try { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', el.dataset.dragMeal); } catch { /* environnement sans dataTransfer (tests) */ }
+  // La poignée (.meal-slot__drag-handle) est le SEUL élément draggable de la
+  // carte (bug réel corrigé : rendre la carte entière draggable entrait en
+  // conflit avec ses propres boutons « Modifier »/« ⋯ »). dataTransfer.
+  // setDragImage() affiche malgré tout la carte ENTIÈRE comme aperçu de
+  // glisser, pas la seule poignée — le geste reste intuitif.
+  root.querySelectorAll('[data-drag-meal]').forEach((handle) => {
+    const card = handle.closest('.meal-slot');
+    handle.addEventListener('dragstart', (e) => {
+      dragPayload = { kind: 'meal', mealId: handle.dataset.dragMeal };
+      card?.classList.add('is-dragging');
+      try {
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('text/plain', handle.dataset.dragMeal);
+        if (card) e.dataTransfer.setDragImage(card, 24, 24);
+      } catch { /* environnement sans dataTransfer (tests) */ }
     });
-    el.addEventListener('dragend', () => el.classList.remove('is-dragging'));
+    handle.addEventListener('dragend', () => card?.classList.remove('is-dragging'));
   });
 
   wireLibraryDrag(root);

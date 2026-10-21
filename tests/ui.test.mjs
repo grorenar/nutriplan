@@ -363,9 +363,12 @@ check('panneau de duplication fermé sans duplication', !$('[data-dup-confirm]')
 
 console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque -> créneau)');
 {
-  const srcMealEl = $('[data-drag-meal]');
-  const srcMealId = srcMealEl.dataset.dragMeal;
-  const srcName = srcMealEl.querySelector('.meal-slot__name').textContent;
+  // data-drag-meal vit sur la POIGNÉE (.meal-slot__drag-handle), jamais sur
+  // la carte entière (bug réel corrigé : la carte contient des boutons
+  // interactifs — « Modifier », menu « ⋯ » — la rendre elle-même draggable
+  // rendait le geste peu fiable). Le nom se lit sur la carte, via data-slot.
+  const srcMealId = $('[data-drag-meal]').dataset.dragMeal;
+  const srcName = $(`[data-slot="${srcMealId}"] .meal-slot__name`).textContent;
   const emptySlotIdBefore = $$('.meal-slot.is-empty')[0]?.dataset.slot;
 
   dragTo($(`[data-drag-meal="${srcMealId}"]`), $(`[data-slot="${emptySlotIdBefore}"]`));
@@ -381,7 +384,7 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque
 
   console.log('\n— Planning : glisser-déposer sur soi-même -> aucun effet');
   const itemsBefore = JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items);
-  dragTo($(`[data-drag-meal="${srcMealId}"]`), $(`[data-drag-meal="${srcMealId}"]`));
+  dragTo($(`[data-drag-meal="${srcMealId}"]`), $(`[data-slot="${srcMealId}"]`));
   await wait();
   check('glisser un repas sur lui-même : aucune confirmation, aucun changement',
     !$('[data-action-confirm]') && JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items) === itemsBefore);
@@ -390,14 +393,14 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque
   const filledIds = $$('[data-drag-meal]').map((el) => el.dataset.dragMeal);
   const [aId, bId] = filledIds;
   const bNameBefore = $(`[data-slot="${bId}"] .meal-slot__name`).textContent;
-  dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-drag-meal="${bId}"]`));
+  dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-slot="${bId}"]`));
   await wait();
   check('créneau cible déjà rempli : confirmation demandée avant tout remplacement', !!$('[data-action-confirm]'));
   click($('[data-action-cancel]'));
   await wait();
   check('confirmation annulée : le créneau cible reste strictement inchangé',
     $(`[data-slot="${bId}"] .meal-slot__name`).textContent === bNameBefore);
-  dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-drag-meal="${bId}"]`));
+  dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-slot="${bId}"]`));
   await wait();
   click($('[data-action-confirm]'));
   await wait();
@@ -440,6 +443,30 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque
     check('bibliothèque -> créneau : au moins un élément et un créneau vide disponibles pour ce test', false,
       `libEl=${!!libEl} emptySlotId2=${emptySlotId2}`);
   }
+
+  console.log('\n— Éditeur de repas : composition visuelle en « assiette » (glisser un résultat de recherche)');
+  const emptySlotId3 = $$('.meal-slot.is-empty')[0]?.dataset.slot;
+  click($(`[data-slot="${emptySlotId3}"] button[data-edit]`));
+  await wait();
+  check('assiette visible à l’ouverture, vide', !!$('#drawer .plate .plate__empty'));
+  type($('#drawer [data-search]'), 'poulet');
+  await wait();
+  const plateFoodBtn = $('#drawer .picker__results button[data-drag-food]');
+  check('résultat de recherche glissable (draggable + data-drag-food)',
+    !!plateFoodBtn && plateFoodBtn.getAttribute('draggable') === 'true');
+  const itemCountBefore = store.getState().meals.find((m) => m.id === emptySlotId3).items.length;
+  dragTo(plateFoodBtn, $('#drawer [data-plate]'));
+  await wait();
+  check('glisser un résultat sur l’assiette : un jeton apparaît', $$('#drawer .plate__token').length === 1);
+  check('le même ajout que le clic « + » : un item en plus dans l’état, et dans la liste détaillée',
+    store.getState().meals.find((m) => m.id === emptySlotId3).items.length === itemCountBefore + 1
+    && $$('#drawer .items .item').length === 1);
+  click($('#drawer .plate__token-remove'));
+  await wait();
+  check('retirer un jeton depuis l’assiette : même suppression que la liste (aucun jeton, aucun item restant)',
+    $$('#drawer .plate__token').length === 0 && $$('#drawer .items .item').length === 0);
+  click($('#drawer [data-close]'));
+  await wait();
 }
 
 console.log('\n— Détection de doublons : popup bloquante');

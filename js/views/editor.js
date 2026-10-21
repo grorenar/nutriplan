@@ -34,6 +34,10 @@ let host = null;
 // { kind: 'found', food } | { kind: 'not-found', code } | { kind: 'invalid' } | null
 let barcodeResult = null;
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — avertissement avant une action qui quitte le tiroir
+// Glisser-déposer vers l'assiette (renderPlate()) : la charge voyage dans
+// cette variable de module plutôt que dataTransfer.getData() — même
+// convention que planning.js (plus simple, et testable sans DataTransfer).
+let dragFoodPayload = null; // id d'aliment, ou null
 
 /**
  * Intitulé unique affiché à la place des sections (Entrée/Plat/…) pour un
@@ -171,6 +175,11 @@ export function renderEditor() {
   const tol = state.settings.tolerance;
   const typeLabel = MEAL_TYPES[targetType()];
 
+  // L'assiette vit dans l'en-tête (sticky) : elle reste toujours visible et
+  // joignable pendant qu'on fait défiler la recherche/liste en dessous — sans
+  // ça, glisser un résultat de recherche vers l'assiette exigeait de défiler
+  // PENDANT le glisser (geste qui échoue souvent, cf. retour utilisateur
+  // « le glisser-déposer ne fonctionne pas »).
   const head = `
     <div class="row">
       <span class="pill pill--accent">${esc(typeLabel)}</span>
@@ -195,7 +204,8 @@ export function renderEditor() {
       <span class="spacer"></span>
       <label class="check"><input type="checkbox" data-auto ${state.settings.autoAdjust ? 'checked' : ''}> Ajustement auto</label>
       <button class="btn btn--sm" data-adjust>Ajuster maintenant</button>
-    </div>`;
+    </div>
+    ${renderPlate(entity, byId, recipesMap, preparationsMap)}`;
 
   const body = `
     ${renderSummary(entity, byId, targets, tol, state, recipesMap, preparationsMap)}
@@ -304,6 +314,45 @@ export function unitHint(food, qty) {
   if (food.unitEntry) return `= ${num(qty, 0)} g`;
   const txt = isWholeUnitFood(food) ? Math.round(u) : num(u, 1);
   return `≈ ${txt} ${esc(unitLabel(food, u))}`;
+}
+
+/**
+ * Assiette visuelle : représentation compacte du repas en cours, sur
+ * laquelle on peut glisser un ingrédient depuis la recherche ci-dessous pour
+ * l'ajouter — purement une nouvelle PRÉSENTATION et un nouveau geste
+ * d'ajout, aucun nouveau champ ni nouvelle donnée : chaque jeton est le
+ * MÊME item que dans la liste détaillée plus bas (quantités/verrous/sections),
+ * réutilise le même retrait (`data-del`, déjà câblé par wire()). Un aliment
+ * est coloré par sa catégorie (identité déjà constante dans toute l'app) ;
+ * une recette/préparation/ingrédient libre garde une icône neutre, faute de
+ * catégorie unique à lui attribuer.
+ */
+function renderPlate(entity, byId, recipesMap, preparationsMap) {
+  const tokens = entity.items.map((it) => {
+    if (it.foodId) {
+      const food = byId[it.foodId];
+      const cat = CATEGORIES.find((c) => c.id === food?.category);
+      const bg = cat ? `var(--cat-${cat.id}-bg)` : 'var(--surface-alt)';
+      const border = cat ? `var(--cat-${cat.id})` : 'var(--line-strong)';
+      return { id: it.id, icon: cat?.icon || '🍽️', label: food?.name || 'Aliment supprimé', bg, border };
+    }
+    if (it.recipeId) return { id: it.id, icon: '📖', label: recipesMap[it.recipeId]?.name || 'Recette supprimée', bg: 'var(--brand-50)', border: 'var(--brand-300)' };
+    if (it.preparationId) return { id: it.id, icon: '🍱', label: preparationsMap[it.preparationId]?.label || 'Préparation supprimée', bg: 'var(--brand-50)', border: 'var(--brand-300)' };
+    return { id: it.id, icon: '✏️', label: it.free?.name || 'Ingrédient libre', bg: 'var(--surface-alt)', border: 'var(--line-strong)' };
+  });
+
+  return `<div class="plate" data-plate>
+    <div class="plate__dropzone">Déposer ici</div>
+    ${
+      tokens.length
+        ? tokens.map((t) => `<div class="plate__token" style="background:${t.bg};border-color:${t.border}">
+            <span class="plate__token-ico" aria-hidden="true">${t.icon}</span>
+            <span class="plate__token-label">${esc(t.label)}</span>
+            <button type="button" class="plate__token-remove" data-del="${t.id}" aria-label="Retirer ${esc(t.label)}">×</button>
+          </div>`).join('')
+        : `<div class="plate__empty">🍽️<br>Glisse un ingrédient ici<br>pour composer le repas</div>`
+    }
+  </div>`;
 }
 
 /**
@@ -600,7 +649,10 @@ function pickerResults(state) {
   }
   return list
     .map(
-      (f) => `<button data-add="${f.id}">
+      // draggable : glisser ce résultat directement sur l'assiette (renderPlate())
+      // ajoute l'aliment exactement comme le ferait un clic — même mutation
+      // (addFoodToMeal()), juste un second geste pour la déclencher.
+      (f) => `<button data-add="${f.id}" draggable="true" data-drag-food="${f.id}">
         <strong>${esc(f.name)}</strong>${f.favorite ? ' ★' : ''}${isWholeUnitFood(f) ? ' <span class="tag">non fractionnable</span>' : ''}
         <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} G / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})${
         isWholeUnitFood(f) ? ` · ${num(f.gramsPerUnit, 0)} g / ${esc(f.unitName || 'unité')}` : ''
@@ -619,6 +671,41 @@ function updateResults() {
   if (!box) return;
   box.innerHTML = pickerResults(getState());
   box.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
+  wirePickerDrag(host);
+}
+
+/** Glisser un résultat de recherche vers l'assiette — recâblé à chaque mise à jour des résultats (recherche, filtre). */
+function wirePickerDrag(root) {
+  root.querySelectorAll('[data-drag-food]').forEach((btn) => {
+    btn.addEventListener('dragstart', (e) => {
+      dragFoodPayload = btn.dataset.dragFood;
+      btn.classList.add('is-dragging');
+      try { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', btn.dataset.dragFood); } catch { /* environnement sans dataTransfer (tests) */ }
+    });
+    btn.addEventListener('dragend', () => btn.classList.remove('is-dragging'));
+  });
+}
+
+/** Dépose sur l'assiette : ajoute l'aliment glissé — même mutation que le clic sur « + ». */
+function wirePlateDrop(root) {
+  const plate = root.querySelector('[data-plate]');
+  if (!plate) return;
+  plate.addEventListener('dragover', (e) => {
+    if (!dragFoodPayload) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'copy'; } catch { /* no-op */ }
+    plate.classList.add('is-drop-target');
+  });
+  plate.addEventListener('dragleave', (e) => {
+    if (e.target === plate) plate.classList.remove('is-drop-target');
+  });
+  plate.addEventListener('drop', (e) => {
+    e.preventDefault();
+    plate.classList.remove('is-drop-target');
+    const foodId = dragFoodPayload;
+    dragFoodPayload = null;
+    if (foodId) addFoodToMeal(foodId);
+  });
 }
 
 function renderPicker(state, entity, recipesMap, preparationsMap) {
@@ -804,9 +891,14 @@ function renderRecipesPanel(state, recipesMap, preparationsMap) {
 /* Interactions                                                        */
 /* ------------------------------------------------------------------ */
 
-/** Ajout d'un aliment au repas en cours (quantité initiale proposée puis ajustée). */
-function onAddFood(e) {
-  const foodId = e.currentTarget.dataset.add;
+/**
+ * Ajout d'un aliment au repas en cours (quantité initiale proposée puis
+ * ajustée) — extraite comme fonction autonome (jamais un simple callback de
+ * clic) pour être appelée IDENTIQUEMENT par le bouton « + » de la recherche
+ * ET par le dépôt d'un résultat glissé sur l'assiette (renderPlate()) : un
+ * seul chemin de mutation, deux gestes pour le déclencher.
+ */
+function addFoodToMeal(foodId) {
   const food = getState().foods.find((f) => f.id === foodId);
   if (!food) return;
   const qty = initialQuantity(food);
@@ -820,6 +912,10 @@ function onAddFood(e) {
     const f = s.foods.find((x) => x.id === foodId);
     if (f) f.lastUsed = new Date().toISOString();
   });
+}
+
+function onAddFood(e) {
+  addFoodToMeal(e.currentTarget.dataset.add);
 }
 
 /** Ajoute une recette au repas en cours sans passer par une préparation en stock. */
@@ -1027,6 +1123,8 @@ function wire(root, entity) {
   });
 
   root.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
+  wirePickerDrag(root);
+  wirePlateDrop(root);
 
   root.querySelector('[data-scan-barcode]')?.addEventListener('click', () => {
     openScannerPanel(handleBarcodeDetected);
