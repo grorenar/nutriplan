@@ -6,8 +6,13 @@ import { WEEKDAYS, esc, num, toast, downloadFile } from '../core/util.js';
 import { findDuplicateGroups } from '../core/similarity.js';
 import * as sync from '../core/sync.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
+import { donutChart } from './charts.js';
 
 const TYPES = ['day', 'breakfast', 'lunch', 'snack_afternoon', 'dinner', 'snack_evening'];
+// Repas réellement sommés pour l'aperçu quotidien — 'day' exclu : c'est un
+// objectif global optionnel, saisi séparément (souvent laissé à 0), jamais
+// mêlé à la somme des repas réels pour ne pas compter deux fois le même besoin.
+const DAY_MEAL_TYPES = TYPES.filter((t) => t !== 'day');
 let importReport = null; // doublons probables repérés au dernier import
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
@@ -37,17 +42,29 @@ export async function render(root) {
       ).join('')}
     </div>
 
-    <div class="card" data-panel="targets" ${activeTab === 'targets' ? '' : 'hidden'}>
-      <div class="card__head"><h2>Objectifs nutritionnels</h2><p>Les besoins caloriques et macros par repas, pour Thomas et Julie.</p></div>
-      ${PERSONS.map((p) => targetTable(p, s)).join('')}
-      <div class="row" style="margin-top:10px">
-        <label class="field" style="max-width:200px">Tolérance (%)
-          <input type="number" step="1" min="1" max="25" data-tol value="${num(s.settings.tolerance * 100, 0)}"></label>
-        <button class="btn btn--sm" data-reset-targets>Rétablir les objectifs par défaut</button>
+    <div data-panel="targets" ${activeTab === 'targets' ? '' : 'hidden'}>
+      <div class="page-grid">
+        <div class="page-grid__main">
+          <div class="card">
+            <div class="card__head"><h2>Objectifs nutritionnels</h2><p>Les besoins caloriques et macros par repas, pour Thomas et Julie.</p></div>
+            ${PERSONS.map((p) => targetTable(p, s)).join('')}
+            <div class="row" style="margin-top:10px">
+              <label class="field" style="max-width:200px">Tolérance (%)
+                <input type="number" step="1" min="1" max="25" data-tol value="${num(s.settings.tolerance * 100, 0)}"></label>
+              <button class="btn btn--sm" data-reset-targets>Rétablir les objectifs par défaut</button>
+            </div>
+            <small>Les objectifs de la journée sont indicatifs : l'application vise les objectifs par repas, sans corriger les éventuelles incohérences.</small>
+            <label class="check" style="margin-top:10px"><input type="checkbox" data-autoadjust ${s.settings.autoAdjust ? 'checked' : ''}> Ajustement automatique des quantités</label>
+            <small>Recalcule automatiquement les quantités d'un repas pour viser ces objectifs, à chaque modification. Peut aussi être activé/désactivé ponctuellement depuis l'éditeur de repas.</small>
+          </div>
+        </div>
+        <div class="page-grid__aside">
+          <div class="card">
+            <div class="card__head"><h3>Aperçu quotidien</h3><p>Répartition de tes objectifs sur une journée.</p></div>
+            ${PERSONS.map((p) => dailyOverview(p, s)).join('')}
+          </div>
+        </div>
       </div>
-      <small>Les objectifs de la journée sont indicatifs : l'application vise les objectifs par repas, sans corriger les éventuelles incohérences.</small>
-      <label class="check" style="margin-top:10px"><input type="checkbox" data-autoadjust ${s.settings.autoAdjust ? 'checked' : ''}> Ajustement automatique des quantités</label>
-      <small>Recalcule automatiquement les quantités d'un repas pour viser ces objectifs, à chaque modification. Peut aussi être activé/désactivé ponctuellement depuis l'éditeur de repas.</small>
     </div>
 
     <div class="card" data-panel="cycle" ${activeTab === 'cycle' ? '' : 'hidden'}>
@@ -111,6 +128,41 @@ export async function render(root) {
 
   wire(root);
   renderAccount(root);
+}
+
+/**
+ * Donut de répartition calorique de la journée (somme des repas réels,
+ * 'day' exclu — cf. DAY_MEAL_TYPES) : protéines/glucides/lipides pondérés
+ * par leur apport calorique réel (4/4/9 kcal par gramme), pas par leur
+ * seul poids en grammes — c'est la proportion qui compte nutritionnellement,
+ * affichage à titre indicatif, n'affecte jamais aucun calcul du moteur.
+ */
+function dailyOverview(person, s) {
+  const total = DAY_MEAL_TYPES.reduce(
+    (acc, type) => {
+      const t = s.settings.targets[person][type] || { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+      acc.kcal += t.kcal; acc.protein += t.protein; acc.carbs += t.carbs; acc.fat += t.fat;
+      return acc;
+    },
+    { kcal: 0, protein: 0, carbs: 0, fat: 0 }
+  );
+  const segments = [
+    // value = apport calorique réel (g × kcal/g) : détermine la part de l'anneau ;
+    // displayValue = grammes, tel qu'affiché dans la légende.
+    { label: 'Protéines', value: total.protein * 4, displayValue: total.protein, color: 'var(--protein)', icon: '💪' },
+    { label: 'Glucides', value: total.carbs * 4, displayValue: total.carbs, color: 'var(--carbs)', icon: '🌾' },
+    { label: 'Lipides', value: total.fat * 9, displayValue: total.fat, color: 'var(--fat)', icon: '💧' },
+  ];
+  return `<div style="margin-bottom:16px">
+    <h3 class="person-name person-name--${person}" style="margin-bottom:8px">${PERSON_LABEL[person]}</h3>
+    ${donutChart(segments, {
+      size: 112, thickness: 15,
+      centerValueHtml: `<span class="donut__center-value">${num(total.kcal, 0)}</span>`,
+      centerLabel: 'kcal',
+      ariaLabel: `Répartition des macros de ${PERSON_LABEL[person]}`,
+      formatValue: (v) => `${num(v, 0)} g`,
+    })}
+  </div>`;
 }
 
 function targetTable(person, s) {

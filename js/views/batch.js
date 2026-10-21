@@ -22,9 +22,27 @@ export function render(root) {
   const plan = buildBatchPlan(s, byId, recipesById(), preparationsById());
   const startWeekday = s.settings.cycle.startWeekday;
 
+  const totalGamelles = plan.reduce((n, sess) => n + sess.gamelles.filter((g) => PERSONS.some((p) => g.persons[p].length)).length, 0);
+  const totalComponents = plan.reduce((n, sess) => n + sess.components.length + (sess.recipesToPrepare?.length || 0), 0);
+
   root.innerHTML = `
-    <div class="row" style="margin-bottom:12px">
-      <span class="pill pill--accent">Conservation : ${s.settings.batch.maxDays} jours par session</span>
+    <div class="stat-grid" style="margin-bottom:16px">
+      <div class="stat-card">
+        <div class="stat-card__top"><span class="stat-card__icon">🗓️</span><span class="stat-card__label">Sessions</span></div>
+        <span class="stat-card__value">${plan.length}</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card__top"><span class="stat-card__icon">🍱</span><span class="stat-card__label">Gamelles couvertes</span></div>
+        <span class="stat-card__value">${totalGamelles}</span>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card__top"><span class="stat-card__icon">🧺</span><span class="stat-card__label">Composants à préparer</span></div>
+        <span class="stat-card__value">${totalComponents}</span>
+      </div>
+      <div class="stat-card stat-card--accent">
+        <div class="stat-card__top"><span class="stat-card__icon">📦</span><span class="stat-card__label">Conservation</span></div>
+        <span class="stat-card__value">${s.settings.batch.maxDays}<small> jours / session</small></span>
+      </div>
     </div>
     ${plan.map((sess) => sessionCard(sess, startWeekday)).join('')}
     ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}

@@ -117,34 +117,38 @@ function renderFull(root, s) {
     : `${duplicatesOpen ? 'Masquer' : 'Voir'} les doublons ignorés (${dismissedCount})`;
 
   root.innerHTML = `
-    <div class="row" style="margin-bottom:12px">
-      <input type="text" data-q value="${esc(query)}" placeholder="Rechercher un aliment…" style="flex:1;min-width:200px">
-      <button class="btn btn--primary" data-new>Nouvel aliment</button>
-    </div>
-    <div class="chips" style="margin-bottom:12px">
-      ${[['all', 'Tous'], ['fav', 'Favoris'], ...CATEGORIES.map((c) => [c.id, c.label])]
-        .map(([id, label]) => `<button class="chip" data-cat="${id}" aria-pressed="${cat === id}">${esc(label)}</button>`)
-        .join('')}
-    </div>
-    ${duplicateGroups.length || dismissedCount ? `<div class="row" style="margin-bottom:12px">
-      <button class="btn btn--sm${duplicateGroups.length ? '' : ' btn--ghost'}" data-toggle-duplicates>${duplicatesToggleLabel}</button>
-    </div>` : ''}
-    ${duplicatesOpen ? duplicatesPanel(duplicateGroups, s) : ''}
-    <div class="card">
-      <div class="table-scroll">
-        <table>
-          <thead><tr>
-            <th>Aliment</th><th class="nums">kcal</th><th class="nums">P</th><th class="nums">G</th><th class="nums">L</th>
-            <th>État</th><th>Unité</th><th class="nums">Prix</th><th>Batch</th><th></th>
-          </tr></thead>
-          <tbody>
-            ${list.length ? list.map(rowOf).join('') : `<tr><td colspan="10" class="muted">Aucun aliment ne correspond.</td></tr>`}
-          </tbody>
-        </table>
+    <div class="split">
+      <div class="split__list">
+        <div class="row" style="margin-bottom:12px">
+          <input type="text" data-q value="${esc(query)}" placeholder="Rechercher un aliment…" style="flex:1;min-width:200px">
+          <button class="btn btn--primary" data-new>Nouvel aliment</button>
+        </div>
+        <div class="chips" style="margin-bottom:12px">
+          ${[['all', 'Tous'], ['fav', 'Favoris'], ...CATEGORIES.map((c) => [c.id, c.label])]
+            .map(([id, label]) => `<button class="chip" data-cat="${id}" aria-pressed="${cat === id}">${esc(label)}</button>`)
+            .join('')}
+        </div>
+        ${duplicateGroups.length || dismissedCount ? `<div class="row" style="margin-bottom:12px">
+          <button class="btn btn--sm${duplicateGroups.length ? '' : ' btn--ghost'}" data-toggle-duplicates>${duplicatesToggleLabel}</button>
+        </div>` : ''}
+        ${duplicatesOpen ? duplicatesPanel(duplicateGroups, s) : ''}
+        <div class="card">
+          <div class="table-scroll">
+            <table>
+              <thead><tr>
+                <th>Aliment</th><th class="nums">kcal</th><th class="nums">P</th><th class="nums">G</th><th class="nums">L</th>
+                <th>État</th><th>Unité</th><th class="nums">Prix</th><th>Batch</th><th></th>
+              </tr></thead>
+              <tbody>
+                ${list.length ? list.map(rowOf).join('') : `<tr><td colspan="10" class="muted">Aucun aliment ne correspond.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <small>${list.length} aliment(s) affiché(s) sur ${s.foods.length}. Valeurs pour 100 g dans l'état de référence.</small>
       </div>
+      ${editing ? formPanel(s) : ''}
     </div>
-    <small>${list.length} aliment(s) affiché(s) sur ${s.foods.length}. Valeurs pour 100 g dans l'état de référence.</small>
-    ${editing ? formPanel(s) : ''}
     <div id="food-overlays">${overlaysHtml(s)}</div>
   `;
   wireList(root);
@@ -298,8 +302,8 @@ const blank = () => ({
 function formPanel(s) {
   const f = currentFormData(s);
   if (!f) return '';
-  return `<div class="drawer" data-form-backdrop>
-    <div class="drawer__panel" style="width:min(560px,100%)">
+  return `<div class="drawer drawer--dock" data-form-backdrop>
+    <div class="drawer__panel drawer__panel--form">
       <div class="drawer__head"><div class="row">
         <h3 style="flex:1">${editing === 'new' ? 'Nouvel aliment' : 'Modifier l\'aliment'}</h3>
         <button class="btn btn--ghost" data-form-cancel>Fermer</button>

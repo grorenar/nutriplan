@@ -53,23 +53,27 @@ function renderFull(root, s, byId) {
   const list = [...s.recipes].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 
   root.innerHTML = `
-    <div class="row" style="margin-bottom:12px">
-      <button class="btn btn--primary" data-new>Nouvelle recette</button>
-    </div>
-    <div class="card">
-      <div class="table-scroll">
-        <table>
-          <thead><tr>
-            <th>Recette</th><th>Type</th><th class="nums">Référence</th><th class="nums">kcal / 100</th>
-            <th>Ingrédients</th><th></th>
-          </tr></thead>
-          <tbody>
-            ${list.length ? list.map((r) => rowOf(r, s, byId)).join('') : `<tr><td colspan="6" class="muted">Aucune recette créée.</td></tr>`}
-          </tbody>
-        </table>
+    <div class="split">
+      <div class="split__list">
+        <div class="row" style="margin-bottom:12px">
+          <button class="btn btn--primary" data-new>Nouvelle recette</button>
+        </div>
+        <div class="card">
+          <div class="table-scroll">
+            <table>
+              <thead><tr>
+                <th>Recette</th><th>Type</th><th class="nums">Référence</th><th class="nums">kcal / 100</th>
+                <th>Ingrédients</th><th></th>
+              </tr></thead>
+              <tbody>
+                ${list.length ? list.map((r) => rowOf(r, s, byId)).join('') : `<tr><td colspan="6" class="muted">Aucune recette créée.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
+      ${editing ? formPanel(s, byId) : ''}
     </div>
-    ${editing ? formPanel(s, byId) : ''}
   `;
   wireList(root, s);
   if (editing) { wireDrawerChrome(root); wireDrawerBody(root, s); }
@@ -224,8 +228,8 @@ function updateIngredientResults(root) {
 function formPanel(s, byId) {
   const r = currentDraft(s);
   if (!r) return '';
-  return `<div class="drawer" data-form-backdrop>
-    <div class="drawer__panel" style="width:min(560px,100%)">
+  return `<div class="drawer drawer--dock" data-form-backdrop>
+    <div class="drawer__panel drawer__panel--form">
       <div class="drawer__head"><div class="row">
         <h3 style="flex:1">${editing === 'new' ? 'Nouvelle recette' : 'Modifier la recette'}</h3>
         <button class="btn btn--ghost" data-form-cancel>Fermer</button>
