@@ -169,11 +169,18 @@ function cookedObtainedCell(c) {
           ${warn}`;
 }
 
+/**
+ * Un composant à préparer en batch = une carte (P4, retour utilisateur : le
+ * tableau à 7 colonnes était jugé lourd et amateur). Mêmes data-prep/
+ * data-cooked/data-adjust-yield qu'avant (wire() totalement inchangé),
+ * seule la présentation change — d'une ligne de tableau dense à une carte
+ * avec une bande de mesures compactes, label au-dessus de la valeur.
+ */
 function componentsBlock(sess, startWeekday) {
   if (!sess.components.length) {
     return `${stepHead(1, BATCH_CATEGORY_LABEL.batch, '🧺')}<p class="muted">Aucun composant batchable sur cette session.</p>`;
   }
-  const rows = sess.components
+  const cards = sess.components
     .map((c) => {
       const surplus = c.preparedRaw - c.requiredRaw;
       const coverage = c.requiredRaw > 0 ? (c.preparedRaw / c.requiredRaw) * 100 : 100;
@@ -184,42 +191,55 @@ function componentsBlock(sess, startWeekday) {
         c.prepTime ? `préparation ${num(c.prepTime, 0)} min` : null,
         c.equipment ? esc(c.equipment) : null,
       ].filter(Boolean).join(' · ');
-      return `<tr>
-        <td>
-          <strong>${esc(c.food.name)}</strong>
-          ${method ? `<div class="tag">${method}</div>` : '<div class="tag muted">aucune consigne de cuisson définie dans la fiche aliment</div>'}
-          ${c.note ? `<div class="tag">${esc(c.note)}</div>` : ''}
-          ${
-            c.shelfLifeDays !== null
-              ? `<div class="tag${c.shelfLifeShort ? ' sync-error' : ''}">conservation ${num(c.shelfLifeDays, 0)} j / ${num(c.coveredDays, 0)} j couverts</div>`
-              : ''
-          }
-          ${subBatchRows(c.subBatches, startWeekday)}
-        </td>
-        <td class="nums">
-          ${c.needsCooking ? `${grams(c.requiredRaw)} crus` : grams(c.requiredRaw)}
-          ${c.needsCooking ? `<div class="tag">rendement ${num(c.yieldPct, 0)} %</div>` : ''}
-        </td>
-        <td class="nums">${grams(c.requiredCooked)}${c.needsCooking ? ' cuits' : ''}</td>
-        <td><input type="number" step="10" min="0" value="${num(c.preparedRaw, 0).replace(',', '.')}"
-               data-prep="${c.key}" style="width:104px" aria-label="Quantité préparée"> g</td>
-        <td class="nums">${grams(c.preparedCooked)}</td>
-        <td class="nums">${cookedObtainedCell(c)}</td>
-        <td class="nums">${surplus >= 0 ? `+ ${grams(surplus)}` : `manque ${grams(-surplus)}`}<div class="tag">${num(coverage, 0)} %</div></td>
-      </tr>`;
+      return `<div class="batch-item">
+        <div class="batch-item__head">
+          <div class="batch-item__name">${esc(c.food.name)}</div>
+          <div class="batch-item__tags">
+            ${method ? `<span class="tag">${method}</span>` : '<span class="tag muted">aucune consigne de cuisson définie dans la fiche aliment</span>'}
+            ${c.note ? `<span class="tag">${esc(c.note)}</span>` : ''}
+            ${
+              c.shelfLifeDays !== null
+                ? `<span class="tag${c.shelfLifeShort ? ' sync-error' : ''}">conservation ${num(c.shelfLifeDays, 0)} j / ${num(c.coveredDays, 0)} j couverts</span>`
+                : ''
+            }
+          </div>
+        </div>
+        ${subBatchRows(c.subBatches, startWeekday)}
+        <div class="batch-item__metrics">
+          <div class="batch-item__metric">
+            <span class="batch-item__metric-label">À sortir</span>
+            <span class="batch-item__metric-value">${c.needsCooking ? `${grams(c.requiredRaw)} crus` : grams(c.requiredRaw)}</span>
+            ${c.needsCooking ? `<span class="tag">rendement ${num(c.yieldPct, 0)} %</span>` : ''}
+          </div>
+          <div class="batch-item__metric">
+            <span class="batch-item__metric-label">Cuit nécessaire</span>
+            <span class="batch-item__metric-value">${grams(c.requiredCooked)}${c.needsCooking ? ' cuits' : ''}</span>
+          </div>
+          <div class="batch-item__metric batch-item__metric--input">
+            <span class="batch-item__metric-label">Je prépare</span>
+            <span><input type="number" step="10" min="0" value="${num(c.preparedRaw, 0).replace(',', '.')}"
+               data-prep="${c.key}" style="width:104px" aria-label="Quantité préparée"> g</span>
+          </div>
+          <div class="batch-item__metric">
+            <span class="batch-item__metric-label">Cuit attendu</span>
+            <span class="batch-item__metric-value">${grams(c.preparedCooked)}</span>
+          </div>
+          <div class="batch-item__metric batch-item__metric--input">
+            <span class="batch-item__metric-label">Cuit obtenu</span>
+            <span>${cookedObtainedCell(c)}</span>
+          </div>
+          <div class="batch-item__metric batch-item__metric--${surplus >= 0 ? 'ok' : 'warn'}">
+            <span class="batch-item__metric-label">Surplus</span>
+            <span class="batch-item__metric-value">${surplus >= 0 ? `+ ${grams(surplus)}` : `manque ${grams(-surplus)}`}</span>
+            <span class="tag">${num(coverage, 0)} %</span>
+          </div>
+        </div>
+      </div>`;
     })
     .join('');
 
   return `${stepHead(1, BATCH_CATEGORY_LABEL.batch, '🧺')}
-    <div class="table-scroll">
-      <table>
-        <thead><tr>
-          <th>Composant et méthode</th><th>À sortir</th><th>Quantité cuite nécessaire</th>
-          <th>Je prépare</th><th>Cuit attendu</th><th>Cuit obtenu</th><th>Surplus</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+    <div class="batch-item-list">${cards}</div>`;
 }
 
 /* ---------------------------------------------- A' — recettes à préparer en batch (P0.2) */

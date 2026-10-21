@@ -1,7 +1,7 @@
 /** Écran PARAMÈTRES. */
 
 import { getState, update, exportJSON, importJSON, resetCycle, ensureCycleMeals, defaultState, backupInfo, restoreBackup } from '../core/store.js';
-import { PERSONS, PERSON_LABEL, MEAL_TYPES } from '../core/nutrition.js';
+import { PERSONS, PERSON_LABEL, MEAL_TYPES, MACRO_META } from '../core/nutrition.js';
 import { WEEKDAYS, esc, num, toast, downloadFile } from '../core/util.js';
 import { findDuplicateGroups } from '../core/similarity.js';
 import * as sync from '../core/sync.js';
@@ -34,10 +34,11 @@ export async function render(root) {
   const s = getState();
 
   root.innerHTML = `
-    <div class="tabs__list" role="tablist" aria-label="Sections des paramètres">
+    <div class="settings-tiles" role="tablist" aria-label="Sections des paramètres">
       ${TABS.map(
-        (t) => `<button type="button" class="tabs__btn" role="tab" data-tab="${t.id}" aria-selected="${t.id === activeTab}">
-          <span aria-hidden="true">${t.icon}</span> ${t.label}
+        (t) => `<button type="button" class="settings-tile" role="tab" data-tab="${t.id}" aria-selected="${t.id === activeTab}">
+          <span class="settings-tile__icon" aria-hidden="true">${t.icon}</span>
+          <span class="settings-tile__label">${t.label}</span>
         </button>`
       ).join('')}
     </div>
@@ -165,26 +166,34 @@ function dailyOverview(person, s) {
   </div>`;
 }
 
+/**
+ * Objectifs de macros par repas (P4, retour utilisateur) — une carte par
+ * repas plutôt qu'un tableau dense de 24 champs nus : mêmes data-target/
+ * data-type/data-key qu'avant (même mécanisme de saisie, wire() inchangé),
+ * seule la présentation change. Icône + couleur par macro réutilisent
+ * MACRO_META, déjà la référence constante dans tout le reste de l'app
+ * (planning, éditeur de repas).
+ */
 function targetTable(person, s) {
-  const rows = TYPES.map((type) => {
+  const cards = TYPES.map((type) => {
     const t = s.settings.targets[person][type] || { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-    return `<tr>
-      <td>${esc(MEAL_TYPES[type])}</td>
-      ${['kcal', 'protein', 'carbs', 'fat']
-        .map(
-          (k) =>
-            `<td><input type="number" step="1" min="0" style="width:92px" value="${t[k]}"
-               data-target="${person}" data-type="${type}" data-key="${k}"></td>`
-        )
-        .join('')}
-    </tr>`;
+    const fields = Object.keys(MACRO_META)
+      .map((k) => {
+        const meta = MACRO_META[k];
+        return `<label class="target-field">
+          <span class="target-field__label" style="color:var(--${meta.cls})">${meta.icon} ${meta.short}</span>
+          <input type="number" step="1" min="0" value="${t[k]}" data-target="${person}" data-type="${type}" data-key="${k}">
+        </label>`;
+      })
+      .join('');
+    return `<div class="target-card">
+      <div class="target-card__head">${esc(MEAL_TYPES[type])}</div>
+      <div class="target-card__fields">${fields}</div>
+    </div>`;
   }).join('');
 
-  return `<h3 class="person-name person-name--${person}" style="margin:12px 0 4px">${PERSON_LABEL[person]}</h3>
-    <div class="table-scroll">
-      <table><thead><tr><th>Repas</th><th>kcal</th><th>Protéines</th><th>Glucides</th><th>Lipides</th></tr></thead>
-      <tbody>${rows}</tbody></table>
-    </div>`;
+  return `<h3 class="person-name person-name--${person}" style="margin:12px 0 10px">${PERSON_LABEL[person]}</h3>
+    <div class="target-grid">${cards}</div>`;
 }
 
 function wire(root) {

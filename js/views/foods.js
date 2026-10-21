@@ -19,6 +19,11 @@ let cat = 'all';
 let duplicatesOpen = false; // P3 : section « Doublons détectés » dépliée ou non
 let mergeKeep = {}; // id du premier aliment d'un groupe -> id choisi pour être conservé
 let editing = null; // id d'aliment ou 'new'
+// Assistant de création (P4, retour utilisateur) : mode choisi pour un
+// NOUVEL aliment, avant d'afficher le formulaire — null tant que rien n'est
+// choisi (écran de choix affiché). Sans objet pour la modification d'une
+// fiche existante (toujours le formulaire complet, comme avant ce chantier).
+let creationMode = null; // null | 'simplified' | 'off' | 'manual'
 let similarWarning = null; // { list, pending } — popup de confirmation de doublon
 let formDraft = null;      // saisie en cours, préservée entre deux rendus du formulaire
 let yieldCalc = null;      // { raw, cooked, result, error } — aide au calcul du rendement
@@ -57,6 +62,7 @@ function getDuplicateGroups(foods) {
 /** Ouvre directement la fiche d'un aliment (appelé depuis l'écran Courses). */
 export function openFoodForm(id) {
   editing = id;
+  creationMode = null;
   similarWarning = null;
   formDraft = null;
   yieldCalc = null;
@@ -76,6 +82,7 @@ export function openFoodForm(id) {
 export function openFoodFormWithBarcode(root, barcode) {
   resetForm();
   editing = 'new';
+  creationMode = 'off';
   formDraft = blank();
   openOffSearch();
   offSearch.barcodeInput = normalizeBarcode(barcode);
@@ -266,9 +273,13 @@ function captureBaselineIfNeeded(root, s) {
 function rowOf(f) {
   const cat = CATEGORIES.find((c) => c.id === f.category);
   return `<tr>
-    <td><strong>${esc(f.name)}</strong>${f.brand ? ` <span class="tag">${esc(f.brand)}</span>` : ''}
-      ${f.favorite ? ' ★' : ''}
-      <div style="margin-top:3px">${cat ? `<span class="cat-badge" data-cat="${cat.id}">${cat.icon} ${esc(cat.label)}</span>` : ''}</div></td>
+    <td><div class="food-row">
+      <span class="food-row__icon" style="background:${cat ? `var(--cat-${cat.id}-bg)` : 'var(--surface-alt)'};color:${cat ? `var(--cat-${cat.id})` : 'var(--ink-soft)'}">${cat ? cat.icon : '🍽️'}</span>
+      <div class="food-row__info">
+        <div class="food-row__name"><strong>${esc(f.name)}</strong>${f.brand ? ` <span class="tag">${esc(f.brand)}</span>` : ''}${f.favorite ? ' ★' : ''}</div>
+        ${cat ? `<div class="food-row__cat" style="color:var(--cat-${cat.id})">${esc(cat.label)}</div>` : ''}
+      </div>
+    </div></td>
     <td class="nums">${num(f.kcal, 0)}</td>
     <td class="nums">${num(f.protein, 1)}</td>
     <td class="nums">${num(f.carbs, 1)}</td>
@@ -299,24 +310,71 @@ const blank = () => ({
   imageUrl: null, imageThumbUrl: null, offUrl: null, offQuantity: null, offFetchedAt: null,
 });
 
-function formPanel(s) {
-  const f = currentFormData(s);
-  if (!f) return '';
-  return `<div class="drawer drawer--dock" data-form-backdrop>
-    <div class="drawer__panel drawer__panel--form">
-      <div class="drawer__head"><div class="row">
-        <h3 style="flex:1">${editing === 'new' ? 'Nouvel aliment' : 'Modifier l\'aliment'}</h3>
-        <button class="btn btn--ghost" data-form-cancel>Fermer</button>
-      </div></div>
-      <div class="drawer__body">${formBodyHtml(f)}</div>
+const CREATION_MODES = [
+  {
+    id: 'simplified', icon: '⚡', title: 'Mode simplifié',
+    desc: 'Seulement les champs essentiels (nom, catégorie, macros). Les options avancées restent accessibles, repliées.',
+  },
+  {
+    id: 'off', icon: '🔎', title: 'Recherche Open Food Facts',
+    desc: 'Cherche un produit existant par nom ou code-barres : la fiche est prérempli, tout reste modifiable avant d\'enregistrer.',
+  },
+  {
+    id: 'manual', icon: '✍️', title: 'Mode manuel',
+    desc: 'Le formulaire complet directement, pour tout saisir toi-même (produit maison, valeurs précises, etc.).',
+  },
+];
+
+/**
+ * Bandeau de choix de mode (P4, retour utilisateur) — première chose visible
+ * à la création d'un nouvel aliment, mais qui ne REMPLACE ni ne masque le
+ * formulaire (lui reste accessible et utilisable immédiatement, inchangé
+ * pour qui veut juste saisir directement) : un choix purement indicatif, qui
+ * configure l'affichage (mode simplifié -> options avancées repliées) sans
+ * jamais bloquer la saisie derrière une étape obligatoire.
+ */
+function modeChoiceHtml() {
+  return `<div class="mode-choice">
+    <div class="mode-choice__head">
+      <p>Comment veux-tu renseigner ce nouvel aliment ?</p>
+      <button type="button" class="btn btn--ghost btn--sm" data-mode-dismiss>Peu importe, je saisis directement</button>
+    </div>
+    <div class="mode-choice__grid">
+      ${CREATION_MODES.map((m) => `<button type="button" class="mode-choice__card" data-mode="${m.id}">
+        <span class="mode-choice__icon" aria-hidden="true">${m.icon}</span>
+        <span class="mode-choice__title">${esc(m.title)}</span>
+        <span class="mode-choice__desc">${esc(m.desc)}</span>
+      </button>`).join('')}
     </div>
   </div>`;
 }
 
-/** Contenu de .drawer__body — réutilisé tel quel par refreshOpenForm(). */
+function formPanel(s) {
+  const f = currentFormData(s);
+  if (!f) return '';
+  return `<div class="wizard" data-form-backdrop>
+    <div class="wizard__dialog drawer__panel">
+      <div class="wizard__head drawer__head"><div class="row">
+        <h3 style="flex:1">${editing === 'new' ? 'Nouvel aliment' : 'Modifier l\'aliment'}</h3>
+        <button class="btn btn--ghost" data-form-cancel>Fermer</button>
+      </div></div>
+      <div class="wizard__body drawer__body">${formBodyHtml(f)}</div>
+    </div>
+  </div>`;
+}
+
+/**
+ * Contenu de .drawer__body — réutilisé tel quel par refreshOpenForm().
+ * En mode simplifié (P4, retour utilisateur), "État et unités" et "Achat &
+ * préparation" passent dans un <details> replié par défaut : les valeurs
+ * par défaut (blank()) restent valides sans y toucher, rien n'est perdu ni
+ * désactivé, juste masqué tant qu'on ne choisit pas de le dérouler.
+ */
 function formBodyHtml(f) {
   const n = (v) => (v === null || v === undefined ? '' : v);
-  return `${editing === 'new' ? `<div class="row" style="margin-bottom:14px">
+  const simplified = creationMode === 'simplified';
+  return `${editing === 'new' && creationMode === null ? modeChoiceHtml() : ''}
+        ${editing === 'new' ? `<div class="row" style="margin-bottom:14px">
           <button class="btn btn--sm" data-off-open type="button">Rechercher sur Open Food Facts</button>
           <small>Préremplit la fiche depuis un produit existant — tout reste modifiable avant d'enregistrer.</small>
         </div>` : ''}
@@ -349,6 +407,7 @@ function formBodyHtml(f) {
           ${offInfoBlock(f)}
         </div>
 
+        ${simplified ? '<details class="form-section form-section--details"><summary>Options avancées (état, unités, achat, batch cooking — facultatif)</summary>' : ''}
         <div class="form-section">
           <div class="form-section__head"><span class="ico" aria-hidden="true">⚖️</span><h3>État et unités</h3></div>
           <div class="grid grid--3">
@@ -401,6 +460,7 @@ function formBodyHtml(f) {
             <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
           <small style="display:block;margin-top:4px">Rendement actuel : ${num(f.cookedFactor || 1, 2)} — 100 g crus donnent ${num((f.cookedFactor || 1) * 100, 0)} g cuits. Ces informations sont reprises telles quelles dans le plan de batch.</small>
         </div>
+        ${simplified ? '</details>' : ''}
 
         <label class="check" style="margin-top:16px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>
         <div class="row" style="margin-top:18px">
@@ -816,6 +876,7 @@ function similarModal() {
 
 function resetForm() {
   editing = null;
+  creationMode = null;
   similarWarning = null;
   formDraft = null;
   yieldCalc = null;
@@ -1034,6 +1095,23 @@ function wireDrawerChrome(root) {
 
 /** Contenu de .drawer__body : recâblé à chaque renderFull() ET refreshOpenForm(). */
 function wireDrawerBody(root) {
+  // Bandeau de choix de mode (P4) : purement indicatif, jamais bloquant —
+  // le formulaire complet est déjà affiché juste en dessous, qu'un mode soit
+  // choisi ou non (cf. modeChoiceHtml()). Le choisir ou l'écarter ne fait que
+  // masquer le bandeau (et, pour « simplifié », replier les sections
+  // avancées) : un rendu du corps suffit, jamais besoin de renderFull().
+  root.querySelectorAll('[data-mode]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      creationMode = e.currentTarget.dataset.mode;
+      if (creationMode === 'off') { captureDraft(root); openOffSearch(); }
+      render(root);
+    })
+  );
+  root.querySelector('[data-mode-dismiss]')?.addEventListener('click', () => {
+    creationMode = 'manual';
+    render(root);
+  });
+
   root.querySelector('[data-save]')?.addEventListener('click', (e) => {
     const id = e.currentTarget.dataset.save;
     const s = getState();

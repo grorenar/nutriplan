@@ -2,7 +2,7 @@
 
 import { load, subscribe, getState } from './core/store.js';
 import * as sync from './core/sync.js';
-import { toast } from './core/util.js';
+import { toast, relativeTime } from './core/util.js';
 import * as planning from './views/planning.js';
 import * as foods from './views/foods.js';
 import * as recipes from './views/recipes.js';
@@ -11,7 +11,7 @@ import * as preparations from './views/preparations.js';
 import * as batch from './views/batch.js';
 import * as shopping from './views/shopping.js';
 import * as settings from './views/settings.js';
-import { renderEditor, isOpen } from './views/editor.js';
+import { renderEditor, isOpen, closeEditor } from './views/editor.js';
 import { openPrintDialog } from './views/print.js';
 import { stopActiveScanner } from './views/barcode-panel.js';
 
@@ -45,6 +45,10 @@ function renderNav() {
 }
 
 export function navigate(id) {
+  // Changer d'écran ne doit jamais laisser un éditeur de repas ouvert
+  // derrière soi (retour utilisateur) : #drawer vit hors de #view, donc
+  // renderView() ci-dessous ne le nettoie jamais tout seul.
+  if (isOpen()) closeEditor();
   current = id;
   location.hash = id;
   renderNav();
@@ -108,7 +112,14 @@ function renderStatus() {
       cls = 'is-sync'; label = 'Synchronisé';
     }
   }
-  box.innerHTML = `<span class="dot ${cls}"></span>${label}`;
+  const syncIcon = `<svg class="sync-spin${s.meta.syncing ? ' is-spinning' : ''}" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <path d="M20 11A8 8 0 1 0 18.5 15.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M20 5v6h-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+  const lastSync = configured
+    ? (s.meta.syncedAt ? `${syncIcon}<span>Dernière synchro : ${relativeTime(s.meta.syncedAt)}</span>` : `${syncIcon}<span>Jamais synchronisé</span>`)
+    : '';
+  box.innerHTML = `<span class="dot ${cls}"></span><span class="rail__foot-text"><span class="rail__foot-label">${label}</span>${lastSync ? `<span class="rail__foot-sync">${lastSync}</span>` : ''}</span>`;
   box.title = s.meta.syncError || label;
   // Pastille repliée pour mobile/iPad (.rail__foot est masqué sous 860px,
   // cf. app.css) : même état, sans le libellé (pas de place dans la barre du
@@ -208,7 +219,7 @@ export function isEditing() {
   const typing =
     Boolean(el) &&
     (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable === true);
-  const formOpen = Boolean(document.querySelector('#drawer .drawer__panel, #modal .modal, #modal .drawer__panel, #view .drawer__panel'));
+  const formOpen = Boolean(document.querySelector('#drawer .composer__dialog, #modal .modal, #modal .drawer__panel, #view .drawer__panel'));
   return typing || formOpen;
 }
 

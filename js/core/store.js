@@ -244,7 +244,17 @@ function migrate(s) {
   const base = defaultState();
   const merged = { ...base, ...s };
   merged.settings = { ...base.settings, ...(s.settings || {}) };
-  merged.settings.targets = { ...base.settings.targets, ...(s.settings?.targets || {}) };
+  // Fusion PAR PERSONNE ET PAR TYPE DE REPAS (jamais un simple remplacement
+  // du sous-objet entier) : un état sauvegardé dont targets.thomas ne
+  // couvrirait pas tous les types de repas (ex. état ancien, ou corrompu)
+  // écrasait silencieusement les types par défaut manquants (breakfast,
+  // snack_afternoon…) avec `{...base, ...saved}` au niveau de `targets`
+  // seul — un repli sur `undefined` plus loin dans l'app (ex. catalogs.js)
+  // plantait alors au premier rendu de l'écran Petits-déjeuners/Collations.
+  merged.settings.targets = {};
+  for (const person of Object.keys(base.settings.targets)) {
+    merged.settings.targets[person] = { ...base.settings.targets[person], ...(s.settings?.targets?.[person] || {}) };
+  }
   merged.settings.cycle = { ...base.settings.cycle, ...(s.settings?.cycle || {}) };
   merged.settings.batch = { ...base.settings.batch, ...(s.settings?.batch || {}) };
   merged.shopping = { purchased: {}, ...(s.shopping || {}) };

@@ -63,10 +63,10 @@ function renderFull(root, s, byId) {
             <table>
               <thead><tr>
                 <th>Recette</th><th>Type</th><th class="nums">Référence</th><th class="nums">kcal / 100</th>
-                <th>Ingrédients</th><th></th>
+                <th class="nums">Temps</th><th>Ingrédients</th><th></th>
               </tr></thead>
               <tbody>
-                ${list.length ? list.map((r) => rowOf(r, s, byId)).join('') : `<tr><td colspan="6" class="muted">Aucune recette créée.</td></tr>`}
+                ${list.length ? list.map((r) => rowOf(r, s, byId)).join('') : `<tr><td colspan="7" class="muted">Aucune recette créée.</td></tr>`}
               </tbody>
             </table>
           </div>
@@ -95,16 +95,32 @@ function refreshDrawerBody(root, s, byId) {
   wireDrawerBody(root, s);
 }
 
+/**
+ * Aperçu du contenu d'une recette dans la liste, trié par quantité
+ * décroissante — plus parlant qu'un simple compte ("4 ingrédients") pour se
+ * représenter la recette sans l'ouvrir : on voit tout de suite ce qui domine.
+ */
+function ingredientSummary(r, byId) {
+  if (!r.items.length) return '0 ingrédient';
+  const sorted = [...r.items].sort((a, b) => b.qty - a.qty);
+  const names = sorted.map((it) => byId[it.foodId]?.name || 'aliment supprimé');
+  const shown = names.slice(0, 3).join(', ');
+  const rest = names.length - 3;
+  return `${esc(shown)}${rest > 0 ? ` <span class="muted">+ ${rest}</span>` : ''}`;
+}
+
 function rowOf(r, s, byId) {
   const per100 = recipeMacrosPer100g(r, byId);
   const usedByPreparations = s.preparations.some((p) => p.recipeId === r.id);
   const portionBase = portionGramsOf(r);
+  const totalTime = (Number(r.prepTime) || 0) + (Number(r.cookingTime) || 0);
   return `<tr>
     <td><strong>${esc(r.name || '(sans nom)')}</strong></td>
     <td>${r.kind === 'weight' ? 'Au poids' : 'Portion'}</td>
     <td class="nums">${r.kind === 'weight' ? `${num(r.baseGrams, 0)} g` : `${num(portionBase, 0)} g / portion`}</td>
     <td class="nums">${num(per100.kcal, 0)}</td>
-    <td>${r.items.length} ingrédient(s)${usedByPreparations ? ' <span class="tag">utilisée par une préparation</span>' : ''}</td>
+    <td class="nums">${totalTime > 0 ? `⏱ ${totalTime} min` : '—'}</td>
+    <td>${ingredientSummary(r, byId)}${usedByPreparations ? ` <span class="tag" title="Une préparation de batch cooking existe encore pour cette recette : elle ne peut pas être supprimée tant que cette préparation n'est pas supprimée elle-même.">🔒 non supprimable (préparation existante)</span>` : ''}</td>
     <td style="text-align:right;white-space:nowrap"><button class="btn btn--sm" data-edit="${r.id}">Modifier</button></td>
   </tr>`;
 }

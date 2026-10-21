@@ -1636,6 +1636,28 @@ test('P5 — doublons écartés : migrate() normalise toujours vers un tableau',
   check('valeur déjà valide : conservée telle quelle', JSON.stringify(preserved.dismissedDuplicates) === JSON.stringify(['x|y']));
 });
 
+test('objectifs (targets) : un état sauvegardé incomplet par personne récupère les types de repas par défaut manquants', () => {
+  // Bug réel trouvé en audit (fixture ne couvrant que lunch/dinner pour
+  // thomas) : migrate() faisait `{...base.targets, ...saved.targets}` au
+  // niveau de `targets` seul, donc `targets.thomas` sauvegardé REMPLAÇAIT
+  // entièrement le défaut — breakfast/snack_afternoon/snack_evening
+  // disparaissaient silencieusement, plantant catalogs.js (lecture de
+  // `targets.thomas.breakfast.kcal` sur `undefined`) au premier rendu de
+  // l'écran Petits-déjeuners.
+  const partial = migrateState({
+    settings: { targets: { thomas: { lunch: { kcal: 999, protein: 1, carbs: 1, fat: 1 }, dinner: { kcal: 1, protein: 1, carbs: 1, fat: 1 } } } },
+  });
+  check('type de repas manquant (breakfast) récupéré depuis les valeurs par défaut, jamais undefined',
+    typeof partial.settings.targets.thomas.breakfast?.kcal === 'number');
+  check('type de repas manquant (collation) récupéré lui aussi',
+    typeof partial.settings.targets.thomas.snack_afternoon?.kcal === 'number'
+    && typeof partial.settings.targets.thomas.snack_evening?.kcal === 'number');
+  check('le type de repas explicitement sauvegardé (lunch) reste la valeur sauvegardée, pas le défaut',
+    partial.settings.targets.thomas.lunch.kcal === 999);
+  check('la personne non touchée (julie) garde tous ses objectifs par défaut',
+    typeof partial.settings.targets.julie.breakfast?.kcal === 'number' && typeof partial.settings.targets.julie.lunch?.kcal === 'number');
+});
+
 /* ================================================================ LIBRES */
 
 test('Ingrédients libres — visibles mais hors calculs', () => {

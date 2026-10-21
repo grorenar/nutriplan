@@ -95,7 +95,7 @@ check('état de synchronisation affiché', /Mode local/.test($('#status').textCo
 
 console.log('\n— Composition d’un déjeuner');
 click($$('[data-edit]')[0]);
-check('éditeur ouvert', !!$('#drawer .drawer__panel'));
+check('éditeur ouvert', !!$('#drawer .composer__dialog'));
 const add = (search, label) => {
   type($('#drawer [data-search]'), search);
   const btn = $$('#drawer [data-add]').find((b) => b.textContent.includes(label));
@@ -166,7 +166,7 @@ check('aucune macro calculée pour cet ingrédient',
   /— kcal · — P · — G · — L/.test(pastaDrained.textContent),
   (pastaDrained.textContent.match(/[—\d]+ kcal/) || [''])[0]);
 check('ingrédient exclu du total du repas',
-  /exclu\(s\) du total/.test($('#drawer .drawer__body').textContent));
+  /exclu\(s\) du total/.test($('#drawer').textContent));
 const totalDrained = Number(($('#drawer .macro')?.textContent.match(/(\d+)/) || [])[1]);
 change(pastaDrained.querySelector('[data-state]'), 'cru');
 await wait();
@@ -174,7 +174,7 @@ const totalBack = Number(($('#drawer .macro')?.textContent.match(/(\d+)/) || [])
 check('le total remonte une fois un état convertible choisi', totalBack > totalDrained,
   `${totalDrained} → ${totalBack}`);
 check('plus aucun avertissement de conversion',
-  !/Conversion impossible/.test($('#drawer .drawer__body').textContent));
+  !/Conversion impossible/.test($('#drawer').textContent));
 
 console.log('\n— Plan d’amélioration : menu contextuel des options secondaires (B)');
 const pastaRowMenu = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
@@ -272,13 +272,13 @@ searchField.blur();
 check('modale toujours ouverte → saisie toujours protégée', app.isEditing() === true);
 
 console.log('\n— Stabilité de la recherche');
-const panelBefore = $('#drawer .drawer__panel');
+const panelBefore = $('#drawer .composer__dialog');
 const searchEl = $('#drawer [data-search]');
 type(searchEl, '');
 searchEl.focus();
 for (const chunk of ['s', 'k', 'y']) type(searchEl, searchEl.value + chunk);
 check('le champ de recherche garde le focus', document.activeElement === $('#drawer [data-search]'));
-check('la fenêtre n’est pas reconstruite', $('#drawer .drawer__panel') === panelBefore);
+check('la fenêtre n’est pas reconstruite', $('#drawer .composer__dialog') === panelBefore);
 check('le texte saisi est conservé', $('#drawer [data-search]').value === 'sky', $('#drawer [data-search]').value);
 check('seuls les résultats changent', $$('#drawer [data-add]').every((b) => /skyr/i.test(b.textContent)));
 type($('#drawer [data-search]'), '');
@@ -346,7 +346,7 @@ click($$('#drawer .item').find((el) => /Carottes/.test(el.textContent)).querySel
 await wait();
 
 click($('#drawer [data-close]'));
-check('éditeur fermé', !$('#drawer .drawer__panel'));
+check('éditeur fermé', !$('#drawer .composer__dialog'));
 check('macros visibles sur la carte du planning', $$('.meal-slot .macro').length >= 8);
 
 console.log('\n— Duplication : nom du jour affiché dans les destinations (P3.5)');
@@ -361,7 +361,7 @@ click($('[data-dup-cancel]'));
 await wait();
 check('panneau de duplication fermé sans duplication', !$('[data-dup-confirm]'));
 
-console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque -> créneau)');
+console.log('\n— Planning : glisser-déposer (repas -> créneau)');
 {
   // data-drag-meal vit sur la POIGNÉE (.meal-slot__drag-handle), jamais sur
   // la carte entière (bug réel corrigé : la carte contient des boutons
@@ -408,42 +408,6 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque
   check('confirmation acceptée : le créneau cible prend la composition de la source',
     $(`[data-slot="${bId}"] .meal-slot__name`)?.textContent === aName);
 
-  console.log('\n— Planning : glisser un élément de la bibliothèque « Menus disponibles » sur un créneau vide');
-  // Aucune recette n'existe encore à ce stade de la suite : la bibliothèque
-  // (alimentée par state.recipes, jamais inventée) est donc vide — on crée
-  // une recette minimale directement en state, comme déjà pratiqué ailleurs
-  // dans cette suite pour amorcer un état précis sans repasser par chaque écran.
-  const testRecipeId = (() => {
-    const aFood = store.getState().foods[0];
-    let id;
-    store.update((s) => {
-      const r = store.newRecipe('Recette de test (glisser-déposer)', 'weight');
-      r.items = [store.newRecipeItem(aFood.id, 100, aFood.referenceState)];
-      r.baseGrams = 100;
-      id = r.id;
-      s.recipes.push(r);
-    });
-    return id;
-  })();
-  click($('[data-view="planning"]'));
-  await wait();
-  const libEl = $(`[data-drag-lib="recipe:${testRecipeId}"]`);
-  const libName = libEl?.querySelector('.library-card__name')?.textContent;
-  const emptySlotId2 = $$('.meal-slot.is-empty')[0]?.dataset.slot;
-  if (libEl && emptySlotId2) {
-    dragTo(libEl, $(`[data-slot="${emptySlotId2}"]`));
-    await wait();
-    check('glisser une recette de la bibliothèque sur un créneau vide : le créneau est rempli',
-      !$(`.meal-slot.is-empty[data-slot="${emptySlotId2}"]`));
-    check('le nom du repas reflète la recette déposée',
-      $(`[data-slot="${emptySlotId2}"] .meal-slot__name`)?.textContent.includes(libName) ||
-      store.getState().meals.find((m) => m.id === emptySlotId2).items.some((it) => it.recipeId),
-      `bibliothèque="${libName}"`);
-  } else {
-    check('bibliothèque -> créneau : au moins un élément et un créneau vide disponibles pour ce test', false,
-      `libEl=${!!libEl} emptySlotId2=${emptySlotId2}`);
-  }
-
   console.log('\n— Éditeur de repas : composition visuelle en « assiette » (glisser un résultat de recherche)');
   const emptySlotId3 = $$('.meal-slot.is-empty')[0]?.dataset.slot;
   click($(`[data-slot="${emptySlotId3}"] button[data-edit]`));
@@ -451,7 +415,7 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque
   check('assiette visible à l’ouverture, vide', !!$('#drawer .plate .plate__empty'));
   type($('#drawer [data-search]'), 'poulet');
   await wait();
-  const plateFoodBtn = $('#drawer .picker__results button[data-drag-food]');
+  const plateFoodBtn = $('#drawer .picker__results [data-drag-food]');
   check('résultat de recherche glissable (draggable + data-drag-food)',
     !!plateFoodBtn && plateFoodBtn.getAttribute('draggable') === 'true');
   const itemCountBefore = store.getState().meals.find((m) => m.id === emptySlotId3).items.length;
@@ -648,7 +612,7 @@ check('toggle 16 h actif par défaut', $$('#drawer [data-set-slot]')[0].getAttri
 check('toggle Soir inactif par défaut', $$('#drawer [data-set-slot]')[1].getAttribute('aria-pressed') === 'false');
 click($$('#drawer [data-set-slot]')[1]); // Soir
 await wait();
-check('éditeur resté ouvert après le changement de créneau', !!$('#drawer .drawer__panel'));
+check('éditeur resté ouvert après le changement de créneau', !!$('#drawer .composer__dialog'));
 check('targetSlot passé à evening en state', newSnackId() && JSON.parse(localStorage.getItem('nutriplan.state.v1')).snacks.find((o) => o.id === newSnackId()).targetSlot === 'evening');
 check('intitulé mis à jour : « Collation soir »',
   $$('#drawer .section-group h4').map((h) => h.textContent).join(',') === 'Collation soir');
@@ -710,7 +674,7 @@ check('les haricots sont eux aussi verrouillés automatiquement par leur propre 
   haricotsRow().querySelectorAll('[data-lock]')[1].getAttribute('aria-pressed') === 'true');
 check('les 400 g de pâtes n’ont pas été réoptimisés après l’ajout des haricots (verrou automatique)',
   pastaRow2().querySelectorAll('[data-qty]')[0].value === '400');
-const summary = $('#drawer .drawer__body').textContent;
+const summary = $('#drawer').textContent;
 check('le PLAT est signalé volumineux', /Plat — .*volumineux/.test(summary), summary.match(/Plat — [^—]*/)?.[0]);
 check('l’ENTRÉE n’est PAS signalée (masse trop faible)', !/Entrée — .*volumineux/.test(summary));
 check('deux groupes de section affichés, dans l’ordre fixe (Entrée avant Plat)',
@@ -743,7 +707,7 @@ await wait();
 click($$('[data-edit]')[2]); // encore un créneau vide, distinct des deux précédents
 await wait();
 check('le panneau "Recettes & préparations" liste la recette créée (sans préparation : menu déroulant)',
-  /Chili con carne/.test($('#drawer .drawer__body').textContent));
+  /Chili con carne/.test($('#drawer').textContent));
 const chiliSelect = $('#drawer [data-add-recipe-select]');
 check('recette sans aucune préparation existante : proposée dans le menu déroulant, pas en ligne directe', !!chiliSelect);
 const chiliOpt = [...chiliSelect.options].find((o) => /Chili con carne/.test(o.textContent));
@@ -753,7 +717,7 @@ click($('#drawer [data-add-recipe-from-select]'));
 await wait();
 check('un item "recette" (référence molle, sans préparation) est ajouté',
   /recette/.test($$('#drawer .item').find((el) => /Chili con carne/.test(el.textContent))?.textContent || ''));
-check('libellé "pas encore préparée"', /pas encore préparée/.test($('#drawer .drawer__body').textContent));
+check('libellé "pas encore préparée"', /pas encore préparée/.test($('#drawer').textContent));
 click($('#drawer [data-close]'));
 await wait();
 
@@ -772,7 +736,7 @@ await wait();
 click($$('[data-edit]')[2]);
 await wait();
 check('la préparation matérialisée apparaît avec son disponible (1000 g / 1000 g)',
-  /Disponible : 1000 g \/ 1000 g préparés/.test($('#drawer .drawer__body').textContent));
+  /Disponible : 1000 g \/ 1000 g préparés/.test($('#drawer').textContent));
 
 // utilisation dans CE repas
 click($('#drawer [data-use-preparation]'));
@@ -786,7 +750,7 @@ const usedQtyJulie = Number(usedRow.querySelectorAll('[data-qty]')[1].value);
 const usedQty = usedQtyThomas + usedQtyJulie;
 check('quantité initiale non nulle', usedQty > 0);
 check('le disponible affiché a diminué en conséquence dans le panneau',
-  new RegExp(`Disponible : ${1000 - usedQty} g / 1000 g préparés`).test($('#drawer .drawer__body').textContent),
+  new RegExp(`Disponible : ${1000 - usedQty} g / 1000 g préparés`).test($('#drawer').textContent),
   `thomas=${usedQtyThomas} julie=${usedQtyJulie}`);
 
 click($('#drawer [data-close]'));
@@ -798,7 +762,7 @@ await wait();
 click($$('[data-edit]')[3]);
 await wait();
 check('le disponible reflète l’utilisation faite dans l’AUTRE repas (stock partagé entre repas)',
-  new RegExp(`Disponible : ${1000 - usedQty} g / 1000 g préparés`).test($('#drawer .drawer__body').textContent));
+  new RegExp(`Disponible : ${1000 - usedQty} g / 1000 g préparés`).test($('#drawer').textContent));
 click($('#drawer [data-close]'));
 await wait();
 
@@ -1304,11 +1268,13 @@ await wait();
 
 click($('[data-view="batch"]'));
 check('composants de batch listés', $$('[data-prep]').length > 0);
-check('le tableau "à préparer en batch" est enveloppé dans .table-scroll (débordement contenu, pas la page entière)',
-  !!$('.table-scroll table'));
-check('toutes les colonnes du tableau restent présentes, dont "Cuit obtenu" (jamais masquée pour éviter le débordement)',
-  ['Composant et méthode', 'À sortir', 'Quantité cuite nécessaire', 'Je prépare', 'Cuit attendu', 'Cuit obtenu', 'Surplus']
-    .every((h) => $$('.table-scroll thead th').some((th) => th.textContent.trim() === h)));
+check('« à préparer en batch » affiché en cartes (P4, retour utilisateur : plus le tableau à 7 colonnes)',
+  $$('.batch-item').length > 0 && $$('.batch-item-list .batch-item').length === $$('.batch-item').length);
+check('toutes les mesures restent présentes sur chaque carte, dont « Cuit obtenu » (rien masqué par rapport à l’ancien tableau)',
+  $$('.batch-item').every((card) => {
+    const labels = [...card.querySelectorAll('.batch-item__metric-label')].map((el) => el.textContent.trim());
+    return ['À sortir', 'Cuit nécessaire', 'Je prépare', 'Cuit attendu', 'Cuit obtenu', 'Surplus'].every((l) => labels.includes(l));
+  }));
 // un composant consommé DIRECTEMENT dans au moins une gamelle (hors recette,
 // qui n'expose jamais le détail de ses ingrédients internes dans les
 // gamelles) : nécessaire pour tester la suggestion de répartition du surplus.
@@ -1463,9 +1429,22 @@ check('l’onglet Préparations reste utilisable directement, sans passer par Ba
   !!$('[data-open-create]'));
 
 console.log('\n— Impression');
+// Régression : un petit-déjeuner/collation peut contenir une recette ou une
+// préparation (comme un repas), pas seulement des aliments — catalogsSection()
+// (print.js) oubliait de transmettre recipesMap/preparationsMap à itemLine(),
+// qui plantait alors dès qu'un tel item existait (symptôme signalé : « si on
+// sélectionne le catalogue, ça ne fonctionne pas »).
+store.update((s) => {
+  const opt = store.newOption('Petit-déj recette (régression impression)', 'breakfast');
+  opt.items = [store.newRecipeMealItem(aRecipeId, 100)];
+  s.breakfasts.push(opt);
+});
+await wait();
 click($('#print-btn'));
 click($('#modal [data-print-all]'));
 click($('#modal [data-print-go]'));
+check('impression d’un catalogue contenant une recette : aucun plantage, document bien généré',
+  $('#print').innerHTML.length > 1000);
 check('catalogues imprimés avec leurs utilisations', /Couverture du cycle/.test($('#print').textContent) && /Utilisations/.test($('#print').textContent));
 check('document d’impression généré', $('#print').innerHTML.length > 1000);
 check('état pesé indiqué à côté des quantités imprimées',

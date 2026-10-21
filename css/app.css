@@ -197,7 +197,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 4px 10px rgba(47,111,70,.3);
 }
 .rail__brand-mark svg { width: 19px; height: 19px; display: block; }
-.rail__brand span { display: block; font-family: var(--font); font-size: var(--fs-xs); font-weight: 600; color: var(--ink-soft); letter-spacing: 0; }
 .rail__nav { display: flex; flex-direction: column; padding: 6px 14px; gap: 2px; }
 .rail__nav button {
   display: flex; align-items: center; gap: 12px;
@@ -216,9 +215,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .rail__nav button[aria-current="true"] .ico { background: rgba(255,255,255,.18); }
 .rail__foot {
   margin-top: auto; padding: 16px 20px; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-soft);
-  cursor: pointer; border-top: 1px solid var(--rail-line); display: flex; align-items: center;
+  cursor: pointer; border-top: 1px solid var(--rail-line); display: flex; align-items: flex-start;
 }
 .rail__foot:hover { color: var(--ink); }
+.rail__foot .dot { margin-top: 4px; }
+.rail__foot-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.rail__foot-sync {
+  display: flex; align-items: center; gap: 5px; font-weight: 500; font-size: 10px;
+  color: var(--ink-faint); text-transform: none;
+}
+.sync-spin { width: 11px; height: 11px; flex: none; color: var(--ink-faint); }
+.sync-spin.is-spinning { animation: sync-spin-rotate 1s linear infinite; color: var(--brand-600); }
+@keyframes sync-spin-rotate { to { transform: rotate(360deg); } }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; background: #a7b5aa; flex: none; }
 .dot.is-sync { background: #39b579; }
 .dot.is-dirty { background: #e0a93a; }
@@ -241,7 +249,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .topbar__titles { flex: 1; min-width: 0; }
 .topbar__subtitle { display: block; font-size: var(--fs-sm); color: var(--ink-soft); font-weight: 500; margin-top: 3px; }
 
-.view { padding: 8px 32px 56px; max-width: 1320px; }
+.view { padding: 8px 32px 56px; }
 
 /* ---------------------------------------------------------- éléments */
 
@@ -395,6 +403,26 @@ tbody tr:hover td { background: var(--surface-alt); }
 .stat-card--accent .stat-card__value { color: var(--brand-700); }
 .stat-card__sub { font-size: var(--fs-xs); color: var(--ink-soft); font-weight: 600; }
 
+/* Composant « à préparer en batch » (batch.js) : une carte par composant,
+   remplace l'ancien tableau à 7 colonnes (retour utilisateur — jugé lourd et
+   "amateur"). Bande de mesures compactes (label au-dessus de la valeur)
+   plutôt que des cellules nues alignées dans une grille rigide. */
+.batch-item-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.batch-item { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 14px 16px; box-shadow: var(--shadow-card); }
+.batch-item__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.batch-item__name { font-weight: 700; font-size: var(--fs-md); }
+.batch-item__tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.batch-item__metrics {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.batch-item__metric { display: flex; flex-direction: column; gap: 3px; }
+.batch-item__metric-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .02em; color: var(--ink-soft); }
+.batch-item__metric-value { font-weight: 700; font-variant-numeric: tabular-nums; }
+.batch-item__metric--warn .batch-item__metric-value { color: var(--off); }
+.batch-item__metric--ok .batch-item__metric-value { color: var(--brand-700); }
+.batch-item__metric--input input { width: 100%; max-width: 110px; }
+
 /* barre de progression (ex. budget consommé) */
 .progress { height: 9px; border-radius: var(--radius-pill); background: var(--surface-sunken); overflow: hidden; }
 .progress__bar { height: 100%; background: var(--brand-500); border-radius: var(--radius-pill); transition: width .2s ease; }
@@ -468,24 +496,6 @@ tbody tr:hover td { background: var(--surface-alt); }
     animation: none !important;
   }
   .drawer.drawer--dock .drawer__head { border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
-
-  /* Éditeur de repas (#drawer, editor.js) : panneau FIXE collé à droite de
-     l'écran plutôt qu'un tiroir plein écran avec fond assombri — le reste de
-     la page (le tableau de jours) reste entièrement visible et manipulable
-     à côté. #drawer (id posé sur le conteneur dans index.html) n'est PAS le
-     même élément que .drawer.drawer--dock-fixed (classe posée par editor.js
-     sur un enfant généré) : sélecteur en DESCENDANT, jamais #drawer.xxx qui
-     ne matcherait rien (bug réel corrigé — le fond assombri restait affiché
-     malgré la classe). Position fixed + une marge sur .main pendant que
-     l'éditeur est ouvert (classe posée par editor.js sur <body>). */
-  body.has-dock-editor .main { margin-right: 460px; transition: margin-right .15s ease; }
-  #drawer .drawer.drawer--dock-fixed {
-    position: fixed; inset: 0 0 0 auto; width: 460px; background: none; z-index: 35; display: block;
-  }
-  #drawer .drawer.drawer--dock-fixed .drawer__panel {
-    width: 100%; height: 100vh; max-height: none; border-left: 1px solid var(--line);
-    border-radius: 0; box-shadow: var(--shadow-lg); animation: none !important;
-  }
 }
 
 /* ---------------------------------------------------------- badges nutrition */
@@ -552,6 +562,27 @@ tbody tr:hover td { background: var(--surface-alt); }
 .cat-dot[data-cat="oleagineux"] { background: var(--cat-oleagineux); }
 .cat-dot[data-cat="autre"] { background: var(--cat-autre); }
 
+/* Ligne « Aliments » : grande icône de catégorie devant le nom, catégorie
+   écrite en dessous — même code couleur que le reste de l'app. */
+.food-row { display: flex; align-items: center; gap: 12px; }
+.food-row__icon {
+  flex: none; width: 38px; height: 38px; border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center; font-size: 20px;
+}
+.food-row__info { min-width: 0; }
+.food-row__name { font-size: var(--fs-sm); }
+.food-row__cat { font-size: var(--fs-xs); font-weight: 700; margin-top: 2px; }
+
+/* Objectifs de macros par repas (Paramètres) : une carte par repas plutôt
+   qu'un tableau dense de champs nus. */
+.target-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 18px; }
+.target-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
+.target-card__head { font-weight: 700; font-size: var(--fs-sm); margin-bottom: 10px; }
+.target-card__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.target-field { display: flex; flex-direction: column; gap: 3px; }
+.target-field__label { font-size: 10px; font-weight: 700; }
+.target-field input { width: 100%; }
+
 .person-band { border-left: 3px solid var(--line-strong); padding-left: 10px; }
 .person-band--thomas { border-color: var(--thomas); }
 .person-band--julie { border-color: var(--julie); }
@@ -565,7 +596,12 @@ tbody tr:hover td { background: var(--surface-alt); }
    blocs logiques (Général / Valeurs nutritionnelles / Achat & préparation…) —
    une icône + un titre par bloc, sans transformer le formulaire en onglets :
    tous les champs restent accessibles d'un seul geste de défilement, aucune
-   saisie n'est jamais cachée derrière un clic supplémentaire. */
+   saisie n'est jamais cachée derrière un clic supplémentaire — SAUF choix
+   explicite du mode « simplifié » à la création d'un aliment (P4, retour
+   utilisateur) : là, et uniquement là, les sections facultatives passent
+   dans un <details> replié (.form-section--details), un geste de plus mais
+   assumé puisque ce mode a justement été choisi pour limiter la saisie
+   initiale — jamais le comportement par défaut. */
 .form-section { margin: 20px 0 0; }
 .form-section:first-child { margin-top: 0; }
 .form-section__head {
@@ -574,21 +610,27 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .form-section__head .ico { font-size: var(--fs-md); line-height: 1; }
 .form-section__head h3 { flex: 1; color: var(--brand-700); }
+.form-section--details { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
+.form-section--details > summary { cursor: pointer; font-weight: 700; font-size: var(--fs-sm); color: var(--brand-700); }
+.form-section--details[open] > summary { margin-bottom: 10px; }
+.form-section--details .form-section:first-of-type { margin-top: 10px; }
 
 /* ---------------------------------------------------------- onglets */
 
-/* Navigation secondaire par onglets (Paramètres, formulaires complexes) —
-   un seul mécanisme réutilisé partout où un écran est trop long pour tenir
-   dans un empilement de cartes. */
-.tabs__list { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
-.tabs__btn {
-  border: 0; background: none; cursor: pointer; padding: 10px 16px;
-  font-size: var(--fs-sm); font-weight: 600; color: var(--ink-soft);
-  border-bottom: 2px solid transparent; margin-bottom: -1px;
-  display: flex; align-items: center; gap: 7px;
+/* Navigation secondaire de l'écran Paramètres : tuiles plutôt qu'onglets
+   (retour utilisateur — plus esthétique). Même mécanisme de sélection que
+   l'ancienne version (data-tab/aria-selected, un seul panneau visible à la
+   fois), seule la présentation du sélecteur change. */
+.settings-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px; }
+.settings-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center;
+  border: 1px solid var(--line); background: #fff; border-radius: var(--radius-lg);
+  padding: 16px 10px; cursor: pointer; box-shadow: var(--shadow-card);
 }
-.tabs__btn:hover { color: var(--ink); background: var(--surface-alt); border-radius: var(--radius-xs) var(--radius-xs) 0 0; }
-.tabs__btn[aria-selected="true"] { color: var(--brand-700); border-bottom-color: var(--brand-600); }
+.settings-tile:hover { border-color: var(--brand-400); background: var(--brand-50); }
+.settings-tile[aria-selected="true"] { background: var(--brand-600); border-color: var(--brand-600); color: #fff; }
+.settings-tile__icon { font-size: 26px; }
+.settings-tile__label { font-size: var(--fs-xs); font-weight: 700; }
 
 /* ---------------------------------------------------------- planning : tableau de jours */
 
@@ -601,6 +643,8 @@ tbody tr:hover td { background: var(--surface-alt); }
 
 /* Résumé macro quotidien par personne — une carte, 4 anneaux (kcal/P/G/L),
    couleur constante avec le reste de l'app (--kcal/--protein/--carbs/--fat). */
+.summary-scope { display: flex; gap: 6px; margin-bottom: 8px; }
+.chip.chip--xs { padding: 3px 10px; font-size: 10px; }
 .day-summary { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 18px; }
 .day-summary__card {
   flex: 1 1 280px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
@@ -617,7 +661,8 @@ tbody tr:hover td { background: var(--surface-alt); }
    de 5+ jours reste donc entièrement visible par simple défilement
    vertical (naturel, familier), jamais par un défilement latéral dédié
    (retour utilisateur direct : "chiant"). */
-.board { display: flex; flex-wrap: wrap; gap: 16px; }
+.board { display: flex; flex-direction: column; gap: 16px; }
+.board__row { display: flex; justify-content: center; gap: 16px; }
 .day-col { flex: 0 0 272px; width: 272px; display: flex; flex-direction: column; gap: 12px; }
 .day-col__head { display: flex; align-items: baseline; gap: 8px; padding: 2px 2px 0; }
 .day-col__head h2 { font-size: var(--fs-md); }
@@ -703,20 +748,6 @@ tbody tr:hover td { background: var(--surface-alt); }
 .meal-slot__menu__body button:hover { background: var(--surface-alt); }
 .meal-slot__menu__body button.is-danger { color: var(--off); }
 
-/* ---------------------------------------------------------- bibliothèque "Menus disponibles" */
-
-.library { margin-top: 24px; }
-.library__row { display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 10px; }
-.library-card {
-  flex: 0 0 190px; width: 190px; background: var(--surface); border: 1px solid var(--line);
-  border-radius: var(--radius-sm); padding: 12px; cursor: grab; box-shadow: var(--shadow-card);
-  -webkit-user-drag: element; user-select: none; -webkit-user-select: none; touch-action: none;
-}
-.library-card:active { cursor: grabbing; }
-.library-card__name { font-weight: 700; font-size: var(--fs-sm); line-height: 1.3; margin-bottom: 6px; min-height: 34px; }
-.library-card__macros { display: flex; flex-wrap: wrap; gap: 4px; }
-.library-card.is-dragging { opacity: .4; }
-
 /* ---------------------------------------------------------- éditeur de repas */
 
 .drawer {
@@ -739,6 +770,79 @@ tbody tr:hover td { background: var(--surface-alt); }
   @keyframes slide-in { from { transform: translateX(24px); opacity: .6; } to { transform: none; opacity: 1; } }
 }
 
+/* Composeur de repas (editor.js) : modale CENTRALE plutôt qu'un volet
+   latéral (retour utilisateur) — deux panneaux côte à côte, chacun
+   défilable indépendamment : l'assiette (toujours visible, jamais besoin de
+   défiler pour l'atteindre pendant un glisser) à gauche, recherche/cartes
+   d'ingrédients à droite. */
+.composer {
+  position: fixed; inset: 0; background: rgba(18, 32, 22, .5);
+  display: flex; align-items: center; justify-content: center; z-index: 40; padding: 24px;
+}
+.composer__dialog {
+  background: var(--bg); width: min(1060px, 100%); max-height: min(860px, 94vh);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.composer__head { flex: none; background: var(--surface); border-bottom: 1px solid var(--line); padding: 16px 20px; }
+.composer__main { flex: 1; min-height: 0; display: flex; }
+.composer__plate-pane {
+  flex: 0 0 340px; width: 340px; padding: 18px; overflow-y: auto;
+  border-right: 1px solid var(--line); background: var(--surface-alt);
+}
+.composer__picker-pane { flex: 1; min-width: 0; padding: 18px; overflow-y: auto; }
+@media (prefers-reduced-motion: no-preference) {
+  .composer__dialog { animation: composer-in .14s ease-out; }
+  @keyframes composer-in { from { transform: scale(.97); opacity: .5; } to { transform: none; opacity: 1; } }
+}
+@media (max-width: 860px) {
+  .composer { padding: 0; }
+  .composer__dialog { width: 100%; max-height: none; height: 100%; border-radius: 0; }
+  .composer__main { flex-direction: column; overflow-y: auto; }
+  .composer__plate-pane, .composer__picker-pane { overflow-y: visible; }
+  .composer__plate-pane { flex: none; width: 100%; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+/* Assistant de création (foods.js) : même esprit de modale centrale que le
+   composeur de repas, en un seul panneau (pas de double colonne nécessaire
+   ici) — .drawer__panel/.drawer__body restent posées en double-classe
+   (cf. formPanel()) pour que la détection "formulaire déjà ouvert" et le
+   style des champs (.form-section, grid…) continuent de s'appliquer
+   sans rien dupliquer. Spécificité doublée (.wizard__dialog.drawer__panel)
+   à dessein : .drawer__panel (position/taille) est déclarée plus HAUT dans
+   la feuille — même précaution que .drawer.drawer--dock plus haut. */
+.wizard {
+  position: fixed; inset: 0; background: rgba(18, 32, 22, .5);
+  display: flex; align-items: center; justify-content: center; z-index: 40; padding: 24px;
+}
+.wizard__dialog.drawer__panel {
+  width: min(720px, 100%); height: auto; max-height: min(840px, 92vh);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden;
+  display: flex; flex-direction: column; animation: none !important;
+}
+.wizard__head.drawer__head { flex: none; position: static; padding: 16px 20px; }
+.wizard__body.drawer__body { flex: 1; min-height: 0; overflow-y: auto; }
+@media (max-width: 860px) {
+  .wizard { padding: 0; }
+  .wizard__dialog.drawer__panel { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+}
+
+/* Bandeau de choix du mode de création — première chose visible à la
+   création d'un nouvel aliment, purement indicatif (cf. modeChoiceHtml()). */
+.mode-choice { background: var(--brand-50); border: 1px solid var(--brand-200); border-radius: var(--radius-lg); padding: 14px; margin-bottom: 18px; }
+.mode-choice__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.mode-choice__head p { font-weight: 700; margin: 0; }
+.mode-choice__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.mode-choice__card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left;
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  padding: 16px; cursor: pointer;
+}
+.mode-choice__card:hover { border-color: var(--brand-400); background: var(--brand-50); }
+.mode-choice__icon { font-size: 26px; }
+.mode-choice__title { font-weight: 700; font-size: var(--fs-sm); }
+.mode-choice__desc { font-size: var(--fs-xs); color: var(--ink-soft); line-height: 1.4; }
+
 /* Assiette visuelle (editor.js::renderPlate()) — représentation compacte du
    repas en cours, cible de glisser-déposer pour un résultat de recherche
    d'aliment (picker, plus bas) : un seul geste, la même mutation
@@ -746,15 +850,21 @@ tbody tr:hover td { background: var(--surface-alt); }
    détaillée (quantités/verrous/sections, .items ci-dessous) reste affichée
    juste en dessous, inchangée. */
 .plate {
-  position: relative; margin: 4px auto 18px; width: 100%; max-width: 320px; aspect-ratio: 1 / 1;
+  position: relative; margin: 4px auto 16px; width: 100%; max-width: 270px; aspect-ratio: 1 / 1;
   border-radius: 50%;
-  background: radial-gradient(circle at 50% 42%, #fff 0 56%, var(--surface-alt) 57% 100%);
-  border: 1px solid var(--line); box-shadow: inset 0 2px 14px rgba(18, 32, 22, .05), var(--shadow-card);
+  /* Porcelaine : rebord clair, "puits" central légèrement creusé — un vrai
+     visuel de plat, plutôt qu'un simple cercle plat (retour utilisateur). */
+  background: radial-gradient(circle at 50% 50%, #ffffff 0 56%, #f3f0e7 58% 76%, #ffffff 78% 100%);
+  box-shadow:
+    inset 0 0 0 1px #eae5d6,
+    inset 0 10px 20px -10px rgba(18, 32, 22, .14),
+    inset 0 -5px 10px rgba(255, 255, 255, .9),
+    0 20px 30px -16px rgba(18, 32, 22, .4);
   display: flex; flex-wrap: wrap; align-content: center; justify-content: center; align-items: center;
-  gap: 7px; padding: 16%;
-  transition: background-color .12s ease, border-color .12s ease;
+  gap: 7px; padding: 20%;
+  transition: background-color .12s ease, box-shadow .12s ease;
 }
-.plate.is-drop-target { background: var(--brand-50); border: 2px dashed var(--brand-500); }
+.plate.is-drop-target { background: var(--brand-50); box-shadow: inset 0 0 0 2px var(--brand-500), 0 20px 30px -16px rgba(18, 32, 22, .4); }
 .plate__dropzone { display: none; }
 .plate.is-drop-target .plate__dropzone {
   display: flex; position: absolute; inset: 0; border-radius: 50%; align-items: center; justify-content: center;
@@ -776,12 +886,44 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .plate__token-remove:hover { background: #8c2a23; }
 
-/* résultat de recherche glissable vers l'assiette */
-.picker__results button[draggable="true"] {
-  cursor: grab; -webkit-user-drag: element; user-select: none; -webkit-user-select: none;
+/* Grille de cartes de résultats (éditeur de repas, composeur) — remplace
+   l'ancienne liste de boutons empilés : noms jamais tronqués, poignée de
+   glisser dédiée vers l'assiette, catégorie suggérée mise en avant. */
+.food-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.food-card {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 10px 34px 10px 10px; cursor: pointer; text-align: left;
 }
-.picker__results button[draggable="true"]:active { cursor: grabbing; }
-.picker__results button.is-dragging { opacity: .4; }
+.food-card:hover { border-color: var(--brand-400); background: var(--brand-50); }
+.food-card:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 1px; }
+.food-card.is-dragging { opacity: .4; }
+.food-card.is-suggested { border-color: var(--brand-400); background: var(--brand-50); }
+.food-card__badge {
+  position: absolute; top: -8px; left: 10px; background: var(--brand-600); color: #fff;
+  font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 2px 7px; border-radius: var(--radius-pill);
+}
+.food-card__handle {
+  flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm); color: var(--ink-faint); cursor: grab; font-size: 13px;
+  -webkit-user-drag: element; user-select: none; -webkit-user-select: none; touch-action: none;
+}
+.food-card__handle:hover { background: #fff; color: var(--ink); }
+.food-card__handle:active { cursor: grabbing; }
+.food-card__icon {
+  flex: none; width: 30px; height: 30px; border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center; font-size: 15px;
+}
+.food-card__body { min-width: 0; flex: 1; }
+.food-card__name { font-weight: 700; font-size: var(--fs-sm); line-height: 1.3; white-space: normal; overflow-wrap: break-word; }
+.food-card__meta { font-size: 11px; color: var(--ink-soft); margin-top: 2px; white-space: normal; overflow-wrap: break-word; }
+.food-card__tag { margin-top: 4px; }
+.food-card__plus {
+  position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+  width: 20px; height: 20px; border-radius: 50%; background: var(--brand-600); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; line-height: 1;
+}
 
 .items { display: flex; flex-direction: column; gap: 8px; }
 .item {

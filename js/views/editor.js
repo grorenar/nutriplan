@@ -69,7 +69,6 @@ export function closeEditor() {
   closeScannerPanel(); // la caméra ne doit jamais rester active une fois le tiroir refermé
   ctx = null;
   if (host) host.innerHTML = '';
-  document.body.classList.remove('has-dock-editor');
 }
 
 /* ------------------------------------------------------------------ */
@@ -167,7 +166,13 @@ export function renderEditor() {
   const entity = entityFrom(state);
   if (!entity) { closeEditor(); return; }
 
-  const scroll = host.querySelector('.drawer__body')?.scrollTop || 0;
+  // Modale centrale (retour utilisateur : plus un volet latéral) : deux
+  // panneaux indépendamment défilables, chacun garde son propre scroll d'un
+  // rendu à l'autre — « assiette » à gauche (jamais besoin de défiler pour
+  // l'atteindre, contrairement à l'ancien panneau docké), recherche/cartes à
+  // droite.
+  const plateScroll = host.querySelector('.composer__plate-pane')?.scrollTop || 0;
+  const pickerScroll = host.querySelector('.composer__picker-pane')?.scrollTop || 0;
   const byId = foodsById();
   const recipesMap = recipesById();
   const preparationsMap = preparationsById();
@@ -175,11 +180,6 @@ export function renderEditor() {
   const tol = state.settings.tolerance;
   const typeLabel = MEAL_TYPES[targetType()];
 
-  // L'assiette vit dans l'en-tête (sticky) : elle reste toujours visible et
-  // joignable pendant qu'on fait défiler la recherche/liste en dessous — sans
-  // ça, glisser un résultat de recherche vers l'assiette exigeait de défiler
-  // PENDANT le glisser (geste qui échoue souvent, cf. retour utilisateur
-  // « le glisser-déposer ne fonctionne pas »).
   const head = `
     <div class="row">
       <span class="pill pill--accent">${esc(typeLabel)}</span>
@@ -204,36 +204,40 @@ export function renderEditor() {
       <span class="spacer"></span>
       <label class="check"><input type="checkbox" data-auto ${state.settings.autoAdjust ? 'checked' : ''}> Ajustement auto</label>
       <button class="btn btn--sm" data-adjust>Ajuster maintenant</button>
-    </div>
-    ${renderPlate(entity, byId, recipesMap, preparationsMap)}`;
+    </div>`;
 
-  const body = `
+  const platePane = `
+    ${renderPlate(entity, byId, recipesMap, preparationsMap)}
     ${renderSummary(entity, byId, targets, tol, state, recipesMap, preparationsMap)}
-    ${renderItems(entity, byId, recipesMap, preparationsMap)}
+    ${renderItems(entity, byId, recipesMap, preparationsMap)}`;
+
+  const pickerPane = `
     ${renderPicker(state, entity, recipesMap, preparationsMap)}
     ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 
-  // Le panneau n'est créé qu'à l'ouverture : les re-rendus suivants remplacent
-  // seulement son contenu, donc pas de réapparition ni d'animation rejouée.
-  let panel = host.querySelector('.drawer__panel');
-  if (!panel) {
+  // La modale n'est créée qu'à l'ouverture : les re-rendus suivants
+  // remplacent seulement son contenu, donc pas de réapparition ni
+  // d'animation rejouée.
+  let dialog = host.querySelector('.composer__dialog');
+  if (!dialog) {
     host.innerHTML = `
-      <div class="drawer drawer--dock-fixed" data-close-backdrop>
-        <div class="drawer__panel" role="dialog" aria-label="Édition du repas">
-          <div class="drawer__head"></div>
-          <div class="drawer__body"></div>
+      <div class="composer" data-close-backdrop>
+        <div class="composer__dialog" role="dialog" aria-label="Édition du repas">
+          <div class="composer__head"></div>
+          <div class="composer__main">
+            <div class="composer__plate-pane"></div>
+            <div class="composer__picker-pane"></div>
+          </div>
         </div>
       </div>`;
-    panel = host.querySelector('.drawer__panel');
-    // Sur desktop/tablette large, le panneau reste fixe à droite SANS fond
-    // assombri (cf. app.css) : le tableau de jours reste visible et
-    // manipulable à côté — posé une seule fois, à l'ouverture.
-    document.body.classList.add('has-dock-editor');
+    dialog = host.querySelector('.composer__dialog');
   }
-  panel.querySelector('.drawer__head').innerHTML = head;
-  panel.querySelector('.drawer__body').innerHTML = body;
+  dialog.querySelector('.composer__head').innerHTML = head;
+  dialog.querySelector('.composer__plate-pane').innerHTML = platePane;
+  dialog.querySelector('.composer__picker-pane').innerHTML = pickerPane;
 
-  host.querySelector('.drawer__body').scrollTop = scroll;
+  host.querySelector('.composer__plate-pane').scrollTop = plateScroll;
+  host.querySelector('.composer__picker-pane').scrollTop = pickerScroll;
   wire(host, entity);
 }
 
@@ -636,53 +640,104 @@ function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
       </div>`;
 }
 
-/** Liste filtrée des aliments proposés (recherche + filtres — food-picker.js, partagé avec recipes.js). */
-function pickerList(state) {
-  return filterFoods(state.foods, { query: pickerQuery, category: pickerCategory }).slice(0, 40);
+/**
+ * Catégories d'aliments à mettre en avant en priorité dans les résultats,
+ * vu ce qui manque le plus au repas en cours par rapport à l'objectif —
+ * retour utilisateur : "proposer des féculents si carence en glucides",
+ * jamais une suggestion inventée, uniquement une PRIORISATION des mêmes
+ * résultats de recherche (aucun aliment n'est ajouté ni masqué).
+ */
+function suggestedCategories(state, entity) {
+  if (!entity) return new Set();
+  const persons = entity.sameComposition === false && addFor !== 'both' ? [addFor] : PERSONS;
+  const targets = targetsFor(state);
+  const byId = foodsById();
+  const recipesMap = recipesById();
+  const preparationsMap = preparationsById();
+  const under = new Set();
+  for (const person of persons) {
+    const macros = mealMacros(entity.items, byId, person, recipesMap, preparationsMap);
+    const ev = evaluate(macros, targets[person], state.settings.tolerance);
+    for (const r of ev.rows) {
+      if (r.status === 'ok' || r.delta >= 0) continue;
+      if (r.key === 'protein') under.add('proteine');
+      else if (r.key === 'carbs') under.add('feculent');
+      else if (r.key === 'fat') { under.add('matiere_grasse'); under.add('oleagineux'); }
+    }
+  }
+  return under;
 }
 
-/** HTML de la seule liste de résultats. */
+/** Liste filtrée des aliments proposés (recherche + filtres — food-picker.js, partagé avec recipes.js), catégories manquantes en tête. */
+function pickerList(state) {
+  const list = filterFoods(state.foods, { query: pickerQuery, category: pickerCategory }).slice(0, 60);
+  const suggested = suggestedCategories(state, entityFrom(state));
+  if (suggested.size) list.sort((a, b) => (suggested.has(b.category) ? 1 : 0) - (suggested.has(a.category) ? 1 : 0));
+  return { list: list.slice(0, 40), suggested };
+}
+
+/** HTML de la seule grille de résultats — cartes complètes, aucun nom tronqué. */
 function pickerResults(state) {
-  const list = pickerList(state);
+  const { list, suggested } = pickerList(state);
   if (!list.length) {
     return `<div style="padding:12px" class="muted">Aucun aliment ne correspond. Crée-le dans l'écran Aliments, ou ajoute-le comme ingrédient libre.</div>`;
   }
-  return list
-    .map(
-      // draggable : glisser ce résultat directement sur l'assiette (renderPlate())
-      // ajoute l'aliment exactement comme le ferait un clic — même mutation
-      // (addFoodToMeal()), juste un second geste pour la déclencher.
-      (f) => `<button data-add="${f.id}" draggable="true" data-drag-food="${f.id}">
-        <strong>${esc(f.name)}</strong>${f.favorite ? ' ★' : ''}${isWholeUnitFood(f) ? ' <span class="tag">non fractionnable</span>' : ''}
-        <div class="cat">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')} · ${num(f.kcal, 0)} kcal · ${num(f.protein, 1)} P / ${num(f.carbs, 1)} G / ${num(f.fat, 1)} L (100 g ${esc(f.referenceState)})${
-        isWholeUnitFood(f) ? ` · ${num(f.gramsPerUnit, 0)} g / ${esc(f.unitName || 'unité')}` : ''
-      }</div>
-      </button>`
-    )
-    .join('');
+  return `<div class="food-card-grid">${list
+    .map((f) => {
+      const cat = CATEGORIES.find((c) => c.id === f.category);
+      const isSuggested = suggested.has(f.category);
+      // data-add sur la carte ENTIÈRE (clic n'importe où = ajout, comme un
+      // bouton) : la poignée de glisser (span interne, ⠿) ne déclenche pas de
+      // "click" lors d'un vrai geste de glisser-déposer (comportement natif
+      // du navigateur), donc aucun conflit avec l'ajout au clic.
+      return `<div class="food-card${isSuggested ? ' is-suggested' : ''}" data-add="${f.id}" role="button" tabindex="0" aria-label="Ajouter ${esc(f.name)}">
+        ${isSuggested ? '<span class="food-card__badge">Suggéré</span>' : ''}
+        <span class="food-card__handle" draggable="true" data-drag-food="${f.id}" title="Glisser vers l'assiette" aria-label="Glisser ${esc(f.name)} vers l'assiette">⠿</span>
+        <span class="food-card__icon" style="background:${cat ? `var(--cat-${cat.id}-bg)` : 'var(--surface-alt)'};color:${cat ? `var(--cat-${cat.id})` : 'var(--ink-soft)'}">${cat ? cat.icon : '🍽️'}</span>
+        <div class="food-card__body">
+          <div class="food-card__name">${esc(f.name)}${f.favorite ? ' ★' : ''}</div>
+          <div class="food-card__meta">${esc(cat?.label || '')} · ${num(f.kcal, 0)} kcal · P ${num(f.protein, 1)} · G ${num(f.carbs, 1)} · L ${num(f.fat, 1)}</div>
+          ${isWholeUnitFood(f) ? `<div class="food-card__tag"><span class="tag">non fractionnable · ${num(f.gramsPerUnit, 0)} g / ${esc(f.unitName || 'unité')}</span></div>` : ''}
+        </div>
+        <span class="food-card__plus" aria-hidden="true">+</span>
+      </div>`;
+    })
+    .join('')}</div>`;
 }
 
 /**
- * Met à jour UNIQUEMENT la liste des résultats : la fenêtre reste en place et
+ * Met à jour UNIQUEMENT la grille de résultats : la fenêtre reste en place et
  * le champ de recherche conserve son focus et son curseur.
  */
 function updateResults() {
   const box = host?.querySelector('.picker__results');
   if (!box) return;
   box.innerHTML = pickerResults(getState());
-  box.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
+  wireAddTargets(box);
   wirePickerDrag(host);
 }
 
-/** Glisser un résultat de recherche vers l'assiette — recâblé à chaque mise à jour des résultats (recherche, filtre). */
+/**
+ * Glisser un résultat de recherche vers l'assiette — recâblé à chaque mise à
+ * jour des résultats (recherche, filtre). draggable vit sur la POIGNÉE
+ * (.food-card__handle) et jamais sur la carte entière : la carte contient
+ * son propre bouton « + » (data-add) — même bug déjà rencontré et corrigé
+ * sur les créneaux du planning (card + boutons interactifs = draggable peu
+ * fiable). setDragImage() affiche malgré tout la carte ENTIÈRE comme aperçu.
+ */
 function wirePickerDrag(root) {
-  root.querySelectorAll('[data-drag-food]').forEach((btn) => {
-    btn.addEventListener('dragstart', (e) => {
-      dragFoodPayload = btn.dataset.dragFood;
-      btn.classList.add('is-dragging');
-      try { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', btn.dataset.dragFood); } catch { /* environnement sans dataTransfer (tests) */ }
+  root.querySelectorAll('[data-drag-food]').forEach((handle) => {
+    const card = handle.closest('.food-card');
+    handle.addEventListener('dragstart', (e) => {
+      dragFoodPayload = handle.dataset.dragFood;
+      card?.classList.add('is-dragging');
+      try {
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('text/plain', handle.dataset.dragFood);
+        if (card) e.dataTransfer.setDragImage(card, 20, 20);
+      } catch { /* environnement sans dataTransfer (tests) */ }
     });
-    btn.addEventListener('dragend', () => btn.classList.remove('is-dragging'));
+    handle.addEventListener('dragend', () => card?.classList.remove('is-dragging'));
   });
 }
 
@@ -735,7 +790,7 @@ function renderPicker(state, entity, recipesMap, preparationsMap) {
     </div>
     ${barcodeResultHtml()}
     <div class="chips" style="margin:10px 0">${chips}</div>
-    <div class="picker__results" style="position:static;border:1px solid var(--line);border-radius:var(--radius-sm);max-height:260px">${pickerResults(state)}</div>
+    <div class="picker__results" style="position:static;border:0;max-height:none;overflow:visible;background:none;box-shadow:none">${pickerResults(state)}</div>
     <div class="row" style="margin-top:12px">
       <input type="text" data-free-name placeholder="Ingrédient libre (ex. curry)" style="flex:2;min-width:150px">
       <input type="text" data-free-qty placeholder="Quantité (ex. au goût)" style="flex:1;min-width:120px">
@@ -916,6 +971,24 @@ function addFoodToMeal(foodId) {
 
 function onAddFood(e) {
   addFoodToMeal(e.currentTarget.dataset.add);
+}
+
+/**
+ * Câble le clic ET le clavier (Entrée/Espace) sur chaque [data-add] : les
+ * cartes de résultats (.food-card) sont des <div role="button"> — pas des
+ * <button> natifs, à cause de la poignée de glisser imbriquée (un <button>
+ * ne peut pas en contenir un autre de façon fiable) — donc l'accessibilité
+ * clavier native est perdue et recréée explicitement ici.
+ */
+function wireAddTargets(root) {
+  root.querySelectorAll('[data-add]').forEach((el) => {
+    el.addEventListener('click', onAddFood);
+    if (el.tagName !== 'BUTTON') {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAddFood(e); }
+      });
+    }
+  });
 }
 
 /** Ajoute une recette au repas en cours sans passer par une préparation en stock. */
@@ -1122,7 +1195,7 @@ function wire(root, entity) {
     });
   });
 
-  root.querySelectorAll('[data-add]').forEach((btn) => btn.addEventListener('click', onAddFood));
+  wireAddTargets(root);
   wirePickerDrag(root);
   wirePlateDrop(root);
 

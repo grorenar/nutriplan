@@ -1,12 +1,11 @@
 /** Écran PLANNING — cycles de courses/batch, sans aucune date réelle. */
 
-import { getState, update, foodsById, recipesById, preparationsById, itemLabel, newRecipeMealItem, newPreparationItem, autoMealName } from '../core/store.js';
+import { getState, update, foodsById, recipesById, preparationsById, itemLabel } from '../core/store.js';
 import {
-  mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, MACRO_META,
-  autoAdjust, portionGramsOf, recipeMacrosPer100g,
+  mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, MACRO_META, autoAdjust,
 } from '../core/nutrition.js';
-import { optimizeSuggestions, dayTotals, preparationAvailable } from '../core/derive.js';
-import { dayName, esc, num, toast, uid } from '../core/util.js';
+import { optimizeSuggestions, dayTotals } from '../core/derive.js';
+import { dayName, esc, num, toast, uid, debounce } from '../core/util.js';
 import { openEditor } from './editor.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 import { progressRing } from './charts.js';
@@ -15,15 +14,53 @@ let showSuggestions = false;
 let duplicateFrom = null;
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
+// Bascule discrète des anneaux de synthèse : cycle entier, ou un seul type de
+// repas à la fois (retour utilisateur) — un seul réglage partagé par les deux
+// cartes Thomas/Julie, jamais une donnée persistée (purement un angle d'affichage).
+let summaryScope = 'total'; // 'total' | 'lunch' | 'dinner'
+const SUMMARY_SCOPES = [
+  { id: 'total', label: 'Total' },
+  { id: 'lunch', label: 'Déjeuner' },
+  { id: 'dinner', label: 'Dîner' },
+];
+
 // Glisser-déposer : la charge utile voyage dans une variable de module plutôt
 // que dataTransfer.getData() — plus simple, plus fiable (DataTransfer n'est
 // pas disponible partout, notamment en environnement de test) puisque tout se
 // passe dans la même page. dataTransfer n'est renseigné que pour les repères
 // visuels natifs du navigateur (curseur, image fantôme), jamais lu au drop.
-let dragPayload = null; // { kind: 'meal', mealId } | { kind: 'recipe'|'preparation', id }
+let dragPayload = null; // { mealId }
 
-let libraryTab = 'recipes'; // 'recipes' | 'batch' | 'preparations'
-let libraryQuery = '';
+const DAY_COL_WIDTH = 272;
+const DAY_COL_GAP = 16;
+let resizeWired = false;
+
+/**
+ * Nombre de colonnes de jour affichables sur une ligne sans défilement, vu la
+ * largeur réellement disponible (retour utilisateur : plus de défilement
+ * horizontal sur ce tableau, cf. .board flex-wrap déjà en place — ceci va
+ * plus loin en répartissant les lignes de façon équilibrée).
+ */
+function colsPerRow(root) {
+  const view = root.ownerDocument?.defaultView;
+  if (!view) return 1; // environnement sans layout réel (tests) : une colonne par ligne, sans effet sur le contenu
+  const cs = view.getComputedStyle(root);
+  const avail = root.clientWidth - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0);
+  return Math.max(1, Math.floor((avail + DAY_COL_GAP) / (DAY_COL_WIDTH + DAY_COL_GAP)));
+}
+
+/**
+ * Répartit `n` éléments sur le nombre de lignes minimal, le plus
+ * équitablement possible (jamais une ligne pleine suivie d'un reliquat isolé :
+ * 6 tuiles pour 5 affichables par ligne -> 3 + 3, jamais 5 + 1).
+ */
+function balancedRowSizes(n, perRow) {
+  if (n <= 0) return [];
+  const rows = Math.max(1, Math.ceil(n / perRow));
+  const base = Math.floor(n / rows);
+  const extra = n % rows;
+  return Array.from({ length: rows }, (_, i) => base + (i < extra ? 1 : 0));
+}
 
 export function render(root) {
   const s = getState();
@@ -49,8 +86,19 @@ export function render(root) {
       </div>`);
   }
 
+  const sizes = balancedRowSizes(cols.length, colsPerRow(root));
+  const rowsHtml = [];
+  let i = 0;
+  for (const size of sizes) {
+    rowsHtml.push(`<div class="board__row">${cols.slice(i, i + size).join('')}</div>`);
+    i += size;
+  }
+
   root.innerHTML = `
-    <div class="day-summary">${PERSONS.map((p) => cycleSummaryCard(p, s, byId, recipesMap, preparationsMap)).join('')}</div>
+    <div class="summary-scope">
+      ${SUMMARY_SCOPES.map((o) => `<button class="chip chip--xs" data-scope="${o.id}" aria-pressed="${summaryScope === o.id}">${esc(o.label)}</button>`).join('')}
+    </div>
+    <div class="day-summary">${PERSONS.map((p) => cycleSummaryCard(p, s, byId, recipesMap, preparationsMap, summaryScope)).join('')}</div>
 
     <div class="row" style="margin-bottom:14px">
       <span class="pill pill--accent">Cycle de ${duration} jours — démarrage ${esc(dayName(startWeekday, 0).toLowerCase())}</span>
@@ -59,36 +107,53 @@ export function render(root) {
     </div>
     ${showSuggestions ? suggestionsPanel(s, byId, recipesMap, preparationsMap) : ''}
 
-    <div class="board">${cols.join('')}</div>
-
-    ${libraryHtml(s)}
+    <div class="board">${rowsHtml.join('')}</div>
 
     ${duplicateFrom ? duplicatePanel(s) : ''}
     ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
   `;
 
   wire(root);
+
+  // Recalcule la répartition par ligne au redimensionnement (jamais pour une
+  // autre vue : root n'a alors plus de .board, le re-rendu est un no-op sans
+  // effet visible — évité en vérifiant sa présence avant de relancer render()).
+  if (!resizeWired) {
+    resizeWired = true;
+    window.addEventListener('resize', debounce(() => {
+      if (root.isConnected && root.querySelector('.board')) render(root);
+    }, 200));
+  }
 }
 
 /**
- * Carte de synthèse par personne, en haut de l'écran — portée VOLONTAIREMENT
+ * Carte de synthèse par personne, en haut de l'écran — portée par défaut
  * fixée au cycle entier (somme de tous les jours vs somme de tous les
  * objectifs), jamais à "aujourd'hui" : ce planificateur n'a aucune date
  * réelle (cf. en-tête de ce fichier), donc aucune notion de jour courant à
  * mettre en avant sans l'inventer. "Sur l'ensemble du cycle" reste un
  * agrégat honnête et toujours défini, quelle que soit la durée du cycle.
+ * `scope` (bascule discrète, retour utilisateur) restreint la somme à un
+ * seul type de repas (déjeuner/dîner) au lieu des deux — jamais à UN jour en
+ * particulier, pour la même raison (aucune date réelle à privilégier).
  */
-function cycleSummaryCard(person, s, byId, recipesMap, preparationsMap) {
+function cycleSummaryCard(person, s, byId, recipesMap, preparationsMap, scope) {
   const { duration } = s.settings.cycle;
+  const types = scope === 'total' ? ['lunch', 'dinner'] : [scope];
   const total = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   const target = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   for (let d = 0; d < duration; d++) {
-    const t = dayTotals(s, byId, d, person, recipesMap, preparationsMap);
-    total.kcal += t.kcal; total.protein += t.protein; total.carbs += t.carbs; total.fat += t.fat;
-    target.kcal += s.settings.targets[person].lunch?.kcal || 0; target.kcal += s.settings.targets[person].dinner?.kcal || 0;
-    target.protein += s.settings.targets[person].lunch?.protein || 0; target.protein += s.settings.targets[person].dinner?.protein || 0;
-    target.carbs += s.settings.targets[person].lunch?.carbs || 0; target.carbs += s.settings.targets[person].dinner?.carbs || 0;
-    target.fat += s.settings.targets[person].lunch?.fat || 0; target.fat += s.settings.targets[person].dinner?.fat || 0;
+    for (const type of types) {
+      const meal = s.meals.find((m) => m.dayIndex === d && m.mealType === type);
+      if (meal) {
+        const macros = mealMacros(meal.items, byId, person, recipesMap, preparationsMap);
+        total.kcal += macros.kcal; total.protein += macros.protein; total.carbs += macros.carbs; total.fat += macros.fat;
+      }
+      const t = s.settings.targets[person][type];
+      if (t) {
+        target.kcal += t.kcal || 0; target.protein += t.protein || 0; target.carbs += t.carbs || 0; target.fat += t.fat || 0;
+      }
+    }
   }
   const rings = Object.keys(MACRO_META)
     .map((key) => {
@@ -101,8 +166,9 @@ function cycleSummaryCard(person, s, byId, recipesMap, preparationsMap) {
       </div>`;
     })
     .join('');
+  const scopeLabel = SUMMARY_SCOPES.find((o) => o.id === scope)?.label || 'Total';
   return `<div class="day-summary__card">
-    <div class="day-summary__head person-name person-name--${person}">${PERSON_LABEL[person]} <span class="tag" style="font-weight:500">· sur l'ensemble du cycle</span></div>
+    <div class="day-summary__head person-name person-name--${person}">${PERSON_LABEL[person]} <span class="tag" style="font-weight:500">· ${scope === 'total' ? "sur l'ensemble du cycle" : `${esc(scopeLabel)}, sur l'ensemble du cycle`}</span></div>
     <div class="day-summary__rings">${rings}</div>
   </div>`;
 }
@@ -171,72 +237,6 @@ function suggestionsPanel(s, byId, recipesMap, preparationsMap) {
   </div>`;
 }
 
-/* ------------------------------------------------------------------ */
-/* Bibliothèque « Menus disponibles »                                  */
-/* ------------------------------------------------------------------ */
-
-const LIBRARY_TABS = [
-  { id: 'recipes', label: 'Mes recettes', icon: '📖' },
-  { id: 'batch', label: 'Batch cooking', icon: '🍲' },
-  { id: 'preparations', label: 'Préparations', icon: '🍱' },
-];
-
-/**
- * Éléments glissables vers un créneau — uniquement des données DÉJÀ
- * existantes (recettes, préparations en stock) : pas de nouvel objet
- * « menu » inventé, pas de notion de « récent »/« favori » qui n'existe pas
- * encore pour les recettes dans ce modèle de données (seuls les aliments ont
- * `favorite`/`lastUsed` aujourd'hui).
- */
-function libraryItems(s) {
-  if (libraryTab === 'preparations') {
-    return s.preparations
-      .map((p) => ({ p, disponible: preparationAvailable(s, p) }))
-      .filter((x) => x.disponible > 0)
-      .map(({ p, disponible }) => ({
-        kind: 'preparation', id: p.id, name: p.label,
-        macros: null, sub: `Disponible : ${num(disponible, 0)} g`,
-      }));
-  }
-  const recipes = libraryTab === 'batch' ? s.recipes.filter((r) => r.batchAllowed) : s.recipes;
-  const byId = foodsById();
-  return recipes.map((r) => ({
-    kind: 'recipe', id: r.id, name: r.name, macros: recipeMacrosPer100g(r, byId),
-    sub: r.kind === 'portion' ? `${num(portionGramsOf(r), 0)} g / portion` : `${num(r.baseGrams, 0)} g de référence`,
-  }));
-}
-
-/** HTML des seules cartes glissables — réutilisé tel quel par la mise à jour de la recherche (sans reconstruire tout le bloc). */
-function libraryRowHtml(s) {
-  const q = libraryQuery.trim().toLowerCase();
-  let items = libraryItems(s);
-  if (q) items = items.filter((x) => x.name.toLowerCase().includes(q));
-
-  return items.length
-    ? items.map((it) => `<div class="library-card" draggable="true" data-drag-lib="${it.kind}:${it.id}">
-        <div class="library-card__name">${esc(it.name)}</div>
-        <div class="library-card__macros">
-          ${it.macros ? `<span class="macro-badge" data-macro="kcal"><b>${num(it.macros.kcal, 0)}</b> kcal</span>` : ''}
-          ${!it.macros ? `<span class="tag">${esc(it.sub)}</span>` : ''}
-        </div>
-      </div>`).join('')
-    : `<div class="empty" style="min-width:260px">Rien à montrer ici pour l'instant.</div>`;
-}
-
-function libraryHtml(s) {
-  return `<div class="library">
-    <div class="card__head"><h3>Menus disponibles</h3><p>Glisse une recette ou une préparation directement sur un créneau du tableau ci-dessus.</p></div>
-    <div class="row" style="margin-bottom:10px">
-      <div class="chips">
-        ${LIBRARY_TABS.map((t) => `<button class="chip" data-lib-tab="${t.id}" aria-pressed="${libraryTab === t.id}">${t.icon} ${esc(t.label)}</button>`).join('')}
-      </div>
-      <span class="spacer"></span>
-      <input type="text" data-lib-q value="${esc(libraryQuery)}" placeholder="Rechercher…" style="max-width:220px">
-    </div>
-    <div class="library__row">${libraryRowHtml(s)}</div>
-  </div>`;
-}
-
 function duplicatePanel(s) {
   const src = s.meals.find((m) => m.id === duplicateFrom);
   if (!src) return '';
@@ -294,47 +294,6 @@ function copyMealTo(s, srcId, dstId, { readjust = true } = {}) {
   return true;
 }
 
-/**
- * Applique un élément de la bibliothèque (recette ou préparation) à un
- * créneau — remplace entièrement sa composition par CET élément unique
- * (même principe que « Vider » + « Composer », en un seul geste). Réutilise
- * exactement les constructeurs d'item et le calcul de quantité initiale déjà
- * utilisés par l'éditeur de repas (editor.js) pour la même action au clic.
- */
-function applyLibraryItemToMeal(s, dstId, payload) {
-  const dst = s.meals.find((m) => m.id === dstId);
-  if (!dst) return false;
-  const recipesMap = Object.fromEntries(s.recipes.map((r) => [r.id, r]));
-  const preparationsMap = Object.fromEntries(s.preparations.map((p) => [p.id, p]));
-  const byId = Object.fromEntries(s.foods.map((f) => [f.id, f]));
-  let item = null;
-  if (payload.kind === 'recipe') {
-    const recipe = recipesMap[payload.id];
-    if (!recipe) return false;
-    const qty = recipe.kind === 'portion' ? portionGramsOf(recipe) : Math.max(1, Math.round(Number(recipe.baseGrams) || 0));
-    item = newRecipeMealItem(payload.id, qty);
-  } else if (payload.kind === 'preparation') {
-    const prep = preparationsMap[payload.id];
-    if (!prep) return false;
-    const disponible = preparationAvailable(s, prep);
-    const qty = prep.recipeSnapshot?.kind === 'portion'
-      ? Math.min(portionGramsOf(prep.recipeSnapshot), Math.max(1, disponible))
-      : Math.max(1, Math.round(Math.min(disponible, 200)));
-    item = newPreparationItem(payload.id, qty);
-  } else {
-    return false;
-  }
-  dst.items = [item];
-  dst.nameAuto = true;
-  if (s.settings.autoAdjust) {
-    autoAdjust(dst.items, byId, { thomas: s.settings.targets.thomas[dst.mealType], julie: s.settings.targets.julie[dst.mealType] }, {
-      recipesById: recipesMap, preparationsById: preparationsMap,
-    });
-  }
-  dst.name = autoMealName(dst.items, byId, recipesMap, preparationsMap);
-  return true;
-}
-
 /** Dépose la charge `dragPayload` courante sur le créneau `dstId`, avec confirmation si celui-ci n'est pas vide. */
 function handleDrop(root, dstId) {
   const payload = dragPayload;
@@ -343,13 +302,10 @@ function handleDrop(root, dstId) {
   const s0 = getState();
   const dst = s0.meals.find((m) => m.id === dstId);
   if (!dst) return;
-  if (payload.kind === 'meal' && payload.mealId === dstId) return; // dépose sur soi-même : rien à faire
+  if (payload.mealId === dstId) return; // dépose sur soi-même : rien à faire
 
   const apply = () => {
-    update((s) => {
-      if (payload.kind === 'meal') copyMealTo(s, payload.mealId, dstId, { readjust: true });
-      else applyLibraryItemToMeal(s, dstId, payload);
-    });
+    update((s) => { copyMealTo(s, payload.mealId, dstId, { readjust: true }); });
     toast('Repas mis à jour');
     render(root);
   };
@@ -402,6 +358,10 @@ function wire(root) {
     })
   );
 
+  root.querySelectorAll('[data-scope]').forEach((b) =>
+    b.addEventListener('click', (e) => { summaryScope = e.currentTarget.dataset.scope; render(root); })
+  );
+
   root.querySelector('[data-optimize]')?.addEventListener('click', () => {
     showSuggestions = !showSuggestions;
     render(root);
@@ -432,20 +392,10 @@ function wire(root) {
     render(root);
   });
 
-  root.querySelectorAll('[data-lib-tab]').forEach((b) =>
-    b.addEventListener('click', (e) => { libraryTab = e.currentTarget.dataset.libTab; render(root); })
-  );
-  root.querySelector('[data-lib-q]')?.addEventListener('input', (e) => {
-    libraryQuery = e.target.value;
-    const row = root.querySelector('.library__row');
-    if (row) row.innerHTML = libraryRowHtml(getState());
-    wireLibraryDrag(root);
-  });
-
   wireDragAndDrop(root);
 }
 
-/** Glisser-déposer : repère les deux sources possibles (repas déjà composé, élément de la bibliothèque) et les créneaux cibles. */
+/** Glisser-déposer : un repas déjà composé peut être tiré vers un autre créneau. */
 function wireDragAndDrop(root) {
   // La poignée (.meal-slot__drag-handle) est le SEUL élément draggable de la
   // carte (bug réel corrigé : rendre la carte entière draggable entrait en
@@ -455,7 +405,7 @@ function wireDragAndDrop(root) {
   root.querySelectorAll('[data-drag-meal]').forEach((handle) => {
     const card = handle.closest('.meal-slot');
     handle.addEventListener('dragstart', (e) => {
-      dragPayload = { kind: 'meal', mealId: handle.dataset.dragMeal };
+      dragPayload = { mealId: handle.dataset.dragMeal };
       card?.classList.add('is-dragging');
       try {
         e.dataTransfer.effectAllowed = 'copy';
@@ -465,8 +415,6 @@ function wireDragAndDrop(root) {
     });
     handle.addEventListener('dragend', () => card?.classList.remove('is-dragging'));
   });
-
-  wireLibraryDrag(root);
 
   root.querySelectorAll('[data-drop-meal]').forEach((el) => {
     el.addEventListener('dragover', (e) => {
@@ -481,17 +429,5 @@ function wireDragAndDrop(root) {
       el.classList.remove('is-drop-target');
       handleDrop(root, el.dataset.dropMeal);
     });
-  });
-}
-
-function wireLibraryDrag(root) {
-  root.querySelectorAll('[data-drag-lib]').forEach((el) => {
-    el.addEventListener('dragstart', (e) => {
-      const [kind, id] = el.dataset.dragLib.split(':');
-      dragPayload = { kind, id };
-      el.classList.add('is-dragging');
-      try { e.dataTransfer.effectAllowed = 'copy'; e.dataTransfer.setData('text/plain', id); } catch { /* no-op */ }
-    });
-    el.addEventListener('dragend', () => el.classList.remove('is-dragging'));
   });
 }

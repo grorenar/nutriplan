@@ -56,7 +56,7 @@ export function printSections(sections) {
   if (sections.includes('batch') && s.settings.batch.enabled) parts.push(batchSection(s, byId, recipesMap, preparationsMap));
   if (sections.includes('shopping')) parts.push(shoppingSection(s, byId, recipesMap, preparationsMap));
   if (sections.includes('nutrition')) parts.push(nutritionSection(s, byId));
-  if (sections.includes('catalogs')) parts.push(catalogsSection(s, byId));
+  if (sections.includes('catalogs')) parts.push(catalogsSection(s, byId, recipesMap, preparationsMap));
 
   target.innerHTML = parts.join('');
   window.print();
@@ -218,7 +218,7 @@ function nutritionSection(s, byId) {
   </div>`;
 }
 
-function catalogsSection(s, byId) {
+function catalogsSection(s, byId, recipesMap = {}, preparationsMap = {}) {
   const usesLine = (o, kind) =>
     kind === 'breakfast'
       ? `Utilisations : Thomas ${Number(o.uses?.thomas) || 0} · Julie ${Number(o.uses?.julie) || 0}`
@@ -230,7 +230,7 @@ function catalogsSection(s, byId) {
       ? list
           .map(
             (o) => `<p><strong>${esc(o.name || 'Sans nom')}</strong> — ${esc(usesLine(o, kind))}<ul>${o.items
-              .map((it) => `<li>${itemLine(it, byId)}</li>`)
+              .map((it) => `<li>${itemLine(it, byId, recipesMap, preparationsMap)}</li>`)
               .join('')}</ul></p>`
           )
           .join('')
