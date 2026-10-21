@@ -418,6 +418,8 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau)');
   const plateFoodBtn = $('#drawer .picker__results [data-drag-food]');
   check('résultat de recherche glissable (draggable + data-drag-food)',
     !!plateFoodBtn && plateFoodBtn.getAttribute('draggable') === 'true');
+  check('la carte ENTIÈRE est l’élément glissable (retour utilisateur : plus seulement une petite poignée)',
+    plateFoodBtn.classList.contains('food-card') && plateFoodBtn.dataset.add === plateFoodBtn.dataset.dragFood);
   const itemCountBefore = store.getState().meals.find((m) => m.id === emptySlotId3).items.length;
   dragTo(plateFoodBtn, $('#drawer [data-plate]'));
   await wait();
@@ -429,6 +431,39 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau)');
   await wait();
   check('retirer un jeton depuis l’assiette : même suppression que la liste (aucun jeton, aucun item restant)',
     $$('#drawer .plate__token').length === 0 && $$('#drawer .items .item').length === 0);
+
+  console.log('\n— Éditeur de repas : nom complet conservé dans l’assiette (jamais tronqué)');
+  const longNameFood = store.getState().foods.find((f) => f.name.length > 20) || store.getState().foods[0];
+  type($('#drawer [data-search]'), longNameFood.name);
+  await wait();
+  const longCard = $('#drawer .picker__results [data-drag-food]');
+  check('un résultat correspond au nom long choisi pour ce test', !!longCard, longNameFood.name);
+  dragTo(longCard, $('#drawer [data-plate]'));
+  await wait();
+  check('le nom COMPLET (pas d’abréviation ni de coupe) apparaît sur le jeton de l’assiette',
+    $('#drawer .plate__token-label')?.textContent === longNameFood.name,
+    `attendu="${longNameFood.name}" obtenu="${$('#drawer .plate__token-label')?.textContent}"`);
+  click($('#drawer .plate__token-remove'));
+  await wait();
+  type($('#drawer [data-search]'), '');
+  await wait();
+
+  console.log('\n— Éditeur de repas : pagination de la grille de résultats (retour utilisateur : pouvoir changer de page)');
+  check('plus de 20 aliments au total (banque par défaut) : la pagination doit apparaître',
+    store.getState().foods.length > 20);
+  check('bandeau de pagination affiché avec un bouton "page suivante"', !!$('[data-picker-page="next"]'));
+  const firstPageFirstCard = $('#drawer .food-card-grid .food-card')?.dataset.add;
+  click($('[data-picker-page="next"]'));
+  await wait();
+  const secondPageFirstCard = $('#drawer .food-card-grid .food-card')?.dataset.add;
+  check('changer de page affiche bien des aliments différents (pas juste les 20 premiers, inatteignables au-delà)',
+    firstPageFirstCard !== secondPageFirstCard);
+  check('bouton "page précédente" désormais utilisable (plus la première page)', !$('[data-picker-page="prev"]')?.disabled);
+  click($('[data-picker-page="prev"]'));
+  await wait();
+  check('retour en page 1 : on retrouve le même premier résultat qu’au départ',
+    $('#drawer .food-card-grid .food-card')?.dataset.add === firstPageFirstCard);
+
   click($('#drawer [data-close]'));
   await wait();
 }

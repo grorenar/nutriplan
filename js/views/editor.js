@@ -10,7 +10,7 @@ import {
   autoMealName, normalizeFood, foodByBarcode,
 } from '../core/store.js';
 import {
-  CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES,
+  CATEGORIES, STATES, PERSONS, PERSON_LABEL, MEAL_TYPES, MACRO_META,
   mealMacros, macrosFor, evaluate, autoAdjust, initialQuantity, diagnose,
   snapQuantity, isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep,
   conversionInfo, stateLabel, recipeAsVirtualFood, preparationAsVirtualFood, resolveItemFood,
@@ -23,10 +23,13 @@ import { normalizeBarcode } from '../core/off.js';
 import { isScannerSupported, openScannerPanel, closeScannerPanel } from './barcode-panel.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 import { filterFoods, foodFilterChips, wireFoodFilterChips } from './food-picker.js';
+import { progressRing } from './charts.js';
 
 let ctx = null; // { kind, id }
 let pickerQuery = '';
 let pickerCategory = 'all';
+let pickerPage = 0; // page affichée de la grille de résultats (retour utilisateur : pouvoir changer de page plutôt qu'une liste coupée)
+const PICKER_PAGE_SIZE = 20;
 let addFor = 'both'; // utilisé quand les compositions diffèrent
 let addSection = DEFAULT_SECTION; // section cible d'un ajout depuis le picker
 let host = null;
@@ -58,6 +61,7 @@ export function openEditor(kind, id) {
   ctx = { kind, id };
   pickerQuery = '';
   pickerCategory = 'all';
+  pickerPage = 0;
   addFor = 'both';
   addSection = DEFAULT_SECTION;
   barcodeResult = null;
@@ -270,8 +274,23 @@ function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, prepa
           <span class="goal">${r.label}</span></span>`
       )
       .join('');
+    // Anneaux de progression (retour utilisateur : "plus de visuel pour les
+    // objectifs macros") — même composant que la carte de synthèse du cycle
+    // (planning.js), mêmes classes CSS (day-summary__ring*) : une seule
+    // référence visuelle pour "macro en cours / objectif" dans toute l'app.
+    const rings = ev.rows
+      .map((r) => {
+        const meta = MACRO_META[r.key];
+        const pct = r.target > 0 ? (r.value / r.target) * 100 : 0;
+        return `<div class="day-summary__ring">
+          ${progressRing(pct, { size: 54, thickness: 5, color: `var(--${meta.cls})`, label: meta.label })}
+          <span class="day-summary__ring-label">${meta.icon} ${meta.short}</span>
+        </div>`;
+      })
+      .join('');
     return `<div class="person-band person-band--${person}" style="margin-bottom:10px">
       <div class="person-name person-name--${person}">${PERSON_LABEL[person]}</div>
+      <div class="day-summary__rings" style="margin:6px 0">${rings}</div>
       <div class="macros" style="margin:4px 0 4px">${chips}</div>
       ${
         diag
@@ -349,8 +368,8 @@ function renderPlate(entity, byId, recipesMap, preparationsMap) {
     <div class="plate__dropzone">Déposer ici</div>
     ${
       tokens.length
-        ? tokens.map((t) => `<div class="plate__token" style="background:${t.bg};border-color:${t.border}">
-            <span class="plate__token-ico" aria-hidden="true">${t.icon}</span>
+        ? tokens.map((t) => `<div class="plate__token" style="border-color:${t.border}">
+            <span class="plate__token-ico" aria-hidden="true" style="background:${t.bg}">${t.icon}</span>
             <span class="plate__token-label">${esc(t.label)}</span>
             <button type="button" class="plate__token-remove" data-del="${t.id}" aria-label="Retirer ${esc(t.label)}">×</button>
           </div>`).join('')
@@ -646,6 +665,13 @@ function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
  * retour utilisateur : "proposer des féculents si carence en glucides",
  * jamais une suggestion inventée, uniquement une PRIORISATION des mêmes
  * résultats de recherche (aucun aliment n'est ajouté ni masqué).
+ * Réutilise diagnose() telle quelle (même source de vérité que le texte
+ * « piste : … » déjà affiché dans le résumé juste au-dessus) plutôt que de
+ * relire ev.rows soi-même : un repas dont le déficit dominant est calorique
+ * (kcal très hors cible, protéines à peine hors tolérance) doit mettre les
+ * féculents/matières grasses en avant — exactement ce que diagnose() décide
+ * déjà via son repli « féculent ou matière grasse » sur un manque de kcal
+ * seul, perdu si on ne regardait que les clés protein/carbs/fat ici.
  */
 function suggestedCategories(state, entity) {
   if (!entity) return new Set();
@@ -654,35 +680,58 @@ function suggestedCategories(state, entity) {
   const byId = foodsById();
   const recipesMap = recipesById();
   const preparationsMap = preparationsById();
-  const under = new Set();
+  // Diagnostic COMBINÉ (somme des personnes concernées, comparée à la somme
+  // de leurs objectifs) plutôt qu'une union des diagnostics PAR personne :
+  // une personne dont ce repas est encore quasi vide (donc "tout" lui
+  // manque) ne doit pas noyer le réel point faible du repas pour l'autre —
+  // retour utilisateur concret (ce repas manquait presque uniquement de
+  // glucides pour Thomas, déjà largement pourvu en protéines/lipides/kcal ;
+  // l'ancienne version proposait pourtant des protéines en premier, diluées
+  // par le diagnostic — tout en carence — de Julie, encore sans rien dans ce
+  // même repas).
+  const MACRO_KEYS = ['kcal', 'protein', 'carbs', 'fat'];
+  const macros = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
+  const target = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   for (const person of persons) {
-    const macros = mealMacros(entity.items, byId, person, recipesMap, preparationsMap);
-    const ev = evaluate(macros, targets[person], state.settings.tolerance);
-    for (const r of ev.rows) {
-      if (r.status === 'ok' || r.delta >= 0) continue;
-      if (r.key === 'protein') under.add('proteine');
-      else if (r.key === 'carbs') under.add('feculent');
-      else if (r.key === 'fat') { under.add('matiere_grasse'); under.add('oleagineux'); }
-    }
+    const m = mealMacros(entity.items, byId, person, recipesMap, preparationsMap);
+    const t = targets[person] || {};
+    for (const k of MACRO_KEYS) { macros[k] += m[k] || 0; target[k] += t[k] || 0; }
+  }
+  const diag = diagnose(macros, target, state.foods, state.settings.tolerance);
+  const under = new Set();
+  for (const text of diag?.suggestions || []) {
+    if (text.includes('féculent')) under.add('feculent');
+    if (text.includes('matière grasse')) { under.add('matiere_grasse'); under.add('oleagineux'); }
+    if (text.includes('protéine')) under.add('proteine');
   }
   return under;
 }
 
-/** Liste filtrée des aliments proposés (recherche + filtres — food-picker.js, partagé avec recipes.js), catégories manquantes en tête. */
+/**
+ * Liste filtrée des aliments proposés (recherche + filtres — food-picker.js,
+ * partagé avec recipes.js), catégories manquantes en tête. Paginée plutôt
+ * que coupée à un nombre fixe (retour utilisateur : une banque alimentaire
+ * fournie masquait silencieusement tout ce qui dépassait la limite, sans
+ * aucun moyen de l'atteindre).
+ */
 function pickerList(state) {
-  const list = filterFoods(state.foods, { query: pickerQuery, category: pickerCategory }).slice(0, 60);
+  const all = filterFoods(state.foods, { query: pickerQuery, category: pickerCategory });
   const suggested = suggestedCategories(state, entityFrom(state));
-  if (suggested.size) list.sort((a, b) => (suggested.has(b.category) ? 1 : 0) - (suggested.has(a.category) ? 1 : 0));
-  return { list: list.slice(0, 40), suggested };
+  if (suggested.size) all.sort((a, b) => (suggested.has(b.category) ? 1 : 0) - (suggested.has(a.category) ? 1 : 0));
+  const totalPages = Math.max(1, Math.ceil(all.length / PICKER_PAGE_SIZE));
+  if (pickerPage >= totalPages) pickerPage = totalPages - 1;
+  if (pickerPage < 0) pickerPage = 0;
+  const list = all.slice(pickerPage * PICKER_PAGE_SIZE, (pickerPage + 1) * PICKER_PAGE_SIZE);
+  return { list, suggested, totalPages, total: all.length };
 }
 
-/** HTML de la seule grille de résultats — cartes complètes, aucun nom tronqué. */
+/** HTML de la seule grille de résultats (+ pagination) — cartes complètes, aucun nom tronqué. */
 function pickerResults(state) {
-  const { list, suggested } = pickerList(state);
+  const { list, suggested, totalPages, total } = pickerList(state);
   if (!list.length) {
     return `<div style="padding:12px" class="muted">Aucun aliment ne correspond. Crée-le dans l'écran Aliments, ou ajoute-le comme ingrédient libre.</div>`;
   }
-  return `<div class="food-card-grid">${list
+  const grid = `<div class="food-card-grid">${list
     .map((f) => {
       const cat = CATEGORIES.find((c) => c.id === f.category);
       const isSuggested = suggested.has(f.category);
@@ -690,9 +739,9 @@ function pickerResults(state) {
       // bouton) : la poignée de glisser (span interne, ⠿) ne déclenche pas de
       // "click" lors d'un vrai geste de glisser-déposer (comportement natif
       // du navigateur), donc aucun conflit avec l'ajout au clic.
-      return `<div class="food-card${isSuggested ? ' is-suggested' : ''}" data-add="${f.id}" role="button" tabindex="0" aria-label="Ajouter ${esc(f.name)}">
+      return `<div class="food-card${isSuggested ? ' is-suggested' : ''}" data-add="${f.id}" draggable="true" data-drag-food="${f.id}" role="button" tabindex="0" aria-label="Ajouter ${esc(f.name)} (ou glisser vers l'assiette)">
         ${isSuggested ? '<span class="food-card__badge">Suggéré</span>' : ''}
-        <span class="food-card__handle" draggable="true" data-drag-food="${f.id}" title="Glisser vers l'assiette" aria-label="Glisser ${esc(f.name)} vers l'assiette">⠿</span>
+        <span class="food-card__handle" aria-hidden="true">⠿</span>
         <span class="food-card__icon" style="background:${cat ? `var(--cat-${cat.id}-bg)` : 'var(--surface-alt)'};color:${cat ? `var(--cat-${cat.id})` : 'var(--ink-soft)'}">${cat ? cat.icon : '🍽️'}</span>
         <div class="food-card__body">
           <div class="food-card__name">${esc(f.name)}${f.favorite ? ' ★' : ''}</div>
@@ -703,6 +752,16 @@ function pickerResults(state) {
       </div>`;
     })
     .join('')}</div>`;
+
+  const pager = totalPages > 1
+    ? `<div class="picker__pager">
+        <button type="button" class="btn btn--sm" data-picker-page="prev" ${pickerPage === 0 ? 'disabled' : ''}>‹ Page précédente</button>
+        <span class="muted">Page ${pickerPage + 1} / ${totalPages} (${total} aliments)</span>
+        <button type="button" class="btn btn--sm" data-picker-page="next" ${pickerPage >= totalPages - 1 ? 'disabled' : ''}>Page suivante ›</button>
+      </div>`
+    : '';
+
+  return grid + pager;
 }
 
 /**
@@ -715,29 +774,41 @@ function updateResults() {
   box.innerHTML = pickerResults(getState());
   wireAddTargets(box);
   wirePickerDrag(host);
+  wirePickerPager(box);
+}
+
+/** Pagination de la grille de résultats (retour utilisateur). */
+function wirePickerPager(root) {
+  root.querySelectorAll('[data-picker-page]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      pickerPage += e.currentTarget.dataset.pickerPage === 'next' ? 1 : -1;
+      updateResults();
+    });
+  });
 }
 
 /**
  * Glisser un résultat de recherche vers l'assiette — recâblé à chaque mise à
- * jour des résultats (recherche, filtre). draggable vit sur la POIGNÉE
- * (.food-card__handle) et jamais sur la carte entière : la carte contient
- * son propre bouton « + » (data-add) — même bug déjà rencontré et corrigé
- * sur les créneaux du planning (card + boutons interactifs = draggable peu
- * fiable). setDragImage() affiche malgré tout la carte ENTIÈRE comme aperçu.
+ * jour des résultats (recherche, filtre). draggable vit sur la carte
+ * ENTIÈRE (retour utilisateur : glisser depuis n'importe où sur la tuile,
+ * pas seulement une petite poignée) — safe ici parce que la carte n'a
+ * PLUS de bouton interactif imbriqué (data-add est sur la carte elle-même,
+ * cf. pickerResults() ; seul le petit "+" visuel, purement décoratif, reste
+ * à l'intérieur) : rien à confondre avec un clic sur un sous-élément, contrairement
+ * au cas déjà rencontré et corrigé sur les créneaux du planning.
  */
 function wirePickerDrag(root) {
-  root.querySelectorAll('[data-drag-food]').forEach((handle) => {
-    const card = handle.closest('.food-card');
-    handle.addEventListener('dragstart', (e) => {
-      dragFoodPayload = handle.dataset.dragFood;
-      card?.classList.add('is-dragging');
+  root.querySelectorAll('[data-drag-food]').forEach((card) => {
+    card.addEventListener('dragstart', (e) => {
+      dragFoodPayload = card.dataset.dragFood;
+      card.classList.add('is-dragging');
       try {
         e.dataTransfer.effectAllowed = 'copy';
-        e.dataTransfer.setData('text/plain', handle.dataset.dragFood);
-        if (card) e.dataTransfer.setDragImage(card, 20, 20);
+        e.dataTransfer.setData('text/plain', card.dataset.dragFood);
+        e.dataTransfer.setDragImage(card, 20, 20);
       } catch { /* environnement sans dataTransfer (tests) */ }
     });
-    handle.addEventListener('dragend', () => card?.classList.remove('is-dragging'));
+    card.addEventListener('dragend', () => card.classList.remove('is-dragging'));
   });
 }
 
@@ -1176,10 +1247,11 @@ function wire(root, entity) {
   // focus et la fenêtre ne se réaffiche pas à chaque frappe.
   root.querySelector('[data-search]')?.addEventListener('input', (e) => {
     pickerQuery = e.target.value;
+    pickerPage = 0;
     updateResults();
   });
 
-  wireFoodFilterChips(root, 'data-cat', (id) => { pickerCategory = id; updateResults(); });
+  wireFoodFilterChips(root, 'data-cat', (id) => { pickerCategory = id; pickerPage = 0; updateResults(); });
 
   root.querySelectorAll('[data-target-person]').forEach((chip) => {
     chip.addEventListener('click', (e) => {
@@ -1198,6 +1270,7 @@ function wire(root, entity) {
   wireAddTargets(root);
   wirePickerDrag(root);
   wirePlateDrop(root);
+  wirePickerPager(root);
 
   root.querySelector('[data-scan-barcode]')?.addEventListener('click', () => {
     openScannerPanel(handleBarcodeDetected);

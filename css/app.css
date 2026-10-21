@@ -850,10 +850,14 @@ tbody tr:hover td { background: var(--surface-alt); }
    détaillée (quantités/verrous/sections, .items ci-dessous) reste affichée
    juste en dessous, inchangée. */
 .plate {
-  position: relative; margin: 4px auto 16px; width: 100%; max-width: 270px; aspect-ratio: 1 / 1;
+  position: relative; margin: 4px auto 16px; width: 100%; max-width: 300px; min-height: 300px;
   border-radius: 50%;
   /* Porcelaine : rebord clair, "puits" central légèrement creusé — un vrai
-     visuel de plat, plutôt qu'un simple cercle plat (retour utilisateur). */
+     visuel de plat, plutôt qu'un simple cercle plat (retour utilisateur).
+     Pas d'aspect-ratio figé : un plat qui contient beaucoup d'ingrédients aux
+     noms complets (retour utilisateur — jamais tronqués) s'étire en hauteur
+     plutôt que de forcer un cercle parfait qui les comprimerait ou les
+     masquerait ; border-radius: 50% donne alors un ovale, toujours "assiette". */
   background: radial-gradient(circle at 50% 50%, #ffffff 0 56%, #f3f0e7 58% 76%, #ffffff 78% 100%);
   box-shadow:
     inset 0 0 0 1px #eae5d6,
@@ -861,7 +865,7 @@ tbody tr:hover td { background: var(--surface-alt); }
     inset 0 -5px 10px rgba(255, 255, 255, .9),
     0 20px 30px -16px rgba(18, 32, 22, .4);
   display: flex; flex-wrap: wrap; align-content: center; justify-content: center; align-items: center;
-  gap: 7px; padding: 20%;
+  gap: 8px; padding: 18%;
   transition: background-color .12s ease, box-shadow .12s ease;
 }
 .plate.is-drop-target { background: var(--brand-50); box-shadow: inset 0 0 0 2px var(--brand-500), 0 20px 30px -16px rgba(18, 32, 22, .4); }
@@ -872,14 +876,20 @@ tbody tr:hover td { background: var(--surface-alt); }
   pointer-events: none;
 }
 .plate__empty { color: var(--ink-faint); font-size: var(--fs-xs); font-weight: 700; text-align: center; line-height: 1.6; }
+/* Même format que les cartes de résultats (.food-card) — retour utilisateur
+   — icône en pastille colorée + nom JAMAIS tronqué (autorisé à passer à la
+   ligne), plutôt qu'une pastille compacte en ellipsis. */
 .plate__token {
-  display: flex; align-items: center; gap: 5px;
-  background: #fff; border: 1px solid var(--line); border-radius: var(--radius-pill);
-  padding: 5px 7px 5px 9px; font-size: var(--fs-xs); font-weight: 700; box-shadow: var(--shadow-sm);
-  max-width: 120px;
+  display: flex; align-items: center; gap: 6px;
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  padding: 5px 8px 5px 5px; font-size: 11px; font-weight: 700; box-shadow: var(--shadow-sm);
+  max-width: 180px;
 }
-.plate__token-ico { font-size: 13px; flex: none; }
-.plate__token-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plate__token-ico {
+  font-size: 13px; flex: none; width: 22px; height: 22px; border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+}
+.plate__token-label { white-space: normal; overflow-wrap: break-word; line-height: 1.25; }
 .plate__token-remove {
   flex: none; border: 0; background: var(--off); color: #fff; width: 16px; height: 16px; border-radius: 50%;
   font-size: 10px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0;
@@ -893,10 +903,12 @@ tbody tr:hover td { background: var(--surface-alt); }
 .food-card {
   position: relative; display: flex; align-items: center; gap: 10px;
   background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm);
-  padding: 10px 34px 10px 10px; cursor: pointer; text-align: left;
+  padding: 10px 34px 10px 10px; cursor: grab; text-align: left;
+  -webkit-user-drag: element; user-select: none; -webkit-user-select: none; touch-action: none;
 }
 .food-card:hover { border-color: var(--brand-400); background: var(--brand-50); }
 .food-card:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 1px; }
+.food-card:active { cursor: grabbing; }
 .food-card.is-dragging { opacity: .4; }
 .food-card.is-suggested { border-color: var(--brand-400); background: var(--brand-50); }
 .food-card__badge {
@@ -906,11 +918,8 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .food-card__handle {
   flex: none; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
-  border-radius: var(--radius-sm); color: var(--ink-faint); cursor: grab; font-size: 13px;
-  -webkit-user-drag: element; user-select: none; -webkit-user-select: none; touch-action: none;
+  color: var(--ink-faint); font-size: 13px;
 }
-.food-card__handle:hover { background: #fff; color: var(--ink); }
-.food-card__handle:active { cursor: grabbing; }
 .food-card__icon {
   flex: none; width: 30px; height: 30px; border-radius: var(--radius-sm);
   display: flex; align-items: center; justify-content: center; font-size: 15px;
@@ -975,6 +984,7 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .picker__results button:hover { background: var(--brand-50); }
 .picker__results .cat { font-size: var(--fs-xs); color: var(--ink-soft); }
+.picker__pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip {
