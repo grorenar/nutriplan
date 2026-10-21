@@ -77,10 +77,20 @@ const type = (el, v) => { el.value = v; el.dispatchEvent(new window.Event('input
 const mousedown = (el) => el.dispatchEvent(new window.MouseEvent('mousedown', { bubbles: true }));
 const escapeKey = () => document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 const wait = () => new Promise((r) => setTimeout(r, 20));
+// Glisser-déposer (Planning) : jsdom ne fournit pas DataTransfer/DragEvent —
+// planning.js ne lit jamais dataTransfer.getData() (la charge voyage dans une
+// variable de module, cf. commentaire en tête de ce fichier), donc de
+// simples Event génériques suffisent à déclencher exactement le même code
+// que de vrais événements de glisser natifs (vérifié aussi avec de vrais
+// événements Playwright, voir le compte rendu).
+const dragStart = (el) => el.dispatchEvent(new window.Event('dragstart', { bubbles: true }));
+const dragOver = (el) => el.dispatchEvent(new window.Event('dragover', { bubbles: true, cancelable: true }));
+const drop = (el) => el.dispatchEvent(new window.Event('drop', { bubbles: true, cancelable: true }));
+const dragTo = (srcEl, dstEl) => { dragStart(srcEl); dragOver(dstEl); drop(dstEl); };
 
 console.log('\n— Démarrage');
 check('9 entrées de navigation (Préparations ajoutée, P4)', $$('#nav button').length === 9);
-check('8 créneaux de repas pour un cycle de 4 jours', $$('.meal-card').length === 8);
+check('8 créneaux de repas pour un cycle de 4 jours', $$('.meal-slot').length === 8);
 check('état de synchronisation affiché', /Mode local/.test($('#status').textContent));
 
 console.log('\n— Composition d’un déjeuner');
@@ -337,7 +347,7 @@ await wait();
 
 click($('#drawer [data-close]'));
 check('éditeur fermé', !$('#drawer .drawer__panel'));
-check('macros visibles sur la carte du planning', $$('.meal-card .macro').length >= 8);
+check('macros visibles sur la carte du planning', $$('.meal-slot .macro').length >= 8);
 
 console.log('\n— Duplication : nom du jour affiché dans les destinations (P3.5)');
 click($$('[data-dup]')[0]);
@@ -350,6 +360,87 @@ check('le nom du jour (Lundi/Mardi/…) accompagne désormais le numéro « jour
 click($('[data-dup-cancel]'));
 await wait();
 check('panneau de duplication fermé sans duplication', !$('[data-dup-confirm]'));
+
+console.log('\n— Planning : glisser-déposer (repas -> créneau, bibliothèque -> créneau)');
+{
+  const srcMealEl = $('[data-drag-meal]');
+  const srcMealId = srcMealEl.dataset.dragMeal;
+  const srcName = srcMealEl.querySelector('.meal-slot__name').textContent;
+  const emptySlotIdBefore = $$('.meal-slot.is-empty')[0]?.dataset.slot;
+
+  dragTo($(`[data-drag-meal="${srcMealId}"]`), $(`[data-slot="${emptySlotIdBefore}"]`));
+  await wait();
+  check('glisser un repas composé sur un créneau vide : le créneau n’est plus vide',
+    !$(`.meal-slot.is-empty[data-slot="${emptySlotIdBefore}"]`));
+  check('glisser un repas composé sur un créneau vide : composition copiée (même nom que la source)',
+    $(`[data-slot="${emptySlotIdBefore}"] .meal-slot__name`)?.textContent === srcName);
+  check('un seul mécanisme de copie : même résultat que le bouton « Dupliquer » (items distincts, pas de référence partagée)',
+    store.getState().meals.find((m) => m.id === emptySlotIdBefore).items.every(
+      (it) => !store.getState().meals.find((m) => m.id === srcMealId).items.some((si) => si.id === it.id)
+    ));
+
+  console.log('\n— Planning : glisser-déposer sur soi-même -> aucun effet');
+  const itemsBefore = JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items);
+  dragTo($(`[data-drag-meal="${srcMealId}"]`), $(`[data-drag-meal="${srcMealId}"]`));
+  await wait();
+  check('glisser un repas sur lui-même : aucune confirmation, aucun changement',
+    !$('[data-action-confirm]') && JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items) === itemsBefore);
+
+  console.log('\n— Planning : glisser-déposer vers un créneau déjà rempli -> confirmation requise');
+  const filledIds = $$('[data-drag-meal]').map((el) => el.dataset.dragMeal);
+  const [aId, bId] = filledIds;
+  const bNameBefore = $(`[data-slot="${bId}"] .meal-slot__name`).textContent;
+  dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-drag-meal="${bId}"]`));
+  await wait();
+  check('créneau cible déjà rempli : confirmation demandée avant tout remplacement', !!$('[data-action-confirm]'));
+  click($('[data-action-cancel]'));
+  await wait();
+  check('confirmation annulée : le créneau cible reste strictement inchangé',
+    $(`[data-slot="${bId}"] .meal-slot__name`).textContent === bNameBefore);
+  dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-drag-meal="${bId}"]`));
+  await wait();
+  click($('[data-action-confirm]'));
+  await wait();
+  const aName = $(`[data-slot="${aId}"] .meal-slot__name`)?.textContent;
+  check('confirmation acceptée : le créneau cible prend la composition de la source',
+    $(`[data-slot="${bId}"] .meal-slot__name`)?.textContent === aName);
+
+  console.log('\n— Planning : glisser un élément de la bibliothèque « Menus disponibles » sur un créneau vide');
+  // Aucune recette n'existe encore à ce stade de la suite : la bibliothèque
+  // (alimentée par state.recipes, jamais inventée) est donc vide — on crée
+  // une recette minimale directement en state, comme déjà pratiqué ailleurs
+  // dans cette suite pour amorcer un état précis sans repasser par chaque écran.
+  const testRecipeId = (() => {
+    const aFood = store.getState().foods[0];
+    let id;
+    store.update((s) => {
+      const r = store.newRecipe('Recette de test (glisser-déposer)', 'weight');
+      r.items = [store.newRecipeItem(aFood.id, 100, aFood.referenceState)];
+      r.baseGrams = 100;
+      id = r.id;
+      s.recipes.push(r);
+    });
+    return id;
+  })();
+  click($('[data-view="planning"]'));
+  await wait();
+  const libEl = $(`[data-drag-lib="recipe:${testRecipeId}"]`);
+  const libName = libEl?.querySelector('.library-card__name')?.textContent;
+  const emptySlotId2 = $$('.meal-slot.is-empty')[0]?.dataset.slot;
+  if (libEl && emptySlotId2) {
+    dragTo(libEl, $(`[data-slot="${emptySlotId2}"]`));
+    await wait();
+    check('glisser une recette de la bibliothèque sur un créneau vide : le créneau est rempli',
+      !$(`.meal-slot.is-empty[data-slot="${emptySlotId2}"]`));
+    check('le nom du repas reflète la recette déposée',
+      $(`[data-slot="${emptySlotId2}"] .meal-slot__name`)?.textContent.includes(libName) ||
+      store.getState().meals.find((m) => m.id === emptySlotId2).items.some((it) => it.recipeId),
+      `bibliothèque="${libName}"`);
+  } else {
+    check('bibliothèque -> créneau : au moins un élément et un créneau vide disponibles pour ce test', false,
+      `libEl=${!!libEl} emptySlotId2=${emptySlotId2}`);
+  }
+}
 
 console.log('\n— Détection de doublons : popup bloquante');
 click($('[data-view="foods"]'));
@@ -1371,7 +1462,7 @@ await wait();
 change($('[data-duration]'), '6');
 await wait();
 click($('[data-view="planning"]'));
-check('cycle passé à 6 jours', $$('.day').length === 6);
+check('cycle passé à 6 jours', $$('.day-col').length === 6);
 click($('[data-view="settings"]'));
 await wait();
 check('mode local expliqué dans le compte', /Mode local uniquement/.test($('#view').textContent));
@@ -1659,7 +1750,7 @@ check('ses affectations restent consultables (bouton "Voir les affectations" tou
 console.log('\n— P1 : l’éditeur de repas ne crée plus de préparation (retiré, P1.E)');
 click($('[data-view="planning"]'));
 await wait();
-click($$('.meal-card button').find((b) => /Modifier/i.test(b.textContent)));
+click($$('.meal-slot button').find((b) => /Modifier/i.test(b.textContent)));
 await wait();
 check('« Créer une préparation » retiré de l’éditeur de repas', !$('[data-new-prep]') && !$('[data-new-prep-recipe]') && !$('[data-new-prep-qty]'));
 click($('#drawer [data-close]'));
@@ -3243,7 +3334,7 @@ console.log('\n— Chantier recherche catalogue par code-barres : éditeur de re
 restoreCameraSupport();
 app.navigate('planning');
 await wait();
-click($$('.meal-card button').find((b) => /Modifier/i.test(b.textContent)));
+click($$('.meal-slot button').find((b) => /Modifier/i.test(b.textContent)));
 await wait();
 check('aucun bouton « Scanner » proposé sans support caméra', !$('#drawer [data-scan-barcode]'));
 click($('#drawer [data-close]'));
@@ -3254,7 +3345,7 @@ stubCameraSupport();
 const foodCountBeforeScan = store.getState().foods.length;
 const targetFood = store.getState().foods[0];
 store.update((s) => { s.foods.find((f) => f.id === targetFood.id).barcode = '1234567890123'; });
-const editedMealBtn = $$('.meal-card button').find((b) => /Modifier/i.test(b.textContent));
+const editedMealBtn = $$('.meal-slot button').find((b) => /Modifier/i.test(b.textContent));
 const editedMealId = editedMealBtn.dataset.edit;
 const mealById = () => store.getState().meals.find((m) => m.id === editedMealId);
 click(editedMealBtn);
@@ -3341,7 +3432,7 @@ await wait();
 console.log('\n— Chantier recherche catalogue par code-barres : éditeur de repas — code-barres illisible, distinct d’une absence de résultat');
 app.navigate('planning');
 await wait();
-click($$('.meal-card button').find((b) => /Modifier/i.test(b.textContent)));
+click($$('.meal-slot button').find((b) => /Modifier/i.test(b.textContent)));
 await wait();
 {
   const { lib, calls } = makeFakeScannerLib();

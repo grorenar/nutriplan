@@ -66,3 +66,24 @@ export function donutChart(segments, opts = {}) {
     <div class="donut__legend">${legend}</div>
   </div>`;
 }
+
+/**
+ * Anneau de progression à valeur unique (ex. "81 % de l'objectif kcal") —
+ * un arc coloré sur une piste neutre, jamais un donut à plusieurs segments.
+ * `pct` peut dépasser 100 (visuellement plafonné à un tour complet, mais le
+ * texte central affiche la vraie valeur, jamais tronquée silencieusement).
+ */
+export function progressRing(pct, { size = 64, thickness = 7, color = 'var(--brand-500)', label = '' } = {}) {
+  const r = (size - thickness) / 2;
+  const c = 2 * Math.PI * r;
+  const clamped = Math.max(0, Math.min(100, pct));
+  const len = (clamped / 100) * c;
+  return `<div class="ring" style="width:${size}px;height:${size}px">
+    <svg class="ring__svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${esc(label)} ${Math.round(pct)} %">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="var(--surface-sunken)" stroke-width="${thickness}" />
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}" stroke-width="${thickness}"
+        stroke-dasharray="${len} ${c - len}" stroke-linecap="round" />
+    </svg>
+    <div class="ring__text"><span class="ring__pct">${Math.round(pct)}%</span></div>
+  </div>`;
+}

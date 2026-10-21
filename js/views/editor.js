@@ -65,6 +65,7 @@ export function closeEditor() {
   closeScannerPanel(); // la caméra ne doit jamais rester active une fois le tiroir refermé
   ctx = null;
   if (host) host.innerHTML = '';
+  document.body.classList.remove('has-dock-editor');
 }
 
 /* ------------------------------------------------------------------ */
@@ -207,13 +208,17 @@ export function renderEditor() {
   let panel = host.querySelector('.drawer__panel');
   if (!panel) {
     host.innerHTML = `
-      <div class="drawer" data-close-backdrop>
+      <div class="drawer drawer--dock-fixed" data-close-backdrop>
         <div class="drawer__panel" role="dialog" aria-label="Édition du repas">
           <div class="drawer__head"></div>
           <div class="drawer__body"></div>
         </div>
       </div>`;
     panel = host.querySelector('.drawer__panel');
+    // Sur desktop/tablette large, le panneau reste fixe à droite SANS fond
+    // assombri (cf. app.css) : le tableau de jours reste visible et
+    // manipulable à côté — posé une seule fois, à l'ouverture.
+    document.body.classList.add('has-dock-editor');
   }
   panel.querySelector('.drawer__head').innerHTML = head;
   panel.querySelector('.drawer__body').innerHTML = body;
