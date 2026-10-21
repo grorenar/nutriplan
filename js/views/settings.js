@@ -11,12 +11,34 @@ const TYPES = ['day', 'breakfast', 'lunch', 'snack_afternoon', 'dinner', 'snack_
 let importReport = null; // doublons probables repérés au dernier import
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
 
+// Onglets plutôt qu'un long empilement de cartes (refonte graphique) : chaque
+// section garde exactement son contenu/comportement d'avant, seule la
+// présentation change. L'onglet actif est un état d'écran ordinaire (même
+// mécanisme que `pendingConfirm`/`importReport`), pas une route — il revient
+// à « Objectifs nutritionnels » à la réouverture de l'écran, comme avant.
+const TABS = [
+  { id: 'targets', label: 'Objectifs nutritionnels', icon: '🎯' },
+  { id: 'cycle', label: 'Cycle', icon: '📅' },
+  { id: 'batch', label: 'Batch cooking', icon: '🍲' },
+  { id: 'data', label: 'Données', icon: '🗂️' },
+  { id: 'account', label: 'Compte', icon: '☁️' },
+];
+let activeTab = 'targets';
+
 export async function render(root) {
   const s = getState();
 
   root.innerHTML = `
-    <div class="card">
-      <div class="card__head"><h2>Objectifs nutritionnels</h2></div>
+    <div class="tabs__list" role="tablist" aria-label="Sections des paramètres">
+      ${TABS.map(
+        (t) => `<button type="button" class="tabs__btn" role="tab" data-tab="${t.id}" aria-selected="${t.id === activeTab}">
+          <span aria-hidden="true">${t.icon}</span> ${t.label}
+        </button>`
+      ).join('')}
+    </div>
+
+    <div class="card" data-panel="targets" ${activeTab === 'targets' ? '' : 'hidden'}>
+      <div class="card__head"><h2>Objectifs nutritionnels</h2><p>Les besoins caloriques et macros par repas, pour Thomas et Julie.</p></div>
       ${PERSONS.map((p) => targetTable(p, s)).join('')}
       <div class="row" style="margin-top:10px">
         <label class="field" style="max-width:200px">Tolérance (%)
@@ -28,8 +50,8 @@ export async function render(root) {
       <small>Recalcule automatiquement les quantités d'un repas pour viser ces objectifs, à chaque modification. Peut aussi être activé/désactivé ponctuellement depuis l'éditeur de repas.</small>
     </div>
 
-    <div class="card">
-      <div class="card__head"><h2>Cycle</h2></div>
+    <div class="card" data-panel="cycle" ${activeTab === 'cycle' ? '' : 'hidden'}>
+      <div class="card__head"><h2>Cycle</h2><p>Durée du cycle de repas et budget de courses associé.</p></div>
       <div class="grid grid--3">
         <label class="field">Premier jour du cycle
           <select data-startday>${WEEKDAYS.map((d, i) => `<option value="${i}" ${s.settings.cycle.startWeekday === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
@@ -40,8 +62,8 @@ export async function render(root) {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card__head"><h2>Batch cooking</h2></div>
+    <div class="card" data-panel="batch" ${activeTab === 'batch' ? '' : 'hidden'}>
+      <div class="card__head"><h2>Batch cooking</h2><p>Active les sessions de préparation groupée et leur durée de conservation.</p></div>
       <div class="row">
         <label class="check"><input type="checkbox" data-batch-enabled ${s.settings.batch.enabled ? 'checked' : ''}> Activer le batch cooking</label>
         <label class="field" style="max-width:220px">Conservation maximale (jours)
@@ -49,17 +71,14 @@ export async function render(root) {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card__head"><h2>Données</h2></div>
+    <div class="card" data-panel="data" ${activeTab === 'data' ? '' : 'hidden'}>
+      <div class="card__head"><h2>Données</h2><p>Sauvegarde portable et actions sensibles sur le cycle en cours.</p></div>
       <div class="row">
         <button class="btn" data-export>Exporter en JSON</button>
         <label class="btn" style="display:inline-flex;align-items:center">Importer un JSON
           <input type="file" accept="application/json" data-import style="display:none">
         </label>
-        <span class="spacer"></span>
-        <button class="btn btn--danger" data-reset-cycle>Réinitialiser le cycle</button>
       </div>
-      <small>La réinitialisation du cycle efface le planning, les achats cochés, les quantités de batch et les compteurs d'utilisation des catalogues. Elle ne touche ni à la banque alimentaire, ni aux objectifs, ni aux options des catalogues.</small>
       <small style="display:block;margin-top:8px" class="muted">Export/Import JSON : un fichier portable que tu télécharges ou réimportes toi-même — distinct de l'enregistrement automatique dans ce navigateur (silencieux, à chaque modification) et du compte cloud ci-dessous (partagé entre appareils).</small>
       ${
         importReport
@@ -75,9 +94,15 @@ export async function render(root) {
             </div>`
           : ''
       }
+      <div class="row" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
+        <strong class="tag" style="color:var(--off)">Zone sensible</strong>
+        <span class="spacer"></span>
+        <button class="btn btn--danger" data-reset-cycle>Réinitialiser le cycle</button>
+      </div>
+      <small>La réinitialisation du cycle efface le planning, les achats cochés, les quantités de batch et les compteurs d'utilisation des catalogues. Elle ne touche ni à la banque alimentaire, ni aux objectifs, ni aux options des catalogues.</small>
     </div>
 
-    <div class="card">
+    <div class="card" data-panel="account" ${activeTab === 'account' ? '' : 'hidden'}>
       <div class="card__head"><h2>Compte et synchronisation</h2></div>
       <div data-account>Chargement…</div>
     </div>
@@ -104,11 +129,20 @@ function targetTable(person, s) {
   }).join('');
 
   return `<h3 class="person-name person-name--${person}" style="margin:12px 0 4px">${PERSON_LABEL[person]}</h3>
-    <table><thead><tr><th>Repas</th><th>kcal</th><th>Protéines</th><th>Glucides</th><th>Lipides</th></tr></thead>
-    <tbody>${rows}</tbody></table>`;
+    <div class="table-scroll">
+      <table><thead><tr><th>Repas</th><th>kcal</th><th>Protéines</th><th>Glucides</th><th>Lipides</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+    </div>`;
 }
 
 function wire(root) {
+  root.querySelectorAll('[data-tab]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      activeTab = e.currentTarget.dataset.tab;
+      render(root);
+    })
+  );
+
   root.querySelectorAll('[data-target]').forEach((input) =>
     input.addEventListener('change', (e) => {
       const { target: person, type, key } = e.target.dataset;

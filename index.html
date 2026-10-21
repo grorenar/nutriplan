@@ -5,14 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Nutriplan — Thomas &amp; Julie</title>
   <meta name="description" content="Planification nutritionnelle et batch cooking pour deux personnes.">
-  <meta name="theme-color" content="#17242c">
+  <meta name="theme-color" content="#16241b">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="css/app.css">
   <link rel="stylesheet" href="css/print.css">
 </head>
 <body>
   <div class="layout">
     <aside class="rail">
-      <div class="rail__brand">Nutriplan<span>Thomas &amp; Julie</span></div>
+      <div class="rail__brand">
+        <span class="rail__brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M12 21c-4.5-1-7-4.8-7-9.5C5 7 7.8 3.6 12 3c4.2.6 7 4 7 8.5 0 4.7-2.5 8.5-7 9.5Z" fill="#fff" fill-opacity=".92"/>
+            <path d="M12 21V9" stroke="#2f6f46" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </span>
+        Nutriplan<span>Thomas &amp; Julie</span>
+      </div>
       <nav class="rail__nav" id="nav" aria-label="Navigation principale"></nav>
       <div class="rail__foot" id="status"></div>
     </aside>

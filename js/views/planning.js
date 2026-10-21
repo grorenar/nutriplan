@@ -1,7 +1,7 @@
 /** Écran PLANNING — cycles de courses/batch, sans aucune date réelle. */
 
 import { getState, update, foodsById, recipesById, preparationsById, itemLabel } from '../core/store.js';
-import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, autoAdjust } from '../core/nutrition.js';
+import { mealMacros, evaluate, PERSONS, PERSON_LABEL, MEAL_TYPES, MACRO_META, autoAdjust } from '../core/nutrition.js';
 import { optimizeSuggestions, dayTotals } from '../core/derive.js';
 import { dayName, esc, num, toast, uid } from '../core/util.js';
 import { openEditor } from './editor.js';
@@ -27,10 +27,9 @@ export function render(root) {
           <h2>${esc(dayName(startWeekday, d))}</h2>
           <span class="day__num">Jour ${d + 1}</span>
           <span class="spacer"></span>
-          ${PERSONS.map((p) => {
-            const t = dayTotals(s, byId, d, p, recipesMap, preparationsMap);
-            return `<small class="nums">${PERSON_LABEL[p]} ${num(t.kcal, 0)} kcal · ${num(t.protein, 0)} P</small>`;
-          }).join(' ')}
+          <div class="row row--tight">
+            ${PERSONS.map((p) => dayMacroSummary(p, d, s, byId, recipesMap, preparationsMap)).join('')}
+          </div>
         </div>
         <div class="grid grid--2">
           ${meals.map((m) => mealCard(m, byId, s, recipesMap, preparationsMap)).join('')}
@@ -51,6 +50,35 @@ export function render(root) {
   `;
 
   wire(root);
+}
+
+/**
+ * Résumé macro de la journée pour une personne (déjeuner + dîner — même
+ * portée que `dayTotals()`, inchangée) : remplace l'ancien texte brut
+ * "Thomas 2100 kcal · 150 P" par les badges nutritionnels à couleur
+ * constante (kcal/P/G/L, cf. design system), avec l'objectif du jour
+ * (somme des objectifs déjeuner+dîner, même convention que mealCard()) pour
+ * qu'un coup d'œil situe la journée sans ouvrir aucun repas.
+ */
+function dayMacroSummary(person, dayIndex, s, byId, recipesMap, preparationsMap) {
+  const t = dayTotals(s, byId, dayIndex, person, recipesMap, preparationsMap);
+  const target = ['kcal', 'protein', 'carbs', 'fat'].reduce((acc, k) => {
+    acc[k] = (s.settings.targets[person].lunch?.[k] || 0) + (s.settings.targets[person].dinner?.[k] || 0);
+    return acc;
+  }, {});
+  const badges = Object.keys(MACRO_META)
+    .map((key) => {
+      const meta = MACRO_META[key];
+      const decimals = key === 'kcal' ? 0 : 0;
+      return `<span class="macro-badge" data-macro="${meta.cls}" title="${esc(meta.label)}${target[key] ? ` — objectif ${num(target[key], decimals)}` : ''}">
+        <b>${num(t[key], decimals)}</b> ${meta.short}
+      </span>`;
+    })
+    .join('');
+  return `<div class="person-band person-band--${person}">
+    <span class="person-name person-name--${person}">${PERSON_LABEL[person]}</span>
+    <div class="macros" style="margin-top:2px">${badges}</div>
+  </div>`;
 }
 
 function mealCard(meal, byId, s, recipesMap, preparationsMap) {

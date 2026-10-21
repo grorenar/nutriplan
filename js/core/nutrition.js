@@ -11,17 +11,35 @@
 
 import { clamp } from './util.js';
 
+// `icon` : purement décoratif (identification visuelle rapide d'une catégorie
+// dans les listes/badges) — jamais utilisé dans un calcul, jamais persisté
+// séparément de l'id (ajout additif, sans effet sur l'identification réelle
+// d'une catégorie qui reste `id`).
 export const CATEGORIES = [
-  { id: 'proteine', label: 'Protéine' },
-  { id: 'feculent', label: 'Féculent' },
-  { id: 'legumineuse', label: 'Légumineuse' },
-  { id: 'legume', label: 'Légume' },
-  { id: 'fruit', label: 'Fruit' },
-  { id: 'laitier', label: 'Produit laitier' },
-  { id: 'matiere_grasse', label: 'Matière grasse' },
-  { id: 'oleagineux', label: 'Noix & graines' },
-  { id: 'autre', label: 'Autre' },
+  { id: 'proteine', label: 'Protéine', icon: '🍗' },
+  { id: 'feculent', label: 'Féculent', icon: '🌾' },
+  { id: 'legumineuse', label: 'Légumineuse', icon: '🫘' },
+  { id: 'legume', label: 'Légume', icon: '🥦' },
+  { id: 'fruit', label: 'Fruit', icon: '🍎' },
+  { id: 'laitier', label: 'Produit laitier', icon: '🧀' },
+  { id: 'matiere_grasse', label: 'Matière grasse', icon: '🫒' },
+  { id: 'oleagineux', label: 'Noix & graines', icon: '🌰' },
+  { id: 'autre', label: 'Autre', icon: '🏷️' },
 ];
+
+/**
+ * Identité visuelle des 4 données nutritionnelles centrales — un jeu de
+ * couleurs UNIQUE, réutilisé tel quel dans tous les modules (Planning,
+ * Recettes, Aliments, Batch...) pour qu'elles restent identifiables
+ * instantanément, quel que soit l'écran (cf. refonte graphique). `cls` est le
+ * suffixe de la classe CSS déjà définie dans app.css (`.macro-badge--${cls}`).
+ */
+export const MACRO_META = {
+  kcal: { label: 'Calories', short: 'kcal', icon: '🔥', cls: 'kcal' },
+  protein: { label: 'Protéines', short: 'P', icon: '💪', cls: 'protein' },
+  carbs: { label: 'Glucides', short: 'G', icon: '🌾', cls: 'carbs' },
+  fat: { label: 'Lipides', short: 'L', icon: '💧', cls: 'fat' },
+};
 
 export const STATES = [
   { id: 'cru', label: 'Cru / brut' },

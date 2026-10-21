@@ -32,6 +32,15 @@ export function render(root) {
   wire(root);
 }
 
+/**
+ * En-tête d'étape numéroté (parcours réel préparation → cuisson → assemblage
+ * → résultat, cf. design system) — purement visuel, aucun effet sur le
+ * contenu ni l'ordre des blocs, qui reste celui déjà calculé par
+ * buildBatchPlan() (derive.js).
+ */
+const stepHead = (n, title, icon) =>
+  `<div class="step-head"><span class="step-head__num">${n}</span><h3><span aria-hidden="true">${icon}</span> ${esc(title)}</h3></div>`;
+
 const slot = (startWeekday, dayIndex, mealType) =>
   `${dayName(startWeekday, dayIndex).toLowerCase()} ${mealType === 'lunch' ? 'midi' : 'soir'}`;
 
@@ -144,7 +153,7 @@ function cookedObtainedCell(c) {
 
 function componentsBlock(sess, startWeekday) {
   if (!sess.components.length) {
-    return `<h3>${BATCH_CATEGORY_LABEL.batch}</h3><p class="muted">Aucun composant batchable sur cette session.</p>`;
+    return `${stepHead(1, BATCH_CATEGORY_LABEL.batch, '🧺')}<p class="muted">Aucun composant batchable sur cette session.</p>`;
   }
   const rows = sess.components
     .map((c) => {
@@ -183,7 +192,7 @@ function componentsBlock(sess, startWeekday) {
     })
     .join('');
 
-  return `<h3>${BATCH_CATEGORY_LABEL.batch}</h3>
+  return `${stepHead(1, BATCH_CATEGORY_LABEL.batch, '🧺')}
     <div class="table-scroll">
       <table>
         <thead><tr>
@@ -282,15 +291,18 @@ function destinationsDetail(c, startWeekday) {
 
 /* ------------------------------------- B et C — le jour même */
 
+const SAME_DAY_STEP = { cook: { n: 2, icon: '🔥' }, assemble: { n: 3, icon: '🍱' } };
+
 function sameDayBlock(kind, rows, startWeekday) {
   const label = BATCH_CATEGORY_LABEL[kind];
-  if (!rows.length) return `<h3>${label}</h3><p class="muted">Rien dans cette catégorie sur cette session.</p>`;
+  const step = SAME_DAY_STEP[kind];
+  if (!rows.length) return `${stepHead(step.n, label, step.icon)}<p class="muted">Rien dans cette catégorie sur cette session.</p>`;
   const byMeal = {};
   for (const r of rows) {
     const key = `${r.dayIndex}:${r.mealType}`;
     (byMeal[key] ||= { dayIndex: r.dayIndex, mealType: r.mealType, items: [] }).items.push(r);
   }
-  return `<h3>${label}</h3>
+  return `${stepHead(step.n, label, step.icon)}
     ${Object.values(byMeal)
       .sort((a, b) => a.dayIndex - b.dayIndex || (a.mealType === 'lunch' ? -1 : 1))
       .map(
@@ -328,7 +340,7 @@ function sameDayItem(r) {
 function gamellesBlock(sess, startWeekday) {
   const filled = sess.gamelles.filter((g) => PERSONS.some((p) => g.persons[p].length));
   if (!filled.length) return '';
-  return `<h3>Détail des gamelles</h3>
+  return `${stepHead(4, 'Détail des gamelles', '📦')}
     <div class="grid grid--2">
       ${filled
         .map(

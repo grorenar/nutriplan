@@ -57,15 +57,17 @@ function renderFull(root, s, byId) {
       <button class="btn btn--primary" data-new>Nouvelle recette</button>
     </div>
     <div class="card">
-      <table>
-        <thead><tr>
-          <th>Recette</th><th>Type</th><th class="nums">Référence</th><th class="nums">kcal / 100</th>
-          <th>Ingrédients</th><th></th>
-        </tr></thead>
-        <tbody>
-          ${list.length ? list.map((r) => rowOf(r, s, byId)).join('') : `<tr><td colspan="6" class="muted">Aucune recette créée.</td></tr>`}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>Recette</th><th>Type</th><th class="nums">Référence</th><th class="nums">kcal / 100</th>
+            <th>Ingrédients</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${list.length ? list.map((r) => rowOf(r, s, byId)).join('') : `<tr><td colspan="6" class="muted">Aucune recette créée.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
     </div>
     ${editing ? formPanel(s, byId) : ''}
   `;
@@ -278,56 +280,77 @@ function formBodyHtml(r, s, byId) {
       }).join('')
     : `<div class="empty" style="margin:8px 0">Aucun ingrédient. Ajoute-en un ci-dessous.</div>`;
 
-  return `<div class="grid grid--3">
-      <label class="field" style="grid-column:1/-1">Nom
-        <input type="text" data-r="name" value="${esc(r.name)}"></label>
-      <label class="field">Type
-        <select data-r="kind">
-          <option value="weight" ${r.kind === 'weight' ? 'selected' : ''}>Au poids (grammes)</option>
-          <option value="portion" ${r.kind === 'portion' ? 'selected' : ''}>Portion (unité indivisible)</option>
-        </select>
-      </label>
+  return `<div class="form-section">
+      <div class="form-section__head"><span class="ico" aria-hidden="true">📋</span><h3>Général</h3></div>
+      <div class="grid grid--3">
+        <label class="field" style="grid-column:1/-1">Nom
+          <input type="text" data-r="name" value="${esc(r.name)}"></label>
+        <label class="field">Type
+          <select data-r="kind">
+            <option value="weight" ${r.kind === 'weight' ? 'selected' : ''}>Au poids (grammes)</option>
+            <option value="portion" ${r.kind === 'portion' ? 'selected' : ''}>Portion (unité indivisible)</option>
+          </select>
+        </label>
+        ${
+          r.kind === 'weight'
+            ? `<label class="field">Poids de référence (g)
+                 <input type="number" min="1" step="1" data-r="baseGrams" value="${num(r.baseGrams, 0)}"></label>
+               <small style="grid-column:1/-1">Calculé automatiquement depuis la composition (${num(portionBase, 0)} g) — modifie-le uniquement si le poids RÉELLEMENT obtenu après cuisson diffère (perte/gain à la cuisson).</small>`
+            : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). Utilisée dans un repas, la recette se sélectionne en nombre entier de portions.</small>`
+        }
+      </div>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section__head"><span class="ico" aria-hidden="true">🔥</span><h3>Valeurs nutritionnelles</h3></div>
+      <div class="macros">
+        <span class="macro-badge" data-macro="kcal"><b>${num(per100.kcal, 0)}</b> kcal</span>
+        <span class="macro-badge" data-macro="protein"><b>${num(per100.protein, 1)}</b> g P</span>
+        <span class="macro-badge" data-macro="carbs"><b>${num(per100.carbs, 1)}</b> g G</span>
+        <span class="macro-badge" data-macro="fat"><b>${num(per100.fat, 1)}</b> g L</span>
+      </div>
+      <small style="display:block;margin-top:6px">Pour 100${r.kind === 'weight' ? ' g' : ' (base = 1 portion)'} — calculées automatiquement depuis la composition, jamais stockées.</small>
+    </div>
+
+    <div class="form-section">
+      <div class="form-section__head"><span class="ico" aria-hidden="true">🥦</span><h3>Ingrédients</h3></div>
+      <div class="items" style="margin:10px 0">${ingredientRows}</div>
       ${
         r.kind === 'weight'
-          ? `<label class="field">Poids de référence (g)
-               <input type="number" min="1" step="1" data-r="baseGrams" value="${num(r.baseGrams, 0)}"></label>
-             <small style="grid-column:1/-1">Calculé automatiquement depuis la composition (${num(portionBase, 0)} g) — modifie-le uniquement si le poids RÉELLEMENT obtenu après cuisson diffère (perte/gain à la cuisson).</small>`
-          : `<small style="grid-column:1/-1">Recette portion : la composition ci-dessous décrit UNE portion (${num(portionBase, 0)} g). Utilisée dans un repas, la recette se sélectionne en nombre entier de portions.</small>`
+          ? `<small style="display:block;margin-bottom:6px">Une recette « au poids » ne peut pas contenir d'aliment non fractionnable — crée-la en type « Portion » pour cet aliment.</small>`
+          : ''
       }
+      ${ingredientPicker(s)}
     </div>
 
-    <h3 style="margin:16px 0 6px">Ingrédients</h3>
-    <small>kcal / 100${r.kind === 'weight' ? ' g' : ' (base = 1 portion)'} : ${num(per100.kcal, 0)} · P ${num(per100.protein, 1)} g · G ${num(per100.carbs, 1)} g · L ${num(per100.fat, 1)} g</small>
-    <div class="items" style="margin:10px 0">${ingredientRows}</div>
-    ${
-      r.kind === 'weight'
-        ? `<small style="display:block;margin-bottom:6px">Une recette « au poids » ne peut pas contenir d'aliment non fractionnable — crée-la en type « Portion » pour cet aliment.</small>`
-        : ''
-    }
-    ${ingredientPicker(s)}
+    <div class="form-section">
+      <div class="form-section__head"><span class="ico" aria-hidden="true">🍲</span><h3>Batch cooking</h3></div>
+      <label class="check"><input type="checkbox" data-r="batchAllowed" ${r.batchAllowed ? 'checked' : ''}> Autorisée en batch cooking</label>
+      <small style="display:block;margin:4px 0 8px">Une recette autorisée en batch cooking, référencée directement dans un repas (pas encore préparée), apparaît dans l'écran Batch avec sa quantité nette à préparer.</small>
+      <div class="grid grid--3">
+        <label class="field">Durée maximale de conservation après préparation (jours)
+          <input type="number" step="1" min="0" data-r="shelfLifeDays" value="${num(r.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
+      </div>
+      <small style="display:block;margin:4px 0 8px">Si la conservation est plus courte que la durée d'une session de batch, le plan indique automatiquement les préparations supplémentaires nécessaires en cours de session.</small>
+    </div>
 
-    <h3 style="margin:16px 0 6px">Batch cooking</h3>
-    <label class="check"><input type="checkbox" data-r="batchAllowed" ${r.batchAllowed ? 'checked' : ''}> Autorisée en batch cooking</label>
-    <small style="display:block;margin:4px 0 8px">Une recette autorisée en batch cooking, référencée directement dans un repas (pas encore préparée), apparaît dans l'écran Batch avec sa quantité nette à préparer.</small>
-    <div class="grid grid--3">
-      <label class="field">Durée maximale de conservation après préparation (jours)
-        <input type="number" step="1" min="0" data-r="shelfLifeDays" value="${num(r.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
+    <div class="form-section">
+      <div class="form-section__head"><span class="ico" aria-hidden="true">📝</span><h3>Notes</h3></div>
+      <div class="grid grid--3">
+        <label class="field">Méthode de cuisson
+          <input type="text" data-r="cookingMethod" value="${esc(r.cookingMethod || '')}" placeholder="Four, mijoteuse, poêle…"></label>
+        <label class="field">Température (°C)
+          <input type="number" step="5" data-r="cookingTemp" value="${num(r.cookingTemp)}"></label>
+        <label class="field">Durée de cuisson (min)
+          <input type="number" step="1" data-r="cookingTime" value="${num(r.cookingTime)}"></label>
+        <label class="field">Temps de préparation (min)
+          <input type="number" step="1" data-r="prepTime" value="${num(r.prepTime)}"></label>
+        <label class="field">Matériel
+          <input type="text" data-r="equipment" value="${esc(r.equipment || '')}" placeholder="Four, sauteuse…"></label>
+      </div>
+      <label class="field" style="margin-top:8px">Consignes libres
+        <textarea data-r="instructions" rows="3" placeholder="Ex. mijoter à couvert, remuer à mi-cuisson.">${esc(r.instructions || '')}</textarea></label>
     </div>
-    <small style="display:block;margin:4px 0 8px">Si la conservation est plus courte que la durée d'une session de batch, le plan indique automatiquement les préparations supplémentaires nécessaires en cours de session.</small>
-    <div class="grid grid--3">
-      <label class="field">Méthode de cuisson
-        <input type="text" data-r="cookingMethod" value="${esc(r.cookingMethod || '')}" placeholder="Four, mijoteuse, poêle…"></label>
-      <label class="field">Température (°C)
-        <input type="number" step="5" data-r="cookingTemp" value="${num(r.cookingTemp)}"></label>
-      <label class="field">Durée de cuisson (min)
-        <input type="number" step="1" data-r="cookingTime" value="${num(r.cookingTime)}"></label>
-      <label class="field">Temps de préparation (min)
-        <input type="number" step="1" data-r="prepTime" value="${num(r.prepTime)}"></label>
-      <label class="field">Matériel
-        <input type="text" data-r="equipment" value="${esc(r.equipment || '')}" placeholder="Four, sauteuse…"></label>
-    </div>
-    <label class="field" style="margin-top:8px">Consignes libres
-      <textarea data-r="instructions" rows="3" placeholder="Ex. mijoter à couvert, remuer à mi-cuisson.">${esc(r.instructions || '')}</textarea></label>
 
     <div class="row" style="margin-top:18px">
       <button class="btn btn--primary" data-save>Enregistrer</button>

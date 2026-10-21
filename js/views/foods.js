@@ -131,15 +131,17 @@ function renderFull(root, s) {
     </div>` : ''}
     ${duplicatesOpen ? duplicatesPanel(duplicateGroups, s) : ''}
     <div class="card">
-      <table>
-        <thead><tr>
-          <th>Aliment</th><th class="nums">kcal</th><th class="nums">P</th><th class="nums">G</th><th class="nums">L</th>
-          <th>État</th><th>Unité</th><th class="nums">Prix</th><th>Batch</th><th></th>
-        </tr></thead>
-        <tbody>
-          ${list.length ? list.map(rowOf).join('') : `<tr><td colspan="10" class="muted">Aucun aliment ne correspond.</td></tr>`}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>Aliment</th><th class="nums">kcal</th><th class="nums">P</th><th class="nums">G</th><th class="nums">L</th>
+            <th>État</th><th>Unité</th><th class="nums">Prix</th><th>Batch</th><th></th>
+          </tr></thead>
+          <tbody>
+            ${list.length ? list.map(rowOf).join('') : `<tr><td colspan="10" class="muted">Aucun aliment ne correspond.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
     </div>
     <small>${list.length} aliment(s) affiché(s) sur ${s.foods.length}. Valeurs pour 100 g dans l'état de référence.</small>
     ${editing ? formPanel(s) : ''}
@@ -258,10 +260,11 @@ function captureBaselineIfNeeded(root, s) {
 }
 
 function rowOf(f) {
+  const cat = CATEGORIES.find((c) => c.id === f.category);
   return `<tr>
     <td><strong>${esc(f.name)}</strong>${f.brand ? ` <span class="tag">${esc(f.brand)}</span>` : ''}
       ${f.favorite ? ' ★' : ''}
-      <div class="tag">${esc(CATEGORIES.find((c) => c.id === f.category)?.label || '')}</div></td>
+      <div style="margin-top:3px">${cat ? `<span class="cat-badge" data-cat="${cat.id}">${cat.icon} ${esc(cat.label)}</span>` : ''}</div></td>
     <td class="nums">${num(f.kcal, 0)}</td>
     <td class="nums">${num(f.protein, 1)}</td>
     <td class="nums">${num(f.carbs, 1)}</td>
@@ -309,80 +312,93 @@ function formPanel(s) {
 /** Contenu de .drawer__body — réutilisé tel quel par refreshOpenForm(). */
 function formBodyHtml(f) {
   const n = (v) => (v === null || v === undefined ? '' : v);
-  return `${editing === 'new' ? `<div class="row" style="margin-bottom:12px">
+  return `${editing === 'new' ? `<div class="row" style="margin-bottom:14px">
           <button class="btn btn--sm" data-off-open type="button">Rechercher sur Open Food Facts</button>
           <small>Préremplit la fiche depuis un produit existant — tout reste modifiable avant d'enregistrer.</small>
         </div>` : ''}
-        <div class="grid grid--3">
-          <label class="field" style="grid-column:1/-1">Nom
-            <input type="text" data-f="name" value="${esc(f.name)}"></label>
-          <label class="field">Marque (facultatif)
-            <input type="text" data-f="brand" value="${esc(f.brand)}"></label>
-          <label class="field">Catégorie
-            <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.label}</option>`).join('')}</select>
-            ${editing === 'new' && Boolean(f.offUrl || f.offFetchedAt) ? '<small>Suggestion Open Food Facts — vérifie et modifie si besoin.</small>' : ''}</label>
-          <label class="field">Code-barres (facultatif)
-            <input type="text" inputmode="numeric" pattern="[0-9]*" data-f="barcode" value="${esc(f.barcode || '')}" placeholder="EAN…"></label>
+
+        <div class="form-section">
+          <div class="form-section__head"><span class="ico" aria-hidden="true">📋</span><h3>Général</h3></div>
+          <div class="grid grid--3">
+            <label class="field" style="grid-column:1/-1">Nom
+              <input type="text" data-f="name" value="${esc(f.name)}"></label>
+            <label class="field">Marque (facultatif)
+              <input type="text" data-f="brand" value="${esc(f.brand)}"></label>
+            <label class="field">Catégorie
+              <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.icon} ${c.label}</option>`).join('')}</select>
+              ${editing === 'new' && Boolean(f.offUrl || f.offFetchedAt) ? '<small>Suggestion Open Food Facts — vérifie et modifie si besoin.</small>' : ''}</label>
+            <label class="field">Code-barres (facultatif)
+              <input type="text" inputmode="numeric" pattern="[0-9]*" data-f="barcode" value="${esc(f.barcode || '')}" placeholder="EAN…"></label>
+          </div>
         </div>
-        <h3 style="margin:16px 0 6px">Pour 100 g</h3>
-        <small style="display:block;margin-bottom:6px">Les valeurs ci-dessous correspondent à l'état sélectionné plus bas dans « État des valeurs nutritionnelles ».</small>
-        <div class="grid grid--3">
-          <label class="field">kcal <input type="number" step="1" data-f="kcal" value="${n(f.kcal)}"></label>
-          <label class="field">Protéines (g) <input type="number" step="0.1" data-f="protein" value="${n(f.protein)}"></label>
-          <label class="field">Glucides (g) <input type="number" step="0.1" data-f="carbs" value="${n(f.carbs)}"></label>
-          <label class="field">Lipides (g) <input type="number" step="0.1" data-f="fat" value="${n(f.fat)}"></label>
-          <label class="field">Fibres (g) <input type="number" step="0.1" data-f="fiber" value="${n(f.fiber)}"></label>
+
+        <div class="form-section">
+          <div class="form-section__head"><span class="ico" aria-hidden="true">🔥</span><h3>Valeurs nutritionnelles (pour 100 g)</h3></div>
+          <small style="display:block;margin-bottom:6px">Les valeurs ci-dessous correspondent à l'état sélectionné dans « État et unités » ci-après.</small>
+          <div class="grid grid--3">
+            <label class="field">Calories (kcal) <input type="number" step="1" data-f="kcal" value="${n(f.kcal)}"></label>
+            <label class="field">Protéines (g) <input type="number" step="0.1" data-f="protein" value="${n(f.protein)}"></label>
+            <label class="field">Glucides (g) <input type="number" step="0.1" data-f="carbs" value="${n(f.carbs)}"></label>
+            <label class="field">Lipides (g) <input type="number" step="0.1" data-f="fat" value="${n(f.fat)}"></label>
+            <label class="field">Fibres (g) <input type="number" step="0.1" data-f="fiber" value="${n(f.fiber)}"></label>
+          </div>
+          ${offInfoBlock(f)}
         </div>
-        ${offInfoBlock(f)}
-        <h3 style="margin:16px 0 6px">État et unités</h3>
-        <div class="grid grid--3">
-          <label class="field">État des valeurs nutritionnelles
-            <select data-f="referenceState">${STATES.map((st) => `<option value="${st.id}" ${f.referenceState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}</select></label>
-          <label class="field">Rendement après cuisson
-            <input type="number" step="0.05" min="0" data-f="cookedFactor" value="${n(f.cookedFactor)}"></label>
-          <label class="field">Nom de l'unité
-            <input type="text" data-f="unitName" value="${esc(f.unitName)}" placeholder="tranche, pot, œuf…"></label>
-          <label class="field">Poids d'une unité (g)
-            <input type="number" step="1" data-f="gramsPerUnit" value="${n(f.gramsPerUnit)}"></label>
+
+        <div class="form-section">
+          <div class="form-section__head"><span class="ico" aria-hidden="true">⚖️</span><h3>État et unités</h3></div>
+          <div class="grid grid--3">
+            <label class="field">État des valeurs nutritionnelles
+              <select data-f="referenceState">${STATES.map((st) => `<option value="${st.id}" ${f.referenceState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}</select></label>
+            <label class="field">Rendement après cuisson
+              <input type="number" step="0.05" min="0" data-f="cookedFactor" value="${n(f.cookedFactor)}"></label>
+            <label class="field">Nom de l'unité
+              <input type="text" data-f="unitName" value="${esc(f.unitName)}" placeholder="tranche, pot, œuf…"></label>
+            <label class="field">Poids d'une unité (g)
+              <input type="number" step="1" data-f="gramsPerUnit" value="${n(f.gramsPerUnit)}"></label>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <button class="btn btn--sm" data-yield-open>Calculer le rendement</button>
+            <small>Coefficient = poids cuit ÷ poids cru. 2,00 → 100 g cru donnent 200 g cuit ; 0,75 → 100 g cru donnent 75 g cuit.</small>
+          </div>
+          <label class="check" style="margin-top:8px"><input type="checkbox" data-f="fractionable" ${f.fractionable ? 'checked' : ''}> Unité fractionnable (sinon quantités par unité entière)</label>
+          <label class="check" style="margin-top:6px"><input type="checkbox" data-f="unitEntry" ${f.unitEntry ? 'checked' : ''}> Saisir les quantités en unités plutôt qu'en grammes</label>
+          <small style="display:block;margin-top:4px">Un aliment non fractionnable ne peut exister qu'en multiples entiers de son poids par unité, quelle que soit la façon dont la quantité est saisie.</small>
         </div>
-        <div class="row" style="margin-top:6px">
-          <button class="btn btn--sm" data-yield-open>Calculer le rendement</button>
-          <small>Coefficient = poids cuit ÷ poids cru. 2,00 → 100 g cru donnent 200 g cuit ; 0,75 → 100 g cru donnent 75 g cuit.</small>
+
+        <div class="form-section">
+          <div class="form-section__head"><span class="ico" aria-hidden="true">🛒</span><h3>Achat & préparation</h3></div>
+          <div class="grid grid--3">
+            <label class="field">Prix du conditionnement (€)
+              <input type="number" step="0.01" data-f="price" value="${n(f.price)}"></label>
+            <label class="field">Poids du conditionnement (g)
+              <input type="number" step="1" data-f="packageWeight" value="${n(f.packageWeight)}"></label>
+          </div>
+          <label class="check" style="margin-top:8px"><input type="checkbox" data-f="batchAllowed" ${f.batchAllowed ? 'checked' : ''}> Autorisé en batch cooking</label>
+          <div class="grid grid--3" style="margin-top:8px">
+            <label class="field">Durée maximale de conservation après préparation (jours)
+              <input type="number" step="1" min="0" data-f="shelfLifeDays" value="${n(f.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
+          </div>
+          <label class="check" style="margin-top:14px"><input type="checkbox" data-f="requiresCooking" ${f.requiresCooking ? 'checked' : ''}> Nécessite une cuisson</label>
+          <small style="display:block;margin:4px 0 8px">Indépendant de l'état de référence : un aliment cru peut se consommer tel quel, un aliment prêt à consommer peut demander une cuisson. Sert au classement du batch : batchable → à préparer en batch ; sinon, cuisson nécessaire → à cuire le jour même ; sinon → à assembler le jour même.</small>
+          <div class="grid grid--3">
+            <label class="field">Méthode de cuisson
+              <input type="text" data-f="cookingMethod" value="${esc(f.cookingMethod || '')}" placeholder="Four, poêle, vapeur…"></label>
+            <label class="field">Température (°C)
+              <input type="number" step="5" data-f="cookingTemp" value="${n(f.cookingTemp)}"></label>
+            <label class="field">Durée de cuisson (min)
+              <input type="number" step="1" data-f="cookingTime" value="${n(f.cookingTime)}"></label>
+            <label class="field">Temps de préparation (min)
+              <input type="number" step="1" data-f="prepTime" value="${n(f.prepTime)}"></label>
+            <label class="field">Matériel
+              <input type="text" data-f="equipment" value="${esc(f.equipment || '')}" placeholder="Four, sauteuse…"></label>
+          </div>
+          <label class="field" style="margin-top:8px">Consignes libres
+            <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
+          <small style="display:block;margin-top:4px">Rendement actuel : ${num(f.cookedFactor || 1, 2)} — 100 g crus donnent ${num((f.cookedFactor || 1) * 100, 0)} g cuits. Ces informations sont reprises telles quelles dans le plan de batch.</small>
         </div>
-        <label class="check" style="margin-top:8px"><input type="checkbox" data-f="fractionable" ${f.fractionable ? 'checked' : ''}> Unité fractionnable (sinon quantités par unité entière)</label>
-        <label class="check" style="margin-top:6px"><input type="checkbox" data-f="unitEntry" ${f.unitEntry ? 'checked' : ''}> Saisir les quantités en unités plutôt qu'en grammes</label>
-        <small style="display:block;margin-top:4px">Un aliment non fractionnable ne peut exister qu'en multiples entiers de son poids par unité, quelle que soit la façon dont la quantité est saisie.</small>
-        <h3 style="margin:16px 0 6px">Achat</h3>
-        <div class="grid grid--3">
-          <label class="field">Prix du conditionnement (€)
-            <input type="number" step="0.01" data-f="price" value="${n(f.price)}"></label>
-          <label class="field">Poids du conditionnement (g)
-            <input type="number" step="1" data-f="packageWeight" value="${n(f.packageWeight)}"></label>
-        </div>
-        <label class="check" style="margin-top:8px"><input type="checkbox" data-f="batchAllowed" ${f.batchAllowed ? 'checked' : ''}> Autorisé en batch cooking</label>
-        <div class="grid grid--3" style="margin-top:8px">
-          <label class="field">Durée maximale de conservation après préparation (jours)
-            <input type="number" step="1" min="0" data-f="shelfLifeDays" value="${n(f.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
-        </div>
-        <h3 style="margin:16px 0 6px">Préparation</h3>
-        <label class="check"><input type="checkbox" data-f="requiresCooking" ${f.requiresCooking ? 'checked' : ''}> Nécessite une cuisson</label>
-        <small style="display:block;margin:4px 0 8px">Indépendant de l'état de référence : un aliment cru peut se consommer tel quel, un aliment prêt à consommer peut demander une cuisson. Sert au classement du batch : batchable → à préparer en batch ; sinon, cuisson nécessaire → à cuire le jour même ; sinon → à assembler le jour même.</small>
-        <div class="grid grid--3">
-          <label class="field">Méthode de cuisson
-            <input type="text" data-f="cookingMethod" value="${esc(f.cookingMethod || '')}" placeholder="Four, poêle, vapeur…"></label>
-          <label class="field">Température (°C)
-            <input type="number" step="5" data-f="cookingTemp" value="${n(f.cookingTemp)}"></label>
-          <label class="field">Durée de cuisson (min)
-            <input type="number" step="1" data-f="cookingTime" value="${n(f.cookingTime)}"></label>
-          <label class="field">Temps de préparation (min)
-            <input type="number" step="1" data-f="prepTime" value="${n(f.prepTime)}"></label>
-          <label class="field">Matériel
-            <input type="text" data-f="equipment" value="${esc(f.equipment || '')}" placeholder="Four, sauteuse…"></label>
-        </div>
-        <label class="field" style="margin-top:8px">Consignes libres
-          <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
-        <small style="display:block;margin-top:4px">Rendement actuel : ${num(f.cookedFactor || 1, 2)} — 100 g crus donnent ${num((f.cookedFactor || 1) * 100, 0)} g cuits. Ces informations sont reprises telles quelles dans le plan de batch.</small>
-        <label class="check" style="margin-top:6px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>
+
+        <label class="check" style="margin-top:16px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>
         <div class="row" style="margin-top:18px">
           <button class="btn btn--primary" data-save="${f.id}">Enregistrer</button>
           ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${f.id}">Supprimer</button>`}
