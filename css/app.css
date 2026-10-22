@@ -707,22 +707,25 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .meal-slot__add:hover { background: var(--brand-700); }
 
-/* Repère visuel de glisser, purement DÉCORATIF (retour utilisateur : glisser
-   depuis n'importe quel point de la carte, pas seulement cette poignée —
-   draggable="true"/data-drag-meal vivent maintenant sur .meal-slot lui-même,
-   cf. planning.js). Un repas déjà composé peut être tiré vers un autre
-   créneau (copie sa composition, cf. planning.js::copyMealTo ; même logique
-   que le bouton « Dupliquer » existant, juste un geste plus direct).
-   L'image de glisser affichée reste la carte entière
+/* Deuxième zone de départ du glisser (retour utilisateur) : draggable="true"/
+   data-drag-meal vivent sur .meal-slot entier (glisser depuis n'importe quel
+   point de la carte = déplacement/permutation, cf. planning.js), mais CETTE
+   poignée reste volontairement cliquable (pointer-events réactivé, à
+   l'inverse d'avant) pour offrir un point de départ DISTINCT reconnu par
+   wireDragAndDrop() (e.target.closest('.meal-slot__drag-handle')) : glisser
+   depuis elle duplique au lieu de déplacer (la source n'est jamais modifiée).
+   L'image de glisser affichée reste la carte entière dans les deux cas
    (dataTransfer.setDragImage(), planning.js). Placée en haut à GAUCHE, à
    distance du menu « ⋯ » (haut à droite) : les deux zones se chevauchaient
-   avant correctif, rendant l'une des deux difficile à atteindre précisément. */
+   avant un premier correctif, rendant l'une des deux difficile à atteindre
+   précisément. */
 .meal-slot__drag-handle {
-  position: absolute; top: 8px; left: 8px; z-index: 3; pointer-events: none;
+  position: absolute; top: 8px; left: 8px; z-index: 3; cursor: grab;
   width: 26px; height: 26px; border-radius: var(--radius-xs);
   display: flex; align-items: center; justify-content: center;
   font-size: 15px; color: var(--ink-soft); line-height: 1;
 }
+.meal-slot__drag-handle:hover { background: var(--surface-alt); color: var(--ink); }
 
 /* Survol pendant un glisser — qu'il s'agisse d'un autre repas ou d'un
    élément de la bibliothèque « Menus disponibles » plus bas. */

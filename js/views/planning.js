@@ -37,7 +37,7 @@ let summaryDay = -1; // -1 = semaine complète, sinon index du jour (0-based)
 // pas disponible partout, notamment en environnement de test) puisque tout se
 // passe dans la même page. dataTransfer n'est renseigné que pour les repères
 // visuels natifs du navigateur (curseur, image fantôme), jamais lu au drop.
-let dragPayload = null; // { mealId }
+let dragPayload = null; // { mealId, mode: 'move' | 'duplicate' }
 
 const DAY_COL_WIDTH = 272;
 const DAY_COL_GAP = 16;
@@ -229,9 +229,9 @@ function mealSlot(meal, byId, s, recipesMap, preparationsMap) {
     </div>`;
   }).join('');
 
-  return `<div class="meal-slot" data-slot="${meal.id}" data-drop-meal="${meal.id}" draggable="true" data-drag-meal="${meal.id}" title="Glisser vers un autre créneau" aria-label="Repas : ${esc(meal.name || 'Sans nom')}. Glisser vers un autre créneau, ou utiliser les boutons">
+  return `<div class="meal-slot" data-slot="${meal.id}" data-drop-meal="${meal.id}" draggable="true" data-drag-meal="${meal.id}" title="Glisser pour déplacer vers un autre créneau (permute si occupé) — tirer depuis ⠿ pour dupliquer" aria-label="Repas : ${esc(meal.name || 'Sans nom')}. Glisser pour déplacer vers un autre créneau, ou utiliser les boutons">
     <div class="meal-slot__dropzone">Déposer ici</div>
-    <span class="meal-slot__drag-handle" aria-hidden="true">⠿</span>
+    <span class="meal-slot__drag-handle" aria-hidden="true" title="Glisser depuis ici pour dupliquer (la source reste inchangée)">⠿</span>
     <details class="item-menu meal-slot__menu">
       <summary aria-label="Options du repas">⋯</summary>
       <div class="meal-slot__menu__body">
@@ -311,7 +311,7 @@ function copyMealTo(s, srcId, dstId, { readjust = true } = {}) {
   dst.name = src.name;
   dst.nameAuto = src.nameAuto;
   dst.sameComposition = src.sameComposition;
-  dst.items = src.items.map((it) => ({ ...JSON.parse(JSON.stringify(it)), id: uid('it') }));
+  dst.items = cloneItems(src.items);
   if (readjust && s.settings.autoAdjust) {
     autoAdjust(dst.items, byId, {
       thomas: s.settings.targets.thomas[dst.mealType],
@@ -321,7 +321,75 @@ function copyMealTo(s, srcId, dstId, { readjust = true } = {}) {
   return true;
 }
 
-/** Dépose la charge `dragPayload` courante sur le créneau `dstId`, avec confirmation si celui-ci n'est pas vide. */
+/** Nouveaux id pour chaque ingrédient copié — jamais deux repas qui partagent la même référence d'item. */
+function cloneItems(items) {
+  return items.map((it) => ({ ...JSON.parse(JSON.stringify(it)), id: uid('it') }));
+}
+
+/** Même sémantique que « Vider » du menu ⋯ (data-clear ci-dessous) — utilisé par le déplacement glisser-déposer une fois le contenu copié vers la destination. */
+function clearMealContent(m) {
+  m.items = [];
+  m.name = '';
+  m.nameAuto = true;
+}
+
+/**
+ * Échange intégralement le contenu de deux repas — jamais de perte de
+ * données dans aucun sens (contrairement à un remplacement), donc jamais
+ * besoin de confirmation : c'est le comportement par défaut d'un
+ * déplacement glisser-déposer vers un créneau déjà occupé (retour
+ * utilisateur). Chaque côté est réajusté à SA PROPRE cible après l'échange
+ * (mealType/jour pouvant différer entre les deux créneaux, cf. copyMealTo()).
+ */
+function swapMeals(s, aId, bId, { readjust = true } = {}) {
+  const a = s.meals.find((m) => m.id === aId);
+  const b = s.meals.find((m) => m.id === bId);
+  if (!a || !b || a.id === b.id) return false;
+  const byId = Object.fromEntries(s.foods.map((f) => [f.id, f]));
+  const aItems = cloneItems(a.items);
+  const bItems = cloneItems(b.items);
+  const aMeta = { name: a.name, nameAuto: a.nameAuto, sameComposition: a.sameComposition };
+  const bMeta = { name: b.name, nameAuto: b.nameAuto, sameComposition: b.sameComposition };
+  Object.assign(a, bMeta);
+  a.items = bItems;
+  Object.assign(b, aMeta);
+  b.items = aItems;
+  if (readjust && s.settings.autoAdjust) {
+    autoAdjust(a.items, byId, { thomas: s.settings.targets.thomas[a.mealType], julie: s.settings.targets.julie[a.mealType] });
+    autoAdjust(b.items, byId, { thomas: s.settings.targets.thomas[b.mealType], julie: s.settings.targets.julie[b.mealType] });
+  }
+  return true;
+}
+
+/**
+ * Déplace un repas vers un autre créneau (par défaut au glisser-déposer,
+ * retour utilisateur) : la source est vidée une fois sa composition reprise
+ * par la destination. Si la destination est déjà occupée, rien n'est perdu
+ * — permutation plutôt que remplacement (swapMeals() ci-dessus), donc là
+ * non plus jamais besoin de confirmation.
+ */
+function moveMealTo(s, srcId, dstId, { readjust = true } = {}) {
+  const src = s.meals.find((m) => m.id === srcId);
+  const dst = s.meals.find((m) => m.id === dstId);
+  if (!src || !dst || src.id === dst.id) return false;
+  if (dst.items.length) return swapMeals(s, srcId, dstId, { readjust });
+  copyMealTo(s, srcId, dstId, { readjust });
+  clearMealContent(src);
+  return true;
+}
+
+/**
+ * Dépose la charge `dragPayload` courante sur le créneau `dstId`.
+ *
+ * mode 'move' (par défaut, glisser depuis n'importe quel point de la carte) :
+ * créneau vide -> déplacement (la source se vide) ; créneau occupé ->
+ * permutation (swapMeals()) — jamais de perte de données dans un sens comme
+ * dans l'autre, donc JAMAIS de confirmation.
+ *
+ * mode 'duplicate' (glisser depuis la poignée ⠿ dédiée) : la source n'est
+ * jamais modifiée ; créneau occupé -> confirmation requise (son contenu sera
+ * remplacé, la seule des deux issues qui perd réellement quelque chose).
+ */
 function handleDrop(root, dstId) {
   const payload = dragPayload;
   dragPayload = null;
@@ -330,24 +398,31 @@ function handleDrop(root, dstId) {
   const dst = s0.meals.find((m) => m.id === dstId);
   if (!dst) return;
   if (payload.mealId === dstId) return; // dépose sur soi-même : rien à faire
+  const dstWasFilled = dst.items.length > 0;
 
-  const apply = () => {
-    update((s) => { copyMealTo(s, payload.mealId, dstId, { readjust: true }); });
-    toast('Repas mis à jour');
-    render(root);
-  };
-
-  if (dst.items.length) {
-    pendingConfirm = {
-      title: 'Remplacer ce repas ?',
-      message: `« ${dst.name || 'Ce repas'} » sera entièrement remplacé par ce que tu viens de déposer.`,
-      confirmLabel: 'Remplacer',
-      onConfirm: apply,
+  if (payload.mode === 'duplicate') {
+    const apply = () => {
+      update((s) => { copyMealTo(s, payload.mealId, dstId, { readjust: true }); });
+      toast('Repas dupliqué');
+      render(root);
     };
-    render(root);
-  } else {
-    apply();
+    if (dstWasFilled) {
+      pendingConfirm = {
+        title: 'Remplacer ce repas ?',
+        message: `« ${dst.name || 'Ce repas'} » sera entièrement remplacé par ce que tu viens de déposer.`,
+        confirmLabel: 'Remplacer',
+        onConfirm: apply,
+      };
+      render(root);
+    } else {
+      apply();
+    }
+    return;
   }
+
+  update((s) => { moveMealTo(s, payload.mealId, dstId, { readjust: true }); });
+  toast(dstWasFilled ? 'Repas permutés' : 'Repas déplacé');
+  render(root);
 }
 
 function wire(root) {
@@ -431,24 +506,49 @@ function wire(root) {
   wireDragAndDrop(root);
 }
 
-/** Glisser-déposer : un repas déjà composé peut être tiré vers un autre créneau. */
+/**
+ * Glisser-déposer : un repas déjà composé peut être tiré vers un autre
+ * créneau. La carte ENTIÈRE reste draggable (retour utilisateur — même
+ * principe déjà appliqué aux tuiles d'aliment du composeur), avec DEUX
+ * zones de départ distinctes (retour utilisateur, deuxième demande) :
+ *   - n'importe où ailleurs sur la carte -> mode 'move' (par défaut) :
+ *     déplace le repas (créneau vide) ou le permute avec la destination
+ *     (créneau occupé) — jamais de perte de données, jamais de clic
+ *     supplémentaire.
+ *   - depuis la poignée ⠿ (.meal-slot__drag-handle) -> mode 'duplicate' :
+ *     comportement historique, la source n'est jamais modifiée.
+ * Sûr malgré la carte entière draggable UNIQUEMENT parce que dragstart
+ * écarte explicitement ses propres sous-éléments interactifs (bouton
+ * « Modifier », menu « ⋯ » et son contenu) : partir d'un clic sur l'un
+ * d'eux annule le glisser (e.preventDefault()) et laisse le clic normal
+ * suivre son cours.
+ */
 function wireDragAndDrop(root) {
-  // La carte ENTIÈRE est draggable (retour utilisateur — même principe déjà
-  // appliqué aux tuiles d'aliment du composeur : glisser depuis n'importe où
-  // sur la carte, pas seulement une petite poignée ⠿, gardée en pure
-  // décoration dans le markup). Sûr ici UNIQUEMENT parce que dragstart
-  // écarte explicitement ses propres sous-éléments interactifs (bouton
-  // « Modifier », menu « ⋯ » et son contenu) : partir d'un clic sur l'un
-  // d'eux annule le glisser (e.preventDefault()) et laisse le clic normal
-  // suivre son cours — exactement le bug déjà rencontré et évité ici, plutôt
-  // que contourné en gardant une poignée dédiée comme avant.
   root.querySelectorAll('[data-drag-meal]').forEach((card) => {
+    // La zone de départ (poignée ⠿ ou reste de la carte) doit être détectée
+    // sur `mousedown`, PAS sur `dragstart` : en HTML5 drag-and-drop, le
+    // navigateur cible TOUJOURS `dragstart` sur l'élément `draggable="true"`
+    // lui-même (ici .meal-slot), jamais sur le sous-élément réellement
+    // survolé au moment du clic — confirmé en testant avec de vrais
+    // événements de glisser (Playwright), contrairement à ce qu'un test
+    // avec des événements synthétiques simples pouvait laisser croire.
+    // `mousedown`, lui, cible normalement le sous-élément exact sous le
+    // pointeur, exactement comme un clic — d'où la pré-détection ici,
+    // relue dans `dragstart` juste après.
+    let pendingMode = 'move';
+    card.addEventListener('mousedown', (e) => {
+      pendingMode = e.target.closest('.meal-slot__drag-handle') ? 'duplicate' : 'move';
+    });
     card.addEventListener('dragstart', (e) => {
       if (e.target.closest('button, details, summary')) { e.preventDefault(); return; }
-      dragPayload = { mealId: card.dataset.dragMeal };
+      const mode = pendingMode;
+      dragPayload = { mealId: card.dataset.dragMeal, mode };
       card.classList.add('is-dragging');
       try {
-        e.dataTransfer.effectAllowed = 'copy';
+        // 'copy' (curseur +) pour une duplication, 'move' (curseur flèche)
+        // pour un déplacement/permutation — repère visuel natif du
+        // navigateur cohérent avec ce qui va réellement se passer au dépôt.
+        e.dataTransfer.effectAllowed = mode === 'duplicate' ? 'copy' : 'move';
         e.dataTransfer.setData('text/plain', card.dataset.dragMeal);
         e.dataTransfer.setDragImage(card, 24, 24);
       } catch { /* environnement sans dataTransfer (tests) */ }
@@ -460,7 +560,7 @@ function wireDragAndDrop(root) {
     el.addEventListener('dragover', (e) => {
       if (!dragPayload) return;
       e.preventDefault();
-      try { e.dataTransfer.dropEffect = 'copy'; } catch { /* no-op */ }
+      try { e.dataTransfer.dropEffect = dragPayload?.mode === 'duplicate' ? 'copy' : 'move'; } catch { /* no-op */ }
       el.classList.add('is-drop-target');
     });
     el.addEventListener('dragleave', () => el.classList.remove('is-drop-target'));

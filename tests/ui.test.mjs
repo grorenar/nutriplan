@@ -82,8 +82,16 @@ const wait = () => new Promise((r) => setTimeout(r, 20));
 // variable de module, cf. commentaire en tête de ce fichier), donc de
 // simples Event génériques suffisent à déclencher exactement le même code
 // que de vrais événements de glisser natifs (vérifié aussi avec de vrais
-// événements Playwright, voir le compte rendu).
-const dragStart = (el) => el.dispatchEvent(new window.Event('dragstart', { bubbles: true }));
+// événements Playwright, voir le compte rendu) — à UNE exception près :
+// un vrai navigateur cible toujours `dragstart` sur l'élément draggable lui-
+// même (jamais le sous-élément réellement sous le pointeur), donc la
+// détection poignée/carte se fait sur `mousedown` (qui cible normalement le
+// bon sous-élément) — dragStart() ci-dessous en dispatche donc un juste
+// avant, pour reproduire fidèlement cette mécanique en environnement de test.
+const dragStart = (el) => {
+  el.dispatchEvent(new window.Event('mousedown', { bubbles: true }));
+  el.dispatchEvent(new window.Event('dragstart', { bubbles: true }));
+};
 const dragOver = (el) => el.dispatchEvent(new window.Event('dragover', { bubbles: true, cancelable: true }));
 const drop = (el) => el.dispatchEvent(new window.Event('drop', { bubbles: true, cancelable: true }));
 const dragTo = (srcEl, dstEl) => { dragStart(srcEl); dragOver(dstEl); drop(dstEl); };
@@ -405,35 +413,52 @@ click($('[data-dup-cancel]'));
 await wait();
 check('panneau de duplication fermé sans duplication', !$('[data-dup-confirm]'));
 
-console.log('\n— Planning : glisser-déposer (repas -> créneau)');
+console.log('\n— Planning : glisser-déposer par défaut = DÉPLACEMENT (retour utilisateur, inverse de l’ancien comportement)');
 {
-  // data-drag-meal vit sur la carte ENTIÈRE (retour utilisateur : glisser
-  // depuis n'importe quel point de la carte, pas seulement la petite
-  // poignée ⠿, devenue purement décorative) — sûr malgré les boutons
-  // interactifs de la carte (« Modifier », menu « ⋯ ») car dragstart les
-  // écarte explicitement (cf. wireDragAndDrop()). Le nom se lit sur la
+  // data-drag-meal vit sur la carte ENTIÈRE (glisser depuis n'importe quel
+  // point = déplacement par défaut) — sûr malgré les boutons interactifs de
+  // la carte (« Modifier », menu « ⋯ ») car dragstart les écarte
+  // explicitement (cf. wireDragAndDrop()). La poignée ⠿, elle, est une
+  // ZONE DE DÉPART DISTINCTE reconnue par dragstart (e.target.closest()) :
+  // glisser depuis elle duplique au lieu de déplacer. Le nom se lit sur la
   // carte, via data-slot.
   const srcMealId = $('[data-drag-meal]').dataset.dragMeal;
   const srcName = $(`[data-slot="${srcMealId}"] .meal-slot__name`).textContent;
+  const srcItemsBefore = JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items);
   const emptySlotIdBefore = $$('.meal-slot.is-empty')[0]?.dataset.slot;
 
   dragTo($(`[data-drag-meal="${srcMealId}"]`), $(`[data-slot="${emptySlotIdBefore}"]`));
   await wait();
-  check('glisser un repas composé sur un créneau vide : le créneau n’est plus vide',
+  check('glisser (depuis la carte, pas la poignée) un repas composé sur un créneau vide : le créneau n’est plus vide',
     !$(`.meal-slot.is-empty[data-slot="${emptySlotIdBefore}"]`));
-  check('glisser un repas composé sur un créneau vide : composition copiée (même nom que la source)',
+  check('déplacement : composition reprise (même nom que la source)',
     $(`[data-slot="${emptySlotIdBefore}"] .meal-slot__name`)?.textContent === srcName);
-  check('un seul mécanisme de copie : même résultat que le bouton « Dupliquer » (items distincts, pas de référence partagée)',
+  check('items distincts, pas de référence partagée',
     store.getState().meals.find((m) => m.id === emptySlotIdBefore).items.every(
-      (it) => !store.getState().meals.find((m) => m.id === srcMealId).items.some((si) => si.id === it.id)
+      (it) => !JSON.parse(srcItemsBefore).some((si) => si.id === it.id)
     ));
+  check('déplacement (pas duplication) : la source est désormais VIDE (retour utilisateur, comportement par défaut inversé)',
+    $$('.meal-slot.is-empty').some((el) => el.dataset.slot === srcMealId) &&
+    store.getState().meals.find((m) => m.id === srcMealId).items.length === 0);
+  check('toast "Repas déplacé"', /déplacé/i.test(lastToastText()));
+
+  console.log('\n— Planning : duplication explicite depuis la poignée ⠿ (la source reste inchangée)');
+  const srcMealId2 = emptySlotIdBefore; // ce créneau vient de recevoir la composition déplacée ci-dessus, donc rempli
+  const srcName2 = $(`[data-slot="${srcMealId2}"] .meal-slot__name`).textContent;
+  const emptySlotId2 = $$('.meal-slot.is-empty')[0]?.dataset.slot;
+  const handle = $(`[data-slot="${srcMealId2}"] .meal-slot__drag-handle`);
+  dragTo(handle, $(`[data-slot="${emptySlotId2}"]`));
+  await wait();
+  check('duplication depuis la poignée : le créneau cible prend la composition de la source', $(`[data-slot="${emptySlotId2}"] .meal-slot__name`)?.textContent === srcName2);
+  check('duplication : la SOURCE reste inchangée (toujours sa propre composition)', $(`[data-slot="${srcMealId2}"] .meal-slot__name`)?.textContent === srcName2);
+  check('toast "Repas dupliqué" (distinct du déplacement)', /dupliqué/i.test(lastToastText()));
 
   console.log('\n— Planning : glisser-déposer sur soi-même -> aucun effet');
-  const itemsBefore = JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items);
-  dragTo($(`[data-drag-meal="${srcMealId}"]`), $(`[data-slot="${srcMealId}"]`));
+  const itemsBefore = JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId2).items);
+  dragTo($(`[data-drag-meal="${srcMealId2}"]`), $(`[data-slot="${srcMealId2}"]`));
   await wait();
   check('glisser un repas sur lui-même : aucune confirmation, aucun changement',
-    !$('[data-action-confirm]') && JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items) === itemsBefore);
+    !$('[data-action-confirm]') && JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId2).items) === itemsBefore);
 
   console.log('\n— Planning : glisser depuis la carte entière, mais pas depuis ses propres boutons');
   {
@@ -442,7 +467,7 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau)');
     // UNIQUEMENT parce que dragstart écarte explicitement ses sous-éléments
     // interactifs (bouton « Modifier », menu « ⋯ ») : un clic dessus ne doit
     // jamais se transformer en glisser-déposer accidentel.
-    const card = $(`[data-slot="${srcMealId}"]`);
+    const card = $(`[data-slot="${srcMealId2}"]`);
     const modifierBtn = card.querySelector('button[data-edit]');
     const dragFromButton = new window.Event('dragstart', { bubbles: true, cancelable: true });
     modifierBtn.dispatchEvent(dragFromButton);
@@ -458,24 +483,40 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau)');
     check('un glisser démarré depuis le reste de la carte n’est PAS annulé', !dragFromCard.defaultPrevented);
   }
 
-  console.log('\n— Planning : glisser-déposer vers un créneau déjà rempli -> confirmation requise');
+  console.log('\n— Planning : glisser-déposer vers un créneau déjà rempli -> PERMUTATION (swap), jamais de confirmation (aucune perte de données)');
   const filledIds = $$('[data-drag-meal]').map((el) => el.dataset.dragMeal);
   const [aId, bId] = filledIds;
+  const aNameBefore = $(`[data-slot="${aId}"] .meal-slot__name`).textContent;
   const bNameBefore = $(`[data-slot="${bId}"] .meal-slot__name`).textContent;
   dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-slot="${bId}"]`));
   await wait();
-  check('créneau cible déjà rempli : confirmation demandée avant tout remplacement', !!$('[data-action-confirm]'));
+  check('aucune confirmation demandée : une permutation ne perd rien, dans aucun sens', !$('[data-action-confirm]'));
+  check('le créneau A prend le nom qu’avait B', $(`[data-slot="${aId}"] .meal-slot__name`)?.textContent === bNameBefore);
+  check('le créneau B prend le nom qu’avait A (échange complet, pas un simple remplacement)', $(`[data-slot="${bId}"] .meal-slot__name`)?.textContent === aNameBefore);
+  check('toast "Repas permutés"', /permut/i.test(lastToastText()));
+
+  console.log('\n— Planning : duplication (poignée) vers un créneau déjà rempli -> confirmation requise (remplacement, perte de données)');
+  // Réutilise aId/bId, tous deux remplis après la permutation ci-dessus —
+  // pas besoin d'un troisième créneau rempli, juste d'une cible DÉJÀ occupée.
+  const cId = bId;
+  const cNameBefore = $(`[data-slot="${cId}"] .meal-slot__name`).textContent;
+  const dupSrcId = aId;
+  const dupSrcName = $(`[data-slot="${dupSrcId}"] .meal-slot__name`).textContent;
+  dragTo($(`[data-slot="${dupSrcId}"] .meal-slot__drag-handle`), $(`[data-slot="${cId}"]`));
+  await wait();
+  check('créneau cible déjà rempli, duplication : confirmation demandée avant tout remplacement', !!$('[data-action-confirm]'));
   click($('[data-action-cancel]'));
   await wait();
   check('confirmation annulée : le créneau cible reste strictement inchangé',
-    $(`[data-slot="${bId}"] .meal-slot__name`).textContent === bNameBefore);
-  dragTo($(`[data-drag-meal="${aId}"]`), $(`[data-slot="${bId}"]`));
+    $(`[data-slot="${cId}"] .meal-slot__name`).textContent === cNameBefore);
+  dragTo($(`[data-slot="${dupSrcId}"] .meal-slot__drag-handle`), $(`[data-slot="${cId}"]`));
   await wait();
   click($('[data-action-confirm]'));
   await wait();
-  const aName = $(`[data-slot="${aId}"] .meal-slot__name`)?.textContent;
   check('confirmation acceptée : le créneau cible prend la composition de la source',
-    $(`[data-slot="${bId}"] .meal-slot__name`)?.textContent === aName);
+    $(`[data-slot="${cId}"] .meal-slot__name`)?.textContent === dupSrcName);
+  check('duplication : la source garde sa propre composition (jamais vidée)',
+    $(`[data-slot="${dupSrcId}"] .meal-slot__name`)?.textContent === dupSrcName);
 
   console.log('\n— Éditeur de repas : composition visuelle en « assiette » (glisser un résultat de recherche)');
   const emptySlotId3 = $$('.meal-slot.is-empty')[0]?.dataset.slot;
