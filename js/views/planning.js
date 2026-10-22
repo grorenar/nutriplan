@@ -24,6 +24,14 @@ const SUMMARY_SCOPES = [
   { id: 'dinner', label: 'Dîner' },
 ];
 
+// Pagination des anneaux de synthèse (retour utilisateur) : semaine complète
+// (-1), ou un seul jour du cycle à la fois, étiqueté par son VRAI jour de la
+// semaine (dayName(startWeekday, d), déjà utilisé pour les colonnes de
+// jour) — jamais "Jour 1/2/3…" seul, qui n'a pas de sens sans se référer à
+// la grille plus bas. Partagé par les deux cartes Thomas/Julie, jamais
+// persisté (angle d'affichage uniquement, comme summaryScope).
+let summaryDay = -1; // -1 = semaine complète, sinon index du jour (0-based)
+
 // Glisser-déposer : la charge utile voyage dans une variable de module plutôt
 // que dataTransfer.getData() — plus simple, plus fiable (DataTransfer n'est
 // pas disponible partout, notamment en environnement de test) puisque tout se
@@ -68,6 +76,10 @@ export function render(root) {
   const recipesMap = recipesById();
   const preparationsMap = preparationsById();
   const { startWeekday, duration } = s.settings.cycle;
+  // Toujours une page valable, même si la durée du cycle a changé depuis le
+  // dernier réglage de summaryDay (ex. cycle raccourci dans Paramètres) —
+  // -1 (semaine complète) reste valable quelle que soit la durée.
+  if (summaryDay >= duration) summaryDay = duration - 1;
 
   const cols = [];
   for (let d = 0; d < duration; d++) {
@@ -94,11 +106,20 @@ export function render(root) {
     i += size;
   }
 
+  const summaryDayLabel = summaryDay === -1 ? 'Semaine complète' : esc(dayName(startWeekday, summaryDay));
+
   root.innerHTML = `
     <div class="summary-scope">
-      ${SUMMARY_SCOPES.map((o) => `<button class="chip chip--xs" data-scope="${o.id}" aria-pressed="${summaryScope === o.id}">${esc(o.label)}</button>`).join('')}
+      <div class="summary-scope__chips">
+        ${SUMMARY_SCOPES.map((o) => `<button class="chip chip--xs" data-scope="${o.id}" aria-pressed="${summaryScope === o.id}">${esc(o.label)}</button>`).join('')}
+      </div>
+      <div class="summary-day-pager">
+        <button type="button" class="summary-day-pager__btn" data-summary-day="prev" ${summaryDay <= -1 ? 'disabled' : ''} aria-label="Jour précédent">‹</button>
+        <span class="summary-day-pager__label">${summaryDayLabel}</span>
+        <button type="button" class="summary-day-pager__btn" data-summary-day="next" ${summaryDay >= duration - 1 ? 'disabled' : ''} aria-label="Jour suivant">›</button>
+      </div>
     </div>
-    <div class="day-summary">${PERSONS.map((p) => cycleSummaryCard(p, s, byId, recipesMap, preparationsMap, summaryScope)).join('')}</div>
+    <div class="day-summary">${PERSONS.map((p) => cycleSummaryCard(p, s, byId, recipesMap, preparationsMap, summaryScope, summaryDay)).join('')}</div>
 
     <div class="row" style="margin-bottom:14px">
       <span class="pill pill--accent">Cycle de ${duration} jours — démarrage ${esc(dayName(startWeekday, 0).toLowerCase())}</span>
@@ -129,20 +150,23 @@ export function render(root) {
 /**
  * Carte de synthèse par personne, en haut de l'écran — portée par défaut
  * fixée au cycle entier (somme de tous les jours vs somme de tous les
- * objectifs), jamais à "aujourd'hui" : ce planificateur n'a aucune date
- * réelle (cf. en-tête de ce fichier), donc aucune notion de jour courant à
- * mettre en avant sans l'inventer. "Sur l'ensemble du cycle" reste un
- * agrégat honnête et toujours défini, quelle que soit la durée du cycle.
- * `scope` (bascule discrète, retour utilisateur) restreint la somme à un
- * seul type de repas (déjeuner/dîner) au lieu des deux — jamais à UN jour en
- * particulier, pour la même raison (aucune date réelle à privilégier).
+ * objectifs). `scope` (bascule discrète) restreint la somme à un seul type
+ * de repas (déjeuner/dîner) au lieu des deux ; `dayFilter` (pager, retour
+ * utilisateur) restreint en plus à UN SEUL jour du cycle (-1 = tous) — ce
+ * planificateur reste sans date réelle "aujourd'hui" (cf. en-tête de ce
+ * fichier), mais chaque jour du cycle EST déjà rattaché à un vrai jour de la
+ * semaine via `dayName(startWeekday, d)` (colonnes de jour, juste plus bas) :
+ * défiler Semaine complète -> Samedi -> Dimanche -> … n'invente donc aucune
+ * date, ça reprend exactement la même correspondance jour <-> index déjà
+ * affichée partout ailleurs sur cet écran.
  */
-function cycleSummaryCard(person, s, byId, recipesMap, preparationsMap, scope) {
+function cycleSummaryCard(person, s, byId, recipesMap, preparationsMap, scope, dayFilter = -1) {
   const { duration } = s.settings.cycle;
   const types = scope === 'total' ? ['lunch', 'dinner'] : [scope];
+  const days = dayFilter === -1 ? Array.from({ length: duration }, (_, d) => d) : [dayFilter];
   const total = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
   const target = { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-  for (let d = 0; d < duration; d++) {
+  for (const d of days) {
     for (const type of types) {
       const meal = s.meals.find((m) => m.dayIndex === d && m.mealType === type);
       if (meal) {
@@ -167,8 +191,11 @@ function cycleSummaryCard(person, s, byId, recipesMap, preparationsMap, scope) {
     })
     .join('');
   const scopeLabel = SUMMARY_SCOPES.find((o) => o.id === scope)?.label || 'Total';
+  const periodLabel = dayFilter === -1
+    ? "sur l'ensemble du cycle"
+    : `le ${esc(dayName(s.settings.cycle.startWeekday, dayFilter).toLowerCase())}`;
   return `<div class="day-summary__card">
-    <div class="day-summary__head person-name person-name--${person}">${PERSON_LABEL[person]} <span class="tag" style="font-weight:500">· ${scope === 'total' ? "sur l'ensemble du cycle" : `${esc(scopeLabel)}, sur l'ensemble du cycle`}</span></div>
+    <div class="day-summary__head person-name person-name--${person}">${PERSON_LABEL[person]} <span class="tag" style="font-weight:500">· ${scope === 'total' ? periodLabel : `${esc(scopeLabel)}, ${periodLabel}`}</span></div>
     <div class="day-summary__rings">${rings}</div>
   </div>`;
 }
@@ -360,6 +387,15 @@ function wire(root) {
 
   root.querySelectorAll('[data-scope]').forEach((b) =>
     b.addEventListener('click', (e) => { summaryScope = e.currentTarget.dataset.scope; render(root); })
+  );
+
+  root.querySelectorAll('[data-summary-day]').forEach((b) =>
+    b.addEventListener('click', (e) => {
+      const { duration } = getState().settings.cycle;
+      const dir = e.currentTarget.dataset.summaryDay === 'next' ? 1 : -1;
+      summaryDay = Math.max(-1, Math.min(duration - 1, summaryDay + dir));
+      render(root);
+    })
   );
 
   root.querySelector('[data-optimize]')?.addEventListener('click', () => {

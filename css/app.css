@@ -643,8 +643,23 @@ tbody tr:hover td { background: var(--surface-alt); }
 
 /* Résumé macro quotidien par personne — une carte, 4 anneaux (kcal/P/G/L),
    couleur constante avec le reste de l'app (--kcal/--protein/--carbs/--fat). */
-.summary-scope { display: flex; gap: 6px; margin-bottom: 8px; }
+.summary-scope { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+.summary-scope__chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip.chip--xs { padding: 3px 10px; font-size: 10px; }
+/* Pagination semaine complète <-> un jour du cycle à la fois (retour
+   utilisateur), même recette compacte que .picker__pager (composeur de
+   repas) — chevrons ronds + repère centré, jamais de pavé pleine largeur. */
+.summary-day-pager { display: flex; align-items: center; gap: 10px; }
+.summary-day-pager__btn {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--line-strong); background: #fff; color: var(--ink);
+  font-size: 14px; font-weight: 700; line-height: 1; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+.summary-day-pager__btn:hover:not(:disabled) { background: var(--brand-50); border-color: var(--brand-400); color: var(--brand-700); }
+.summary-day-pager__btn:disabled { opacity: .35; cursor: default; }
+.summary-day-pager__label { font-size: var(--fs-xs); font-weight: 700; min-width: 112px; text-align: center; }
 .day-summary { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 18px; }
 .day-summary__card {
   flex: 1 1 280px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);

@@ -360,6 +360,39 @@ click($('#drawer [data-close]'));
 check('éditeur fermé', !$('#drawer .composer__dialog'));
 check('macros visibles sur la carte du planning', $$('.meal-slot .macro').length >= 8);
 
+console.log('\n— Pagination des anneaux de synthèse : semaine complète <-> un jour du cycle (retour utilisateur)');
+{
+  check('page de départ : « Semaine complète »', $('.summary-day-pager__label').textContent === 'Semaine complète');
+  check('en « Semaine complète », le bouton précédent est désactivé (première page)',
+    $('[data-summary-day="prev"]').disabled);
+  check('la carte de synthèse affiche bien « sur l’ensemble du cycle »',
+    /sur l.ensemble du cycle/.test($('.day-summary__card').textContent));
+
+  click($('[data-summary-day="next"]'));
+  await wait();
+  const firstDayName = $('.day-col__head h2').textContent; // même correspondance jour <-> nom que les colonnes
+  check('un clic « suivant » passe au jour 1, étiqueté par son vrai jour de la semaine (réutilise dayName())',
+    $('.summary-day-pager__label').textContent === firstDayName, $('.summary-day-pager__label').textContent);
+  check('la carte de synthèse bascule sur « le <jour> » plutôt que l’ensemble du cycle',
+    $('.day-summary__card').textContent.includes(`le ${firstDayName.toLowerCase()}`));
+
+  const duration = store.getState().settings.cycle.duration;
+  for (let i = 1; i < duration; i++) click($('[data-summary-day="next"]'));
+  await wait();
+  check('en bout de cycle, le bouton suivant se désactive (dernier jour, jamais de page vide au-delà)',
+    $('[data-summary-day="next"]').disabled);
+
+  click($('[data-summary-day="prev"]'));
+  await wait();
+  click($('[data-summary-day="prev"]'));
+  await wait();
+  // retour jusqu'à « Semaine complète » : encore un cran précédent -> plus rien avant, bouton désactivé
+  for (let i = 0; i < duration; i++) click($('[data-summary-day="prev"]'));
+  await wait();
+  check('en revenant en arrière, on retombe bien sur « Semaine complète » (jamais d’index négatif au-delà)',
+    $('.summary-day-pager__label').textContent === 'Semaine complète' && $('[data-summary-day="prev"]').disabled);
+}
+
 console.log('\n— Duplication : nom du jour affiché dans les destinations (P3.5)');
 click($$('[data-dup]')[0]);
 await wait();
