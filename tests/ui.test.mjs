@@ -374,10 +374,12 @@ check('panneau de duplication fermé sans duplication', !$('[data-dup-confirm]')
 
 console.log('\n— Planning : glisser-déposer (repas -> créneau)');
 {
-  // data-drag-meal vit sur la POIGNÉE (.meal-slot__drag-handle), jamais sur
-  // la carte entière (bug réel corrigé : la carte contient des boutons
-  // interactifs — « Modifier », menu « ⋯ » — la rendre elle-même draggable
-  // rendait le geste peu fiable). Le nom se lit sur la carte, via data-slot.
+  // data-drag-meal vit sur la carte ENTIÈRE (retour utilisateur : glisser
+  // depuis n'importe quel point de la carte, pas seulement la petite
+  // poignée ⠿, devenue purement décorative) — sûr malgré les boutons
+  // interactifs de la carte (« Modifier », menu « ⋯ ») car dragstart les
+  // écarte explicitement (cf. wireDragAndDrop()). Le nom se lit sur la
+  // carte, via data-slot.
   const srcMealId = $('[data-drag-meal]').dataset.dragMeal;
   const srcName = $(`[data-slot="${srcMealId}"] .meal-slot__name`).textContent;
   const emptySlotIdBefore = $$('.meal-slot.is-empty')[0]?.dataset.slot;
@@ -399,6 +401,29 @@ console.log('\n— Planning : glisser-déposer (repas -> créneau)');
   await wait();
   check('glisser un repas sur lui-même : aucune confirmation, aucun changement',
     !$('[data-action-confirm]') && JSON.stringify(store.getState().meals.find((m) => m.id === srcMealId).items) === itemsBefore);
+
+  console.log('\n— Planning : glisser depuis la carte entière, mais pas depuis ses propres boutons');
+  {
+    // Retour utilisateur : glisser depuis n'importe quel point de la carte,
+    // comme déjà fait pour les tuiles d'aliment du composeur — sûr ici
+    // UNIQUEMENT parce que dragstart écarte explicitement ses sous-éléments
+    // interactifs (bouton « Modifier », menu « ⋯ ») : un clic dessus ne doit
+    // jamais se transformer en glisser-déposer accidentel.
+    const card = $(`[data-slot="${srcMealId}"]`);
+    const modifierBtn = card.querySelector('button[data-edit]');
+    const dragFromButton = new window.Event('dragstart', { bubbles: true, cancelable: true });
+    modifierBtn.dispatchEvent(dragFromButton);
+    check('un glisser démarré depuis le bouton « Modifier » est annulé (le clic reste normal)', dragFromButton.defaultPrevented);
+
+    const menuSummary = card.querySelector('.meal-slot__menu > summary');
+    const dragFromMenu = new window.Event('dragstart', { bubbles: true, cancelable: true });
+    menuSummary.dispatchEvent(dragFromMenu);
+    check('un glisser démarré depuis le menu « ⋯ » est aussi annulé', dragFromMenu.defaultPrevented);
+
+    const dragFromCard = new window.Event('dragstart', { bubbles: true, cancelable: true });
+    card.dispatchEvent(dragFromCard);
+    check('un glisser démarré depuis le reste de la carte n’est PAS annulé', !dragFromCard.defaultPrevented);
+  }
 
   console.log('\n— Planning : glisser-déposer vers un créneau déjà rempli -> confirmation requise');
   const filledIds = $$('[data-drag-meal]').map((el) => el.dataset.dragMeal);
