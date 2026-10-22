@@ -273,15 +273,21 @@ function renderCompactSummary(entity, byId, targets, tol, state, recipesMap = {}
       .map((r) => {
         const meta = MACRO_META[r.key];
         const pct = r.target > 0 ? (r.value / r.target) * 100 : 0;
-        const value = `${num(r.value, r.key === 'kcal' ? 0 : 1)}${r.key === 'kcal' ? '' : ' g'}`;
-        const target = `${num(r.target, 0)}${r.key === 'kcal' ? '' : ' g'}`;
+        const unit = r.key === 'kcal' ? '' : ' g';
+        const value = `${num(r.value, r.key === 'kcal' ? 0 : 1)}${unit}`;
+        const target = `${num(r.target, 0)}${unit}`;
         // r.label (court, cf. MACRO_KEYS : "P"/"G"/"L"/"kcal") plutôt que
         // meta.label (long, "Protéines"/"Glucides"…) — cohérent avec le
         // reste de l'app (puces, en-têtes de colonnes) partout où la place
-        // manque.
+        // manque. Retour utilisateur : le pourcentage seul dans l'anneau ne
+        // suffit pas, les valeurs en chiffres (valeur / cible) doivent rester
+        // VISIBLES, pas seulement dans l'infobulle — et la bande a largement
+        // la place pour ça (.composer__summary-rings s'étire maintenant sur
+        // toute la largeur disponible plutôt que de rester tassée à droite).
         return `<div class="composer__summary-ring is-${r.status}" title="${esc(r.label)} : ${esc(value)} / ${esc(target)}">
-          ${progressRing(pct, { size: 36, thickness: 4, color: SUMMARY_STATUS_COLOR[r.status] || 'var(--ink-faint)', label: meta.label })}
-          <span class="composer__summary-ring-label">${meta.icon}</span>
+          ${progressRing(pct, { size: 44, thickness: 4, color: SUMMARY_STATUS_COLOR[r.status] || 'var(--ink-faint)', label: meta.label })}
+          <span class="composer__summary-ring-label">${meta.icon} ${r.label}</span>
+          <span class="composer__summary-ring-num">${esc(value)} <span class="composer__summary-ring-goal">/ ${esc(target)}</span></span>
         </div>`;
       })
       .join('');
@@ -295,10 +301,8 @@ function renderCompactSummary(entity, byId, targets, tol, state, recipesMap = {}
         }`
       : `<span class="composer__summary-ok">Dans la cible ±${Math.round(tol * 100)} %</span>`;
     return `<div class="composer__summary-person composer__summary-person--${person}">
-      <div class="composer__summary-head">
-        <span class="composer__summary-name composer__summary-name--${person}">${PERSON_LABEL[person]}</span>
-        <div class="composer__summary-rings">${rings}</div>
-      </div>
+      <span class="composer__summary-name composer__summary-name--${person}">${PERSON_LABEL[person]}</span>
+      <div class="composer__summary-rings">${rings}</div>
       <div class="composer__summary-status">${status}</div>
     </div>`;
   }).join('');

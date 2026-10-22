@@ -789,22 +789,31 @@ tbody tr:hover td { background: var(--surface-alt); }
    colonnes, toujours visibles sans défiler, au-dessus de l'assiette ET de la
    recherche (retour utilisateur). */
 .composer__summary { flex: none; display: flex; background: var(--surface-alt); border-bottom: 1px solid var(--line); }
-.composer__summary-person { flex: 1; min-width: 0; padding: 8px 20px; display: flex; flex-direction: column; gap: 4px; }
+.composer__summary-person { flex: 1; min-width: 0; padding: 10px 20px; display: flex; flex-direction: column; gap: 6px; }
 .composer__summary-person + .composer__summary-person { border-left: 1px solid var(--line); }
-.composer__summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.composer__summary-name { flex: none; font-size: var(--fs-xs); font-weight: 700; }
+.composer__summary-name { font-size: var(--fs-xs); font-weight: 700; }
 .composer__summary-name--thomas { color: var(--thomas); }
 .composer__summary-name--julie { color: var(--julie); }
-.composer__summary-rings { flex: none; display: flex; gap: 6px; }
-.composer__summary-ring { display: flex; flex-direction: column; align-items: center; gap: 1px; cursor: default; }
-.composer__summary-ring .ring__pct { font-size: 9px; }
-.composer__summary-ring-label { font-size: 11px; line-height: 1; }
+/* Retour utilisateur : les anneaux restaient tassés à droite, beaucoup
+   d'espace vide inutilisé à côté — ils s'étirent maintenant sur toute la
+   largeur de la bande (chaque anneau flex:1, réparti par justify-content),
+   et les valeurs en CHIFFRES (pas seulement le %) redeviennent visibles en
+   permanence sous chaque anneau, pas seulement dans l'infobulle. */
+.composer__summary-rings { display: flex; justify-content: space-between; gap: 8px; }
+.composer__summary-ring { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; cursor: default; }
+.composer__summary-ring .ring__pct { font-size: 10px; }
+.composer__summary-ring-label { font-size: 11px; line-height: 1.2; font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
+.composer__summary-ring-num { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.composer__summary-ring-goal { font-weight: 600; color: var(--ink-soft); }
 .composer__summary-status {
   font-size: var(--fs-xs); color: var(--ink-soft); line-height: 1.4;
   display: flex; flex-wrap: wrap; gap: 2px 8px;
 }
 .composer__summary-deltas { font-variant-numeric: tabular-nums; }
-.composer__summary-hint { color: var(--ink); font-weight: 600; }
+/* flex-basis:100% dans le conteneur flex-wrap ci-dessus : force la piste
+   (« → féculent… ») sur sa propre ligne plutôt que de la laisser s'accoler
+   aux deltas quand la largeur le permettrait encore (retour utilisateur). */
+.composer__summary-hint { flex-basis: 100%; color: var(--ink); font-weight: 600; }
 .composer__summary-ok { color: var(--ok); font-weight: 700; }
 @media (max-width: 860px) {
   .composer__summary { flex-direction: column; }
