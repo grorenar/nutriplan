@@ -19,11 +19,17 @@ let cat = 'all';
 let duplicatesOpen = false; // P3 : section « Doublons détectés » dépliée ou non
 let mergeKeep = {}; // id du premier aliment d'un groupe -> id choisi pour être conservé
 let editing = null; // id d'aliment ou 'new'
-// Assistant de création (P4, retour utilisateur) : mode choisi pour un
-// NOUVEL aliment, avant d'afficher le formulaire — null tant que rien n'est
-// choisi (écran de choix affiché). Sans objet pour la modification d'une
-// fiche existante (toujours le formulaire complet, comme avant ce chantier).
-let creationMode = null; // null | 'simplified' | 'off' | 'manual'
+// Assistant de création en étapes glissées (retour utilisateur) — UNIQUEMENT
+// pour un NOUVEL aliment ; la modification d'une fiche existante garde le
+// formulaire complet d'une seule pièce, comme avant ce chantier (jamais
+// d'objet newFoodStep pertinent dans ce cas).
+// Séquence : 'start' (Manuel / Recherche OFF)
+//   -> OFF : 'off-mode' (Code-barres / Nom ou marque) -> 'off-search' (résultats)
+//   -> puis, dans tous les cas (manuel direct, ou produit OFF sélectionné,
+//      jamais une étape sautée) : 'general' -> 'nutrition' -> 'units' -> 'purchase'.
+let newFoodStep = 'start';
+let offSubMode = null; // 'barcode' | 'name' — choix explicite à l'étape 'off-mode'
+let stepHistory = []; // pile des étapes précédentes (bouton Précédent)
 let similarWarning = null; // { list, pending } — popup de confirmation de doublon
 let formDraft = null;      // saisie en cours, préservée entre deux rendus du formulaire
 let yieldCalc = null;      // { raw, cooked, result, error } — aide au calcul du rendement
@@ -62,7 +68,6 @@ function getDuplicateGroups(foods) {
 /** Ouvre directement la fiche d'un aliment (appelé depuis l'écran Courses). */
 export function openFoodForm(id) {
   editing = id;
-  creationMode = null;
   similarWarning = null;
   formDraft = null;
   yieldCalc = null;
@@ -82,7 +87,9 @@ export function openFoodForm(id) {
 export function openFoodFormWithBarcode(root, barcode) {
   resetForm();
   editing = 'new';
-  creationMode = 'off';
+  newFoodStep = 'off-search';
+  offSubMode = 'barcode';
+  stepHistory = ['start', 'off-mode'];
   formDraft = blank();
   openOffSearch();
   offSearch.barcodeInput = normalizeBarcode(barcode);
@@ -229,19 +236,29 @@ function duplicatesPanel(groups, s) {
 }
 
 /**
- * Met à jour UNIQUEMENT le contenu du formulaire déjà ouvert (.drawer__body)
- * et les sur-couches (#food-overlays : rendement, doublon, confirmation de
- * fermeture) — .drawer/.drawer__panel/.drawer__head ne sont JAMAIS recréés
- * pendant que le formulaire reste ouvert, qu'il s'agisse d'afficher ou de
- * fermer le dialogue « Modifications non sauvegardées », d'ouvrir l'aide au
- * rendement, ou de toute autre interaction pendant l'édition.
+ * Met à jour UNIQUEMENT le contenu du formulaire déjà ouvert (.drawer__body,
+ * et — pour l'assistant de création, dont le titre/la progression changent à
+ * chaque étape — .drawer__head aussi) et les sur-couches (#food-overlays :
+ * rendement, doublon, confirmation de fermeture). .drawer/.drawer__panel
+ * eux-mêmes ne sont JAMAIS recréés pendant que le formulaire reste ouvert
+ * (qu'il s'agisse d'afficher/fermer le dialogue « Modifications non
+ * sauvegardées », d'ouvrir l'aide au rendement, de changer d'étape, ou de
+ * toute autre interaction) : pas d'animation d'entrée à rejouer
+ * (.wizard__dialog a animation:none, cf. app.css), mais la boîte elle-même
+ * (fond, taille) reste un seul nœud DOM stable du début à la fin.
  */
 function refreshOpenForm(root, s) {
   const body = root.querySelector('.drawer__body');
   if (!body) { renderFull(root, s); return; }
   const f = currentFormData(s);
   if (!f) { renderFull(root, s); return; }
-  body.innerHTML = formBodyHtml(f);
+  if (editing === 'new') {
+    const head = root.querySelector('.drawer__head');
+    if (head) { head.innerHTML = newFoodHeadHtml(); bindFormCancel(root, head); }
+    body.innerHTML = newFoodStepBodyHtml(f);
+  } else {
+    body.innerHTML = formBodyHtml(f);
+  }
   let overlays = root.querySelector('#food-overlays');
   if (!overlays) { renderFull(root, s); return; }
   overlays.innerHTML = overlaysHtml(s);
@@ -252,7 +269,7 @@ function refreshOpenForm(root, s) {
 }
 
 function overlaysHtml(s) {
-  return `${editing && yieldCalc ? yieldPanel() : ''}${editing && offSearch ? offSearchPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
+  return `${editing && yieldCalc ? yieldPanel() : ''}${similarWarning ? similarModal() : ''}${editing && confirmingClose ? unsavedConfirmModal() : ''}${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}`;
 }
 
 /** L'aliment affiché dans le formulaire actuellement ouvert (brouillon ou fiche existante). */
@@ -302,60 +319,122 @@ const blank = () => ({
   fractionable: true, unitEntry: false, price: null, packageWeight: null,
   batchAllowed: false, shelfLifeDays: null, requiresCooking: false, favorite: false, lastUsed: null,
   cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
-  // Open Food Facts (cf. normalizeFood(), store.js) — null tant que rien
-  // n'a été récupéré ou saisi, jamais 0 ou ''.
-  barcode: null, satFat: null, sugars: null, salt: null, sodium: null,
-  nutriScore: null, novaGroup: null, ecoScore: null,
-  ingredientsText: null, allergensText: null,
-  imageUrl: null, imageThumbUrl: null, offUrl: null, offQuantity: null, offFetchedAt: null,
+  // Code-barres (cf. normalizeFood(), store.js) — null tant que rien n'a été
+  // récupéré ou saisi, jamais 0 ou ''. Les autres champs Open Food Facts
+  // (nutriments complémentaires, Nutri-Score/NOVA/Eco-Score, textes, images)
+  // ont été retirés du modèle (retour utilisateur, RETIRED_FOOD_FIELDS côté
+  // store.js) : jamais utilisés par le moteur nutritionnel ni affichés nulle
+  // part une fois l'aliment enregistré.
+  barcode: null,
 });
 
-const CREATION_MODES = [
-  {
-    id: 'simplified', icon: '⚡', title: 'Mode simplifié',
-    desc: 'Seulement les champs essentiels (nom, catégorie, macros). Les options avancées restent accessibles, repliées.',
-  },
-  {
-    id: 'off', icon: '🔎', title: 'Recherche Open Food Facts',
-    desc: 'Cherche un produit existant par nom ou code-barres : la fiche est prérempli, tout reste modifiable avant d\'enregistrer.',
-  },
-  {
-    id: 'manual', icon: '✍️', title: 'Mode manuel',
-    desc: 'Le formulaire complet directement, pour tout saisir toi-même (produit maison, valeurs précises, etc.).',
-  },
-];
+/* ------------------------------------------------------------------ */
+/* Sections de champs — réutilisées TELLES QUELLES (mêmes data-f, mêmes     */
+/* libellés) par les deux parcours : la modification d'une fiche existante */
+/* les affiche toutes à la suite (formBodyHtml(), inchangé dans l'esprit), */
+/* la création d'un nouvel aliment les affiche UNE PAR UNE, comme autant   */
+/* d'étapes de l'assistant (newFoodStepBodyHtml()) — readForm()/wireDrawer-*/
+/* Body() n'ont rien de plus à savoir : un champ est lu dès qu'il existe   */
+/* dans le DOM, qu'il soit affiché seul ou avec dix autres.                */
+/* ------------------------------------------------------------------ */
 
-/**
- * Bandeau de choix de mode (P4, retour utilisateur) — première chose visible
- * à la création d'un nouvel aliment, mais qui ne REMPLACE ni ne masque le
- * formulaire (lui reste accessible et utilisable immédiatement, inchangé
- * pour qui veut juste saisir directement) : un choix purement indicatif, qui
- * configure l'affichage (mode simplifié -> options avancées repliées) sans
- * jamais bloquer la saisie derrière une étape obligatoire.
- */
-function modeChoiceHtml() {
-  return `<div class="mode-choice">
-    <div class="mode-choice__head">
-      <p>Comment veux-tu renseigner ce nouvel aliment ?</p>
-      <button type="button" class="btn btn--ghost btn--sm" data-mode-dismiss>Peu importe, je saisis directement</button>
+const n = (v) => (v === null || v === undefined ? '' : v);
+
+function generalFieldsHtml(f) {
+  return `<div class="form-section">
+    <div class="form-section__head"><span class="ico" aria-hidden="true">📋</span><h3>Général</h3></div>
+    <div class="grid grid--3">
+      <label class="field" style="grid-column:1/-1">Nom
+        <input type="text" data-f="name" value="${esc(f.name)}"></label>
+      <label class="field">Marque (facultatif)
+        <input type="text" data-f="brand" value="${esc(f.brand)}"></label>
+      <label class="field">Catégorie
+        <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.icon} ${c.label}</option>`).join('')}</select></label>
+      <label class="field">Code-barres (facultatif)
+        <input type="text" inputmode="numeric" pattern="[0-9]*" data-f="barcode" value="${esc(f.barcode || '')}" placeholder="EAN…"></label>
     </div>
-    <div class="mode-choice__grid">
-      ${CREATION_MODES.map((m) => `<button type="button" class="mode-choice__card" data-mode="${m.id}">
-        <span class="mode-choice__icon" aria-hidden="true">${m.icon}</span>
-        <span class="mode-choice__title">${esc(m.title)}</span>
-        <span class="mode-choice__desc">${esc(m.desc)}</span>
-      </button>`).join('')}
+  </div>`;
+}
+
+function nutritionFieldsHtml(f) {
+  return `<div class="form-section">
+    <div class="form-section__head"><span class="ico" aria-hidden="true">🔥</span><h3>Valeurs nutritionnelles (pour 100 g)</h3></div>
+    <small style="display:block;margin-bottom:6px">Les valeurs ci-dessous correspondent à l'état sélectionné dans « État et unités » (étape suivante).</small>
+    <div class="grid grid--3">
+      <label class="field">Calories (kcal) <input type="number" step="1" data-f="kcal" value="${n(f.kcal)}"></label>
+      <label class="field">Protéines (g) <input type="number" step="0.1" data-f="protein" value="${n(f.protein)}"></label>
+      <label class="field">Glucides (g) <input type="number" step="0.1" data-f="carbs" value="${n(f.carbs)}"></label>
+      <label class="field">Lipides (g) <input type="number" step="0.1" data-f="fat" value="${n(f.fat)}"></label>
+      <label class="field">Fibres (g, facultatif) <input type="number" step="0.1" data-f="fiber" value="${n(f.fiber)}"></label>
     </div>
+  </div>`;
+}
+
+function unitsFieldsHtml(f) {
+  return `<div class="form-section">
+    <div class="form-section__head"><span class="ico" aria-hidden="true">⚖️</span><h3>État et unités</h3></div>
+    <div class="grid grid--3">
+      <label class="field">État des valeurs nutritionnelles
+        <select data-f="referenceState">${STATES.map((st) => `<option value="${st.id}" ${f.referenceState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}</select></label>
+      <label class="field">Rendement après cuisson
+        <input type="number" step="0.05" min="0" data-f="cookedFactor" value="${n(f.cookedFactor)}"></label>
+      <label class="field">Nom de l'unité
+        <input type="text" data-f="unitName" value="${esc(f.unitName)}" placeholder="tranche, pot, œuf…"></label>
+      <label class="field">Poids d'une unité (g)
+        <input type="number" step="1" data-f="gramsPerUnit" value="${n(f.gramsPerUnit)}"></label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="btn btn--sm" data-yield-open>Calculer le rendement</button>
+      <small>Coefficient = poids cuit ÷ poids cru. 2,00 → 100 g cru donnent 200 g cuit ; 0,75 → 100 g cru donnent 75 g cuit.</small>
+    </div>
+    <label class="check" style="margin-top:8px"><input type="checkbox" data-f="fractionable" ${f.fractionable ? 'checked' : ''}> Unité fractionnable (sinon quantités par unité entière)</label>
+    <label class="check" style="margin-top:6px"><input type="checkbox" data-f="unitEntry" ${f.unitEntry ? 'checked' : ''}> Saisir les quantités en unités plutôt qu'en grammes</label>
+    <small style="display:block;margin-top:4px">Un aliment non fractionnable ne peut exister qu'en multiples entiers de son poids par unité, quelle que soit la façon dont la quantité est saisie.</small>
+  </div>`;
+}
+
+function purchaseFieldsHtml(f) {
+  return `<div class="form-section">
+    <div class="form-section__head"><span class="ico" aria-hidden="true">🛒</span><h3>Achat & préparation</h3></div>
+    <div class="grid grid--3">
+      <label class="field">Prix du conditionnement (€)
+        <input type="number" step="0.01" data-f="price" value="${n(f.price)}"></label>
+      <label class="field">Poids du conditionnement (g)
+        <input type="number" step="1" data-f="packageWeight" value="${n(f.packageWeight)}"></label>
+    </div>
+    <label class="check" style="margin-top:8px"><input type="checkbox" data-f="batchAllowed" ${f.batchAllowed ? 'checked' : ''}> Autorisé en batch cooking</label>
+    <div class="grid grid--3" style="margin-top:8px">
+      <label class="field">Durée maximale de conservation après préparation (jours)
+        <input type="number" step="1" min="0" data-f="shelfLifeDays" value="${n(f.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
+    </div>
+    <label class="check" style="margin-top:14px"><input type="checkbox" data-f="requiresCooking" ${f.requiresCooking ? 'checked' : ''}> Nécessite une cuisson</label>
+    <small style="display:block;margin:4px 0 8px">Indépendant de l'état de référence : un aliment cru peut se consommer tel quel, un aliment prêt à consommer peut demander une cuisson. Sert au classement du batch : batchable → à préparer en batch ; sinon, cuisson nécessaire → à cuire le jour même ; sinon → à assembler le jour même.</small>
+    <div class="grid grid--3">
+      <label class="field">Méthode de cuisson
+        <input type="text" data-f="cookingMethod" value="${esc(f.cookingMethod || '')}" placeholder="Four, poêle, vapeur…"></label>
+      <label class="field">Température (°C)
+        <input type="number" step="5" data-f="cookingTemp" value="${n(f.cookingTemp)}"></label>
+      <label class="field">Durée de cuisson (min)
+        <input type="number" step="1" data-f="cookingTime" value="${n(f.cookingTime)}"></label>
+      <label class="field">Temps de préparation (min)
+        <input type="number" step="1" data-f="prepTime" value="${n(f.prepTime)}"></label>
+      <label class="field">Matériel
+        <input type="text" data-f="equipment" value="${esc(f.equipment || '')}" placeholder="Four, sauteuse…"></label>
+    </div>
+    <label class="field" style="margin-top:8px">Consignes libres
+      <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
+    <small style="display:block;margin-top:4px">Rendement actuel : ${num(f.cookedFactor || 1, 2)} — 100 g crus donnent ${num((f.cookedFactor || 1) * 100, 0)} g cuits. Ces informations sont reprises telles quelles dans le plan de batch.</small>
   </div>`;
 }
 
 function formPanel(s) {
   const f = currentFormData(s);
   if (!f) return '';
+  if (editing === 'new') return newFoodWizardPanel(f);
   return `<div class="wizard" data-form-backdrop>
     <div class="wizard__dialog drawer__panel">
       <div class="wizard__head drawer__head"><div class="row">
-        <h3 style="flex:1">${editing === 'new' ? 'Nouvel aliment' : 'Modifier l\'aliment'}</h3>
+        <h3 style="flex:1">Modifier l'aliment</h3>
         <button class="btn btn--ghost" data-form-cancel>Fermer</button>
       </div></div>
       <div class="wizard__body drawer__body">${formBodyHtml(f)}</div>
@@ -363,151 +442,149 @@ function formPanel(s) {
   </div>`;
 }
 
-/**
- * Contenu de .drawer__body — réutilisé tel quel par refreshOpenForm().
- * En mode simplifié (P4, retour utilisateur), "État et unités" et "Achat &
- * préparation" passent dans un <details> replié par défaut : les valeurs
- * par défaut (blank()) restent valides sans y toucher, rien n'est perdu ni
- * désactivé, juste masqué tant qu'on ne choisit pas de le dérouler.
- */
+/** Contenu de .drawer__body pour la MODIFICATION d'une fiche existante — toutes les sections à la suite, jamais d'étapes (réutilisé tel quel par refreshOpenForm()). */
 function formBodyHtml(f) {
-  const n = (v) => (v === null || v === undefined ? '' : v);
-  const simplified = creationMode === 'simplified';
-  return `${editing === 'new' && creationMode === null ? modeChoiceHtml() : ''}
-        ${editing === 'new' ? `<div class="row" style="margin-bottom:14px">
-          <button class="btn btn--sm" data-off-open type="button">Rechercher sur Open Food Facts</button>
-          <small>Préremplit la fiche depuis un produit existant — tout reste modifiable avant d'enregistrer.</small>
-        </div>` : ''}
-
-        <div class="form-section">
-          <div class="form-section__head"><span class="ico" aria-hidden="true">📋</span><h3>Général</h3></div>
-          <div class="grid grid--3">
-            <label class="field" style="grid-column:1/-1">Nom
-              <input type="text" data-f="name" value="${esc(f.name)}"></label>
-            <label class="field">Marque (facultatif)
-              <input type="text" data-f="brand" value="${esc(f.brand)}"></label>
-            <label class="field">Catégorie
-              <select data-f="category">${CATEGORIES.map((c) => `<option value="${c.id}" ${f.category === c.id ? 'selected' : ''}>${c.icon} ${c.label}</option>`).join('')}</select>
-              ${editing === 'new' && Boolean(f.offUrl || f.offFetchedAt) ? '<small>Suggestion Open Food Facts — vérifie et modifie si besoin.</small>' : ''}</label>
-            <label class="field">Code-barres (facultatif)
-              <input type="text" inputmode="numeric" pattern="[0-9]*" data-f="barcode" value="${esc(f.barcode || '')}" placeholder="EAN…"></label>
-          </div>
-        </div>
-
-        <div class="form-section">
-          <div class="form-section__head"><span class="ico" aria-hidden="true">🔥</span><h3>Valeurs nutritionnelles (pour 100 g)</h3></div>
-          <small style="display:block;margin-bottom:6px">Les valeurs ci-dessous correspondent à l'état sélectionné dans « État et unités » ci-après.</small>
-          <div class="grid grid--3">
-            <label class="field">Calories (kcal) <input type="number" step="1" data-f="kcal" value="${n(f.kcal)}"></label>
-            <label class="field">Protéines (g) <input type="number" step="0.1" data-f="protein" value="${n(f.protein)}"></label>
-            <label class="field">Glucides (g) <input type="number" step="0.1" data-f="carbs" value="${n(f.carbs)}"></label>
-            <label class="field">Lipides (g) <input type="number" step="0.1" data-f="fat" value="${n(f.fat)}"></label>
-            <label class="field">Fibres (g) <input type="number" step="0.1" data-f="fiber" value="${n(f.fiber)}"></label>
-          </div>
-          ${offInfoBlock(f)}
-        </div>
-
-        ${simplified ? '<details class="form-section form-section--details"><summary>Options avancées (état, unités, achat, batch cooking — facultatif)</summary>' : ''}
-        <div class="form-section">
-          <div class="form-section__head"><span class="ico" aria-hidden="true">⚖️</span><h3>État et unités</h3></div>
-          <div class="grid grid--3">
-            <label class="field">État des valeurs nutritionnelles
-              <select data-f="referenceState">${STATES.map((st) => `<option value="${st.id}" ${f.referenceState === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}</select></label>
-            <label class="field">Rendement après cuisson
-              <input type="number" step="0.05" min="0" data-f="cookedFactor" value="${n(f.cookedFactor)}"></label>
-            <label class="field">Nom de l'unité
-              <input type="text" data-f="unitName" value="${esc(f.unitName)}" placeholder="tranche, pot, œuf…"></label>
-            <label class="field">Poids d'une unité (g)
-              <input type="number" step="1" data-f="gramsPerUnit" value="${n(f.gramsPerUnit)}"></label>
-          </div>
-          <div class="row" style="margin-top:6px">
-            <button class="btn btn--sm" data-yield-open>Calculer le rendement</button>
-            <small>Coefficient = poids cuit ÷ poids cru. 2,00 → 100 g cru donnent 200 g cuit ; 0,75 → 100 g cru donnent 75 g cuit.</small>
-          </div>
-          <label class="check" style="margin-top:8px"><input type="checkbox" data-f="fractionable" ${f.fractionable ? 'checked' : ''}> Unité fractionnable (sinon quantités par unité entière)</label>
-          <label class="check" style="margin-top:6px"><input type="checkbox" data-f="unitEntry" ${f.unitEntry ? 'checked' : ''}> Saisir les quantités en unités plutôt qu'en grammes</label>
-          <small style="display:block;margin-top:4px">Un aliment non fractionnable ne peut exister qu'en multiples entiers de son poids par unité, quelle que soit la façon dont la quantité est saisie.</small>
-        </div>
-
-        <div class="form-section">
-          <div class="form-section__head"><span class="ico" aria-hidden="true">🛒</span><h3>Achat & préparation</h3></div>
-          <div class="grid grid--3">
-            <label class="field">Prix du conditionnement (€)
-              <input type="number" step="0.01" data-f="price" value="${n(f.price)}"></label>
-            <label class="field">Poids du conditionnement (g)
-              <input type="number" step="1" data-f="packageWeight" value="${n(f.packageWeight)}"></label>
-          </div>
-          <label class="check" style="margin-top:8px"><input type="checkbox" data-f="batchAllowed" ${f.batchAllowed ? 'checked' : ''}> Autorisé en batch cooking</label>
-          <div class="grid grid--3" style="margin-top:8px">
-            <label class="field">Durée maximale de conservation après préparation (jours)
-              <input type="number" step="1" min="0" data-f="shelfLifeDays" value="${n(f.shelfLifeDays)}" placeholder="laisser vide si inconnue"></label>
-          </div>
-          <label class="check" style="margin-top:14px"><input type="checkbox" data-f="requiresCooking" ${f.requiresCooking ? 'checked' : ''}> Nécessite une cuisson</label>
-          <small style="display:block;margin:4px 0 8px">Indépendant de l'état de référence : un aliment cru peut se consommer tel quel, un aliment prêt à consommer peut demander une cuisson. Sert au classement du batch : batchable → à préparer en batch ; sinon, cuisson nécessaire → à cuire le jour même ; sinon → à assembler le jour même.</small>
-          <div class="grid grid--3">
-            <label class="field">Méthode de cuisson
-              <input type="text" data-f="cookingMethod" value="${esc(f.cookingMethod || '')}" placeholder="Four, poêle, vapeur…"></label>
-            <label class="field">Température (°C)
-              <input type="number" step="5" data-f="cookingTemp" value="${n(f.cookingTemp)}"></label>
-            <label class="field">Durée de cuisson (min)
-              <input type="number" step="1" data-f="cookingTime" value="${n(f.cookingTime)}"></label>
-            <label class="field">Temps de préparation (min)
-              <input type="number" step="1" data-f="prepTime" value="${n(f.prepTime)}"></label>
-            <label class="field">Matériel
-              <input type="text" data-f="equipment" value="${esc(f.equipment || '')}" placeholder="Four, sauteuse…"></label>
-          </div>
-          <label class="field" style="margin-top:8px">Consignes libres
-            <textarea data-f="instructions" rows="3" placeholder="Ex. cuire entier, laisser tiédir, couper ensuite.">${esc(f.instructions || '')}</textarea></label>
-          <small style="display:block;margin-top:4px">Rendement actuel : ${num(f.cookedFactor || 1, 2)} — 100 g crus donnent ${num((f.cookedFactor || 1) * 100, 0)} g cuits. Ces informations sont reprises telles quelles dans le plan de batch.</small>
-        </div>
-        ${simplified ? '</details>' : ''}
-
+  return `${generalFieldsHtml(f)}
+        ${nutritionFieldsHtml(f)}
+        ${unitsFieldsHtml(f)}
+        ${purchaseFieldsHtml(f)}
         <label class="check" style="margin-top:16px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>
         <div class="row" style="margin-top:18px">
           <button class="btn btn--primary" data-save="${f.id}">Enregistrer</button>
-          ${editing === 'new' ? '' : `<span class="spacer"></span><button class="btn btn--danger" data-delete="${f.id}">Supprimer</button>`}
+          <span class="spacer"></span><button class="btn btn--danger" data-delete="${f.id}">Supprimer</button>
         </div>
         <small style="display:block;margin-top:10px">Les valeurs livrées par défaut sont génériques. Pour un produit de marque, recopie les valeurs de l'emballage.</small>`;
 }
 
-/**
- * Valeurs complémentaires (jamais utilisées par le moteur nutritionnel, qui
- * reste kcal/protein/carbs/fat/fiber uniquement) + informations Open Food
- * Facts quand la fiche en provient. Tout reste modifiable, y compris après
- * un préremplissage — aucun champ n'est présenté comme verrouillé.
- */
-function offInfoBlock(f) {
-  const n = (v) => (v === null || v === undefined ? '' : v);
-  const fromOff = Boolean(f.offUrl || f.offFetchedAt);
-  return `<details style="margin:10px 0" ${fromOff ? 'open' : ''}>
-    <summary>Valeurs complémentaires ${fromOff ? '(Open Food Facts)' : '(facultatif)'}</summary>
-    <div class="grid grid--3" style="margin-top:8px">
-      <label class="field">Graisses saturées (g) <input type="number" step="0.1" data-f="satFat" value="${n(f.satFat)}"></label>
-      <label class="field">Sucres (g) <input type="number" step="0.1" data-f="sugars" value="${n(f.sugars)}"></label>
-      <label class="field">Sel (g) <input type="number" step="0.01" data-f="salt" value="${n(f.salt)}"></label>
-      <label class="field">Sodium (g) <input type="number" step="0.01" data-f="sodium" value="${n(f.sodium)}"></label>
+/* ------------------------------------------------------------------ */
+/* Assistant de création — NOUVEL aliment uniquement (retour utilisateur)  */
+/* ------------------------------------------------------------------ */
+
+const NEW_FOOD_STEP_TITLES = {
+  start: 'Nouvel aliment',
+  'off-mode': 'Recherche Open Food Facts',
+  'off-search': 'Recherche Open Food Facts',
+  general: 'Informations générales',
+  nutrition: 'Valeurs nutritionnelles',
+  units: 'État et unités',
+  purchase: 'Achat & préparation',
+};
+// Étapes "de contenu" (champs à remplir), dans l'ordre — utilisées à la fois
+// pour la progression (Suivant) et les puces de progression dans l'en-tête ;
+// 'start'/'off-mode'/'off-search' n'en font pas partie (écrans de choix/
+// recherche, pas de champ de fiche à proprement parler).
+const NEW_FOOD_CONTENT_STEPS = ['general', 'nutrition', 'units', 'purchase'];
+
+function newFoodWizardPanel(f) {
+  return `<div class="wizard" data-form-backdrop>
+    <div class="wizard__dialog drawer__panel">
+      <div class="wizard__head drawer__head">${newFoodHeadHtml()}</div>
+      <div class="wizard__body drawer__body">${newFoodStepBodyHtml(f)}</div>
     </div>
-    <small style="display:block;margin-top:4px">Sel et sodium sont deux données distinctes sur l'emballage — jamais l'une déduite de l'autre ici.</small>
-    ${
-      fromOff
-        ? `<div class="grid grid--3" style="margin-top:8px">
-             <label class="field">Nutri-Score <input type="text" data-f="nutriScore" value="${esc((f.nutriScore || '').toUpperCase())}" maxlength="1" style="text-transform:uppercase"></label>
-             <label class="field">Groupe NOVA <input type="number" step="1" min="1" max="4" data-f="novaGroup" value="${n(f.novaGroup)}"></label>
-             <label class="field">Eco-Score <input type="text" data-f="ecoScore" value="${esc((f.ecoScore || '').toUpperCase())}" maxlength="1" style="text-transform:uppercase"></label>
-           </div>
-           <label class="field" style="margin-top:8px">Ingrédients (Open Food Facts)
-             <textarea data-f="ingredientsText" rows="2">${esc(f.ingredientsText || '')}</textarea></label>
-           <label class="field" style="margin-top:8px">Allergènes / traces (Open Food Facts)
-             <textarea data-f="allergensText" rows="2">${esc(f.allergensText || '')}</textarea></label>
-           <small style="display:block;margin-top:6px">
-             ${f.offQuantity ? `Conditionnement indiqué : ${esc(f.offQuantity)}. ` : ''}
-             ${f.offFetchedAt ? `Récupéré le ${esc(new Date(f.offFetchedAt).toLocaleDateString('fr-FR'))}` : ''}
-             ${f.offUrl ? ` — <a href="${esc(f.offUrl)}" target="_blank" rel="noopener">fiche Open Food Facts</a>` : ''}.
-             Indicatif : vérifie toujours contre l'emballage réel, en particulier si le produit a changé depuis.
-           </small>`
-        : ''
-    }
-  </details>`;
+  </div>`;
+}
+
+function newFoodHeadHtml() {
+  const idx = NEW_FOOD_CONTENT_STEPS.indexOf(newFoodStep);
+  return `<div class="row">
+      <h3 style="flex:1">${esc(NEW_FOOD_STEP_TITLES[newFoodStep] || 'Nouvel aliment')}</h3>
+      <button class="btn btn--ghost" data-form-cancel>Fermer</button>
+    </div>
+    ${idx >= 0 ? `<div class="wizard-steps" aria-hidden="true">
+      ${NEW_FOOD_CONTENT_STEPS.map((_, i) => `<span class="wizard-steps__dot${i === idx ? ' is-active' : i < idx ? ' is-done' : ''}"></span>`).join('')}
+    </div>` : ''}`;
+}
+
+/**
+ * Corps de l'étape courante — enveloppé dans .wizard-step, dont la clé
+ * data-step CHANGE à chaque étape : comme le body est entièrement remplacé
+ * (jamais patché), cette div est toujours un nouveau nœud DOM à l'insertion,
+ * ce qui rejoue naturellement l'animation CSS de glissade (app.css) sans
+ * aucune mécanique JS dédiée.
+ */
+function newFoodStepBodyHtml(f) {
+  let body;
+  switch (newFoodStep) {
+    case 'start': body = startChoiceHtml(); break;
+    case 'off-mode': body = offModeChoiceHtml(); break;
+    case 'off-search': body = offSearchStepHtml(); break;
+    case 'general': body = generalFieldsHtml(f); break;
+    case 'nutrition': body = nutritionFieldsHtml(f); break;
+    case 'units': body = unitsFieldsHtml(f); break;
+    case 'purchase':
+      body = `${purchaseFieldsHtml(f)}
+        <label class="check" style="margin-top:16px"><input type="checkbox" data-f="favorite" ${f.favorite ? 'checked' : ''}> Favori</label>`;
+      break;
+    default: body = '';
+  }
+  return `<div class="wizard-step" data-step="${newFoodStep}">${body}</div>${newFoodNavHtml(f)}`;
+}
+
+/** Pied de l'étape : Précédent (dès qu'il y a un historique) + Suivant/Enregistrer sur les étapes de champs. */
+function newFoodNavHtml(f) {
+  const prevBtn = stepHistory.length
+    ? `<button type="button" class="btn btn--ghost" data-step-prev>‹ Précédent</button>`
+    : '';
+  if (!NEW_FOOD_CONTENT_STEPS.includes(newFoodStep)) {
+    // écrans de choix/recherche : le choix d'une carte (ou un produit
+    // sélectionné) EST la navigation "suivant" — seul "Précédent" a sa place ici.
+    return prevBtn ? `<div class="row wizard-nav" style="margin-top:18px">${prevBtn}</div>` : '';
+  }
+  const isLast = newFoodStep === 'purchase';
+  return `<div class="row wizard-nav" style="margin-top:18px">
+    ${prevBtn}<span class="spacer"></span>
+    ${isLast
+      ? `<button class="btn btn--primary" data-save="${f.id}">Enregistrer</button>`
+      : `<button type="button" class="btn btn--primary" data-step-next>Suivant ›</button>`}
+  </div>`;
+}
+
+/** Écran de choix à deux cartes, réutilisé pour 'start' et 'off-mode'. */
+function choiceCardsHtml(question, options, attr) {
+  return `<div class="mode-choice">
+    <div class="mode-choice__head"><p>${esc(question)}</p></div>
+    <div class="mode-choice__grid">
+      ${options.map((o) => `<button type="button" class="mode-choice__card" ${attr}="${o.id}">
+        <span class="mode-choice__icon" aria-hidden="true">${o.icon}</span>
+        <span class="mode-choice__title">${esc(o.title)}</span>
+        <span class="mode-choice__desc">${esc(o.desc)}</span>
+      </button>`).join('')}
+    </div>
+  </div>`;
+}
+
+function startChoiceHtml() {
+  return choiceCardsHtml('Comment veux-tu renseigner ce nouvel aliment ?', [
+    { id: 'manual', icon: '✍️', title: 'Mode manuel', desc: 'Renseigne toi-même chaque champ, étape par étape.' },
+    { id: 'off', icon: '🔎', title: 'Recherche Open Food Facts', desc: 'Pars d\'un produit existant (code-barres ou nom) : la fiche se préremplit, tout reste modifiable.' },
+  ], 'data-start-choice');
+}
+
+function offModeChoiceHtml() {
+  return choiceCardsHtml('Rechercher ce produit sur Open Food Facts', [
+    { id: 'barcode', icon: '🔢', title: 'Code-barres', desc: 'Scanne ou saisis le code-barres (EAN) du produit.' },
+    { id: 'name', icon: '🔤', title: 'Nom ou marque', desc: 'Recherche par texte si tu n\'as pas le code-barres sous la main.' },
+  ], 'data-off-submode-choice');
+}
+
+/** Contenu de l'étape 'off-search' — barcode OU nom/marque seulement, selon offSubMode (choix explicite de l'étape précédente). */
+function offSearchStepHtml() {
+  const o = offSearch;
+  if (!o) return '';
+  const searchFieldsHtml = offSubMode === 'barcode'
+    ? `<div class="row">
+        <input type="text" inputmode="numeric" pattern="[0-9]*" data-off-barcode
+          value="${esc(o.barcodeInput)}" placeholder="Code-barres (EAN)…" style="flex:1;min-width:160px">
+        <button class="btn btn--primary" data-off-barcode-go ${o.barcodeInput.trim() ? '' : 'disabled'}>Rechercher</button>
+        ${isScannerSupported() ? '<button class="btn" data-off-scan-open type="button">📷 Scanner un code-barres</button>' : ''}
+      </div>`
+    : `<div class="grid grid--2">
+        <input type="text" data-off-name value="${esc(o.nameInput)}" placeholder="Nom du produit…">
+        <input type="text" data-off-brand value="${esc(o.brandInput)}" placeholder="Marque (facultatif)…">
+      </div>`;
+  return `${searchFieldsHtml}
+    <div id="off-status" style="margin-top:14px">${offSearchStatusHtml(o)}</div>
+    <small style="display:block;margin-top:16px">Données © <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>, sous licence ouverte ODbL — vérifie toujours les valeurs avant d'enregistrer.</small>`;
 }
 
 /** Aide au calcul du rendement après cuisson (coefficient = cuit ÷ cru). */
@@ -574,34 +651,6 @@ function closeOffSearch() {
  */
 function existingFoodForBarcode(code) {
   return foodByBarcode(code);
-}
-
-function offSearchPanel() {
-  const o = offSearch;
-  return `<div class="drawer" data-off-backdrop>
-    <div class="drawer__panel" style="width:min(640px,100%)">
-      <div class="drawer__head"><div class="row">
-        <h3 style="flex:1">Rechercher sur Open Food Facts</h3>
-        <button class="btn btn--ghost" data-off-cancel>Fermer</button>
-      </div></div>
-      <div class="drawer__body">
-        <h3 style="margin-top:0">Par code-barres</h3>
-        <div class="row">
-          <input type="text" inputmode="numeric" pattern="[0-9]*" data-off-barcode
-            value="${esc(o.barcodeInput)}" placeholder="Code-barres (EAN)…" style="flex:1;min-width:160px">
-          <button class="btn btn--primary" data-off-barcode-go ${o.barcodeInput.trim() ? '' : 'disabled'}>Rechercher</button>
-          ${isScannerSupported() ? '<button class="btn" data-off-scan-open type="button">📷 Scanner un code-barres</button>' : ''}
-        </div>
-        <h3 style="margin-top:16px">Par nom et/ou marque</h3>
-        <div class="grid grid--2">
-          <input type="text" data-off-name value="${esc(o.nameInput)}" placeholder="Nom du produit…">
-          <input type="text" data-off-brand value="${esc(o.brandInput)}" placeholder="Marque (facultatif)…">
-        </div>
-        <div id="off-status" style="margin-top:14px">${offSearchStatusHtml(o)}</div>
-        <small style="display:block;margin-top:16px">Données © <a href="https://world.openfoodfacts.org" target="_blank" rel="noopener">Open Food Facts</a>, sous licence ouverte ODbL — vérifie toujours les valeurs avant d'enregistrer.</small>
-      </div>
-    </div>
-  </div>`;
 }
 
 /**
@@ -741,6 +790,14 @@ async function runTextSearch(root) {
 
 const runTextSearchDebounced = debounce((root) => runTextSearch(root), 500);
 
+// Sous-ensemble du brouillon OFF (mapOffProductToFoodDraft(), off.js) qui
+// correspond encore à un champ du formulaire — le brouillon lui-même reste
+// plus riche (image, Nutri-Score, quantité…), utile aux cartes de résultat
+// de recherche (offResultCard()) pour identifier le bon produit, mais ces
+// champs-là n'existent plus sur un aliment enregistré (retour utilisateur) :
+// jamais copiés dans le formulaire, pour ne pas les faire réapparaître.
+const OFF_DRAFT_FIELDS = ['barcode', 'name', 'category', 'brand', 'kcal', 'protein', 'carbs', 'fat', 'fiber', 'packageWeight'];
+
 /**
  * Préremplit le formulaire avec un produit OFF choisi explicitement. Si le
  * brouillon courant contient déjà une saisie réelle (pas un formulaire
@@ -748,12 +805,22 @@ const runTextSearchDebounced = debounce((root) => runTextSearch(root), 500);
  */
 function applyOffDraft(root, draft) {
   const current = formDraft || blank();
-  const merged = { ...current, ...draft, id: current.id };
+  const picked = {};
+  // `key in draft` (jamais `!== null`) : un champ réellement ABSENT sur OFF
+  // (ex. kcal non renseigné sur la fiche produit) doit rester vide dans le
+  // formulaire, pas retomber silencieusement sur le 0 par défaut de blank()
+  // — sinon l'étape 'nutrition' ne bloquerait jamais sur une donnée en
+  // réalité manquante (cf. wireNewFoodSteps(), blocage sur champ vide).
+  for (const key of OFF_DRAFT_FIELDS) if (key in draft) picked[key] = draft[key];
+  const merged = { ...current, ...picked, id: current.id };
   const apply = () => {
     formDraft = merged;
     closeOffSearch();
     toast('Fiche préremplie depuis Open Food Facts — vérifie les valeurs avant d\'enregistrer');
-    render(root);
+    // Même parcours que le mode manuel à partir d'ici (retour utilisateur) :
+    // rien n'est sauté, les 4 étapes de champs restent à parcourir,
+    // préremplies mais modifiables.
+    goToStep(root, 'general');
   };
   // le formulaire contient-il déjà une saisie réelle depuis son OUVERTURE ?
   // `formBaseline` (capturé une seule fois à l'ouverture par
@@ -780,11 +847,10 @@ function applyOffDraft(root, draft) {
 function wireOffSearch(root) {
   if (!offSearch) return;
   const o = offSearch;
-  root.querySelector('[data-off-cancel]')?.addEventListener('click', () => { closeOffSearch(); render(root); });
-  root.querySelector('[data-off-backdrop]')?.addEventListener('mousedown', (e) => {
-    if (e.target.dataset.offBackdrop !== undefined) { closeOffSearch(); render(root); }
-  });
-
+  // Pas de fermeture/backdrop propres à cette recherche : elle vit désormais
+  // comme une étape de l'assistant (newFoodStep === 'off-search'), fermée
+  // via « Précédent » (data-step-prev) ou le backdrop du formulaire entier
+  // (data-form-backdrop) — jamais un second panneau empilé par-dessus.
   const barcodeInput = root.querySelector('[data-off-barcode]');
   const barcodeGoBtn = root.querySelector('[data-off-barcode-go]');
   barcodeInput?.addEventListener('input', (e) => {
@@ -876,7 +942,9 @@ function similarModal() {
 
 function resetForm() {
   editing = null;
-  creationMode = null;
+  newFoodStep = 'start';
+  offSubMode = null;
+  stepHistory = [];
   similarWarning = null;
   formDraft = null;
   yieldCalc = null;
@@ -962,8 +1030,103 @@ function readForm(root, base) {
   });
   if (!out.cookedFactor) out.cookedFactor = 1;
   if (!out.gramsPerUnit) out.gramsPerUnit = 0;
-  for (const k of ['kcal', 'protein', 'carbs', 'fat', 'fiber']) out[k] = Number(out[k]) || 0;
+  // Ce forçage à 0 n'a de sens que pour la fiche d'édition (toutes les
+  // valeurs nutritionnelles affichées en une fois) : dans l'assistant de
+  // création, readForm() est aussi appelé en changeant d'étape alors que ces
+  // champs ne sont PAS dans le DOM (ex. étape 'general') — l'appliquer sans
+  // condition écraserait une valeur manquante de la fiche OFF (ex. fibre
+  // absente) avant même que l'étape 'nutrition' ait pu l'afficher vide,
+  // rendant le blocage « champ obligatoire » inopérant.
+  if (editing !== 'new') {
+    for (const k of ['kcal', 'protein', 'carbs', 'fat', 'fiber']) out[k] = Number(out[k]) || 0;
+  }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Navigation de l'assistant de création (nouvel aliment uniquement)       */
+/* ------------------------------------------------------------------ */
+
+/** Avance d'une étape, en gardant la précédente dans l'historique (bouton Précédent). */
+function goToStep(root, step) {
+  stepHistory.push(newFoodStep);
+  newFoodStep = step;
+  render(root);
+}
+
+/**
+ * Revient à l'étape précédente. En quittant 'off-search' vers l'arrière, la
+ * recherche en cours est abandonnée (closeOffSearch()) — repartir sur
+ * 'off-search' plus tard (soit en y revenant encore, soit via un nouveau
+ * choix à l'étape 'off-mode') réouvre une recherche fraîche (openOffSearch()
+ * ci-dessous) : offSearch peut aussi déjà être à `null` à ce stade si un
+ * produit vient d'être sélectionné (applyOffDraft() referme la recherche
+ * avant d'avancer), auquel cas revenir en arrière doit quand même réafficher
+ * un écran de recherche utilisable, pas un panneau vide.
+ */
+function goBack(root) {
+  const prev = stepHistory.pop();
+  if (prev === undefined) return;
+  if (newFoodStep === 'off-search' && prev !== 'off-search') closeOffSearch();
+  newFoodStep = prev;
+  if (newFoodStep === 'off-search' && !offSearch) openOffSearch();
+  render(root);
+}
+
+const NEW_FOOD_NEXT_STEP = { general: 'nutrition', nutrition: 'units', units: 'purchase' };
+
+/** Écrans de choix (start/off-mode) + navigation Précédent/Suivant de l'assistant de création. */
+function wireNewFoodSteps(root) {
+  if (editing !== 'new') return;
+
+  root.querySelectorAll('[data-start-choice]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const choice = e.currentTarget.dataset.startChoice;
+      goToStep(root, choice === 'manual' ? 'general' : 'off-mode');
+    })
+  );
+
+  root.querySelectorAll('[data-off-submode-choice]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      offSubMode = e.currentTarget.dataset.offSubmodeChoice;
+      openOffSearch();
+      goToStep(root, 'off-search');
+    })
+  );
+
+  root.querySelector('[data-step-prev]')?.addEventListener('click', () => {
+    captureDraft(root);
+    goBack(root);
+  });
+
+  root.querySelector('[data-step-next]')?.addEventListener('click', () => {
+    // Blocage explicite (retour utilisateur) : impossible d'avancer tant que
+    // le nom (étape 'general') ou l'une des 4 macros principales (étape
+    // 'nutrition') est VISUELLEMENT vide dans le formulaire — lu directement
+    // sur le DOM, jamais sur le modèle déjà normalisé (readForm() convertit
+    // un champ numérique vide en 0, une valeur par ailleurs parfaitement
+    // valide : seul un champ réellement laissé vide doit bloquer, jamais "0").
+    if (newFoodStep === 'general') {
+      const nameInput = root.querySelector('[data-f="name"]');
+      if (!nameInput || !nameInput.value.trim()) {
+        toast('Le nom est obligatoire', 'error');
+        nameInput?.focus();
+        return;
+      }
+    }
+    if (newFoodStep === 'nutrition') {
+      const keys = ['kcal', 'protein', 'carbs', 'fat'];
+      const emptyKey = keys.find((k) => (root.querySelector(`[data-f="${k}"]`)?.value ?? '') === '');
+      if (emptyKey) {
+        toast('Toutes les valeurs nutritionnelles (kcal, protéines, glucides, lipides) doivent être renseignées — 0 est une valeur valide, un champ vide ne l\'est pas', 'error');
+        root.querySelector(`[data-f="${emptyKey}"]`)?.focus();
+        return;
+      }
+    }
+    captureDraft(root);
+    const next = NEW_FOOD_NEXT_STEP[newFoodStep];
+    if (next) goToStep(root, next);
+  });
 }
 
 /** Table/recherche/filtres — jamais recréés pendant qu'un formulaire reste ouvert. */
@@ -1079,12 +1242,22 @@ function wireList(root) {
  * Chrome du tiroir (bouton Fermer, clic sur le fond, Échap) : vit dans
  * .drawer et .drawer__head, jamais recréés par refreshOpenForm() — ne se
  * câble donc qu'une fois, à l'ouverture (sinon : écouteurs dupliqués à
- * chaque ouverture/fermeture de la confirmation ou du calcul de rendement).
+ * chaque ouverture/fermeture de la confirmation ou du calcul de rendement) —
+ * SAUF le bouton Fermer pour l'assistant de création : newFoodHeadHtml() y
+ * affiche l'étape courante, donc refreshOpenForm() remplace .drawer__head à
+ * chaque changement d'étape, ce qui détruit aussi le bouton Fermer d'origine
+ * et son écouteur ; bindFormCancel() le recâble sur le nouveau bouton (voir
+ * refreshOpenForm() ci-dessous — le fond et Échap, eux, vivent hors de
+ * .drawer__head et n'ont donc besoin d'être câblés qu'ici, une seule fois).
  */
+function bindFormCancel(root, head) {
+  head?.querySelector('[data-form-cancel]')?.addEventListener('click', () => attemptClose(root));
+}
+
 function wireDrawerChrome(root) {
   // P2 : X et clic extérieur passent par attemptClose() — une confirmation
   // n'est demandée que si le formulaire a réellement changé.
-  root.querySelector('[data-form-cancel]')?.addEventListener('click', () => attemptClose(root));
+  bindFormCancel(root, root.querySelector('.drawer__head'));
   root.querySelector('[data-form-backdrop]')?.addEventListener('mousedown', (e) => {
     if (e.target.dataset.formBackdrop !== undefined && !yieldCalc && !similarWarning) attemptClose(root);
   });
@@ -1095,22 +1268,7 @@ function wireDrawerChrome(root) {
 
 /** Contenu de .drawer__body : recâblé à chaque renderFull() ET refreshOpenForm(). */
 function wireDrawerBody(root) {
-  // Bandeau de choix de mode (P4) : purement indicatif, jamais bloquant —
-  // le formulaire complet est déjà affiché juste en dessous, qu'un mode soit
-  // choisi ou non (cf. modeChoiceHtml()). Le choisir ou l'écarter ne fait que
-  // masquer le bandeau (et, pour « simplifié », replier les sections
-  // avancées) : un rendu du corps suffit, jamais besoin de renderFull().
-  root.querySelectorAll('[data-mode]').forEach((btn) =>
-    btn.addEventListener('click', (e) => {
-      creationMode = e.currentTarget.dataset.mode;
-      if (creationMode === 'off') { captureDraft(root); openOffSearch(); }
-      render(root);
-    })
-  );
-  root.querySelector('[data-mode-dismiss]')?.addEventListener('click', () => {
-    creationMode = 'manual';
-    render(root);
-  });
+  wireNewFoodSteps(root);
 
   root.querySelector('[data-save]')?.addEventListener('click', (e) => {
     const id = e.currentTarget.dataset.save;
@@ -1200,12 +1358,7 @@ function wireDrawerBody(root) {
 
 /** #food-overlays (rendement, doublon, confirmation) : recâblé à chaque render de cette zone. */
 function wireOverlays(root) {
-  // --- recherche Open Food Facts (préremplissage à la création uniquement)
-  root.querySelector('[data-off-open]')?.addEventListener('click', () => {
-    captureDraft(root);
-    openOffSearch();
-    render(root);
-  });
+  // --- recherche Open Food Facts (étape 'off-search' de l'assistant de création)
   wireOffSearch(root);
   root.querySelector('[data-off-scan-open]')?.addEventListener('click', () => openScanner(root));
 

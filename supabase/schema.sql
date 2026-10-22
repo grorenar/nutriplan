@@ -373,6 +373,30 @@ alter table foods add column if not exists off_url text;
 alter table foods add column if not exists off_quantity text;
 alter table foods add column if not exists off_fetched_at timestamptz;
 
+-- Retrait des champs OFF annexes ci-dessus (retour utilisateur, refonte de
+-- la création d'aliment) : jamais utilisés par le moteur nutritionnel ni
+-- affichés nulle part dans la fiche une fois l'aliment enregistré — pur
+-- volume de base inutile. `barcode` seul reste (identifiant produit,
+-- réellement utilisé : détection de doublon, scan). nutriScore/imageThumbUrl/
+-- offQuantity restent calculés à la volée pendant une recherche Open Food
+-- Facts (cartes de résultat, pour identifier le bon produit), mais ne sont
+-- plus jamais copiés dans l'aliment enregistré — rien à migrer côté
+-- application, seulement des colonnes devenues mortes à supprimer ici.
+alter table foods drop column if exists sat_fat;
+alter table foods drop column if exists sugars;
+alter table foods drop column if exists salt;
+alter table foods drop column if exists sodium;
+alter table foods drop column if exists nutri_score;
+alter table foods drop column if exists nova_group;
+alter table foods drop column if exists eco_score;
+alter table foods drop column if exists ingredients_text;
+alter table foods drop column if exists allergens_text;
+alter table foods drop column if exists image_url;
+alter table foods drop column if exists image_thumb_url;
+alter table foods drop column if exists off_url;
+alter table foods drop column if exists off_quantity;
+alter table foods drop column if exists off_fetched_at;
+
 -- Groupes de « doublons possibles » explicitement écartés par l'utilisateur
 -- (« pas un doublon ») : simple liste de clés stables (une par groupe
 -- écarté, cf. js/core/similarity.js::duplicateGroupKey()), partagée entre

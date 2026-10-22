@@ -544,10 +544,31 @@ const foodCount = () => JSON.parse(localStorage.getItem('nutriplan.state.v1')).f
 const before = foodCount();
 
 // 1. aucun similaire → création directe, aucune popup
-click($('[data-new]'));
 const setField = (name, v) => { const el = $(`[data-f="${name}"]`); el.value = v; };
-setField('name', 'Cuisse de dinosaure');
-setField('kcal', '150');
+// Assistant de création (nouvel aliment, retour utilisateur) : navigation
+// helpers — 'start' (choix Manuel/OFF) -> 'general' (Nom/Marque/Catégorie/EAN)
+// -> 'nutrition' (macros) -> 'units' -> 'purchase' ([data-save] y vit).
+// Les macros démarrent déjà à 0 (blank()), jamais vides : Suivant n'est donc
+// JAMAIS bloqué sur l'étape 'nutrition' tant qu'aucun champ n'est vidé à la main.
+const openNewFoodManual = () => { click($('[data-new]')); click($('[data-start-choice="manual"]')); };
+const wizardNext = () => click($('[data-step-next]'));
+const wizardPrev = () => click($('[data-step-prev]'));
+/** Ouvre l'assistant, remplit le nom, avance jusqu'à l'étape 'nutrition' (macros). */
+const openNewFoodToNutrition = (name) => {
+  openNewFoodManual();
+  setField('name', name);
+  wizardNext(); // -> nutrition
+};
+/** Depuis l'étape 'nutrition', avance jusqu'à 'purchase' ([data-save] y vit). */
+const goToSaveStep = () => { wizardNext(); wizardNext(); }; // nutrition -> units -> purchase
+/** Ouvre l'assistant, remplit nom (+ kcal si fourni), avance jusqu'à 'purchase'. */
+const openNewFoodToSave = (name, kcal) => {
+  openNewFoodToNutrition(name);
+  if (kcal !== undefined) setField('kcal', kcal);
+  goToSaveStep();
+};
+
+openNewFoodToSave('Cuisse de dinosaure', '150');
 click($('[data-save]'));
 await wait();
 check('aucun similaire : aucune popup', !$('.modal'));
@@ -555,9 +576,7 @@ check('aucun similaire : création directe', foodCount() === before + 1);
 check('aucun toast de doublon', !/similaire/i.test(document.getElementById('toasts')?.textContent || ''));
 
 // 2. similaire détecté → popup affichée
-click($('[data-new]'));
-setField('name', 'Blanc de poulet');
-setField('kcal', '110');
+openNewFoodToSave('Blanc de poulet', '110');
 click($('[data-save]'));
 await wait();
 check('similaire détecté : popup affichée', !!$('.modal'));
@@ -574,7 +593,14 @@ click($('[data-similar-cancel]'));
 await wait();
 check('Annuler : popup fermée', !$('.modal'));
 check('Annuler : aucun aliment créé', foodCount() === before + 1);
+// la saisie reste disponible : vérifié sur l'étape 'general' (seule à porter
+// data-f="name"), puis retour sur 'purchase' pour la suite du test (même
+// étape que celle quittée — [data-save] y vit).
+wizardPrev(); wizardPrev(); wizardPrev(); // purchase -> units -> nutrition -> general
+await wait();
 check('Annuler : la saisie reste disponible', $('[data-f="name"]')?.value === 'Blanc de poulet');
+wizardNext(); wizardNext(); wizardNext(); // general -> nutrition -> units -> purchase
+await wait();
 
 // 4. Créer quand même → élément créé
 click($('[data-save]'));
@@ -589,9 +615,7 @@ check('aucun aliment fusionné ni supprimé',
   foodsNow.filter((f) => f.name === 'Blanc de poulet').length === 2, `${foodsNow.length} aliments`);
 
 // 5. plusieurs similaires → tous listés
-click($('[data-new]'));
-setField('name', 'Blanc de poulet');
-setField('kcal', '110');
+openNewFoodToSave('Blanc de poulet', '110');
 click($('[data-save]'));
 await wait();
 const listed = ($('.modal').textContent.match(/Blanc de poulet/g) || []).length;
@@ -1873,6 +1897,8 @@ type($('[data-q]'), ''); // réinitialise le filtre de recherche laissé par un 
 await wait();
 click($('[data-new]'));
 await wait();
+click($('[data-start-choice="manual"]')); // -> étape 'general' (seule étape à porter data-f="name")
+await wait();
 // nombre de toasts AVANT (pas leur texte : un toast bien plus ancien peut
 // s'auto-supprimer tout seul pendant ce test — cf. util.js, retrait après
 // 3,1 s — ce qui n'a rien à voir avec cette action et rendrait la
@@ -1883,7 +1909,9 @@ const toastCountBeforeClose = document.getElementById('toasts')?.children.length
 // retour » — avant correctif, foods.js reconstruisait tout #view à chaque
 // render(), rejouant l'animation d'entrée du tiroir sur ces deux actions
 // (même cause que le clipping déjà corrigé dans recipes.js, jamais
-// reproduit côté Aliments jusqu'ici).
+// reproduit côté Aliments jusqu'ici). Reste vrai avec l'assistant en
+// étapes : .drawer__panel persiste d'une étape à l'autre, seuls
+// .drawer__head/.drawer__body sont remplacés (cf. refreshOpenForm()).
 const foodsPanelBeforeDialog = $('.drawer__panel');
 type($('[data-f="name"]'), 'Aliment Clipping Test P2');
 mousedown($('[data-form-backdrop]'));
@@ -1909,13 +1937,17 @@ check('aucun aliment créé (modifications abandonnées)', !/Aliment Clipping Te
 console.log('\n— P2 : formulaire vierge / Échap / sauvegarde réussie — Aliments');
 click($('[data-new]'));
 await wait();
+click($('[data-start-choice="manual"]'));
+await wait();
 mousedown($('[data-form-backdrop]'));
 await wait();
-check('formulaire VIERGE : fermeture immédiate sans dialogue', !$('[data-f="name"]') && !$('[data-unsaved-stay]'));
+check('formulaire VIERGE : fermeture immédiate sans dialogue', !$('[data-f="name"]') && !$('[data-unsaved-stay]') && !$('.wizard'));
 
-click($('[data-new]'));
+openNewFoodManual();
 await wait();
 type($('[data-f="name"]'), 'Aliment Sauvegarde Reussie P2');
+wizardNext(); wizardNext(); wizardNext(); // general -> nutrition -> units -> purchase ([data-save] y vit)
+await wait();
 click($('[data-save]'));
 await wait();
 check('sauvegarde réussie : formulaire fermé sans dialogue', !$('[data-f="name"]') && !$('[data-unsaved-stay]'));
@@ -2313,9 +2345,11 @@ check('ingrédient mis à l’échelle affiché (4 portions × 330 g = 1,32 kg d
 console.log('\n— Chantier P0 : suppression d’un aliment référencé dans une recette (composition live)');
 click($('[data-view="foods"]'));
 await wait();
-click($('[data-new]'));
+openNewFoodManual();
 await wait();
 type($('[data-f="name"]'), 'Pomme P0 Test');
+wizardNext(); wizardNext(); wizardNext();
+await wait();
 click($('[data-save]'));
 await wait();
 const pommeP0 = store.getState().foods.find((f) => f.name === 'Pomme P0 Test');
@@ -2827,10 +2861,12 @@ click($('[data-view="foods"]'));
 await wait();
 click($('[data-new]'));
 await wait();
-check('bouton de recherche Open Food Facts affiché pour un NOUVEL aliment', !!$('[data-off-open]'));
-click($('[data-off-open]'));
+check('choix "Recherche Open Food Facts" proposé pour un NOUVEL aliment', !!$('[data-start-choice="off"]'));
+click($('[data-start-choice="off"]'));
 await wait();
-check('panneau de recherche OFF ouvert', !!$('[data-off-backdrop]'));
+click($('[data-off-submode-choice="barcode"]'));
+await wait();
+check('étape de recherche OFF ouverte (sous-mode code-barres)', !!$('[data-off-barcode]'));
 type($('[data-off-barcode]'), '3017620422003');
 globalThis.fetch = async (url) => {
   // chemin stable que OFF_PROXY_URL soit configuré (js/config.js) ou non.
@@ -2846,22 +2882,25 @@ globalThis.fetch = async (url) => {
 };
 click($('[data-off-barcode-go]'));
 await wait();
-check('produit trouvé affiché', /Pâte à tartiner Test OFF/.test($('[data-off-backdrop]').textContent));
-check('marque affichée (une seule, la première)', /MarqueOFF/.test($('[data-off-backdrop]').textContent) && !/AutreMarque/.test($('[data-off-backdrop]').textContent));
+check('produit trouvé affiché', /Pâte à tartiner Test OFF/.test($('.drawer__body').textContent));
+check('marque affichée (une seule, la première)', /MarqueOFF/.test($('.drawer__body').textContent) && !/AutreMarque/.test($('.drawer__body').textContent));
 click($('[data-off-use]'));
 await wait();
-check('panneau OFF refermé après sélection', !$('[data-off-backdrop]'));
+check('étape générale affichée après sélection (préremplissage)', !!$('[data-f="name"]'));
 check('nom préremplit le formulaire', $('[data-f="name"]').value === 'Pâte à tartiner Test OFF');
 check('marque préremplie', $('[data-f="brand"]').value === 'MarqueOFF');
-check('kcal prérempli', Number($('[data-f="kcal"]').value) === 539);
 check('code-barres prérempli (chaîne, pas un nombre affiché différemment)', $('[data-f="barcode"]').value === '3017620422003');
-check('sucres (valeur complémentaire OFF) préremplis', Number($('[data-f="sugars"]').value) === 56.3);
-check('fibre ABSENTE sur la fiche OFF reste vide, jamais forcée à 0', $('[data-f="fiber"]').value === '');
 // Ce produit n'a pas de categories_tags OFF (fiche incomplète) : aucune
 // suggestion fiable de catégorie n'est possible -> le champ reste à sa
 // valeur par défaut (« Autre »), jamais une catégorie inventée.
 check('aucune catégorie OFF fournie -> reste à la valeur par défaut, jamais inventée', $('[data-f="category"]').value === 'autre');
 change($('[data-f="category"]'), 'autre'); // toujours modifiable manuellement, comme avant
+wizardNext(); // general -> nutrition
+await wait();
+check('kcal prérempli', Number($('[data-f="kcal"]').value) === 539);
+check('fibre ABSENTE sur la fiche OFF reste vide, jamais forcée à 0', $('[data-f="fiber"]').value === '');
+wizardNext(); wizardNext(); // nutrition -> units -> purchase ([data-save] y vit)
+await wait();
 click($('[data-save]'));
 await wait();
 const createdOff = store.getState().foods.find((f) => f.barcode === '3017620422003');
@@ -2872,7 +2911,9 @@ globalThis.fetch = realFetch;
 console.log('\n— Chantier Open Food Facts : code-barres déjà présent dans la banque (doublon fort, jamais silencieux)');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 type($('[data-off-barcode]'), '3017620422003'); // même code que l'aliment déjà créé ci-dessus
 globalThis.fetch = async () => jsonRes({
@@ -2893,25 +2934,37 @@ await wait();
 console.log('\n— Chantier Open Food Facts : code-barres absent de la base (pas une erreur, saisie manuelle possible)');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 type($('[data-off-barcode]'), '0000000000000');
 globalThis.fetch = async () => jsonRes({ status: 0, code: '0000000000000', status_verbose: 'product not found' });
 click($('[data-off-barcode-go]'));
 await wait();
-check('message "non trouvé" affiché, jamais présenté comme une erreur', /[Aa]ucun produit trouvé/.test($('[data-off-backdrop]').textContent));
-check('pas de blocage : le formulaire de saisie manuelle reste utilisable', !!$('[data-f="name"]'));
+check('message "non trouvé" affiché, jamais présenté comme une erreur', /[Aa]ucun produit trouvé/.test($('.drawer__body').textContent));
+check('pas de blocage : la recherche reste modifiable (pas d’état bloqué)', !$('[data-off-barcode]')?.disabled);
 globalThis.fetch = realFetch;
-click($('[data-off-cancel]'));
+// Retour en saisie manuelle depuis une recherche infructueuse : revient à
+// l'étape de choix du sous-mode OFF, puis à l'étape de départ, puis choisit
+// « Mode manuel » — l'assistant reste ouvert et navigable de bout en bout,
+// jamais une impasse après un code-barres non trouvé.
+wizardPrev(); // off-search -> off-mode
 await wait();
-check('retour en saisie manuelle : le panneau OFF se ferme, le formulaire de création reste ouvert', !$('[data-off-backdrop]') && !!$('[data-f="name"]'));
+wizardPrev(); // off-mode -> start
+await wait();
+click($('[data-start-choice="manual"]'));
+await wait();
+check('retour en saisie manuelle : l’assistant reste ouvert, le formulaire de création utilisable', !!$('[data-f="name"]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Open Food Facts : recherche par nom/marque — plusieurs résultats, sélection explicite, jamais de création automatique');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="name"]'));
 await wait();
 globalThis.fetch = async (url) => {
   // chemin stable que OFF_PROXY_URL soit configuré ou non — jamais le même
@@ -2927,13 +2980,16 @@ globalThis.fetch = async (url) => {
 };
 type($('[data-off-name]'), 'yaourt off test');
 await new Promise((r) => setTimeout(r, 600)); // au-delà du délai de temporisation (debounce) de la recherche
-check('deux résultats affichés, aucune création automatique', /Yaourt OFF Test A/.test($('[data-off-backdrop]').textContent) && /Yaourt OFF Test B/.test($('[data-off-backdrop]').textContent));
+check('deux résultats affichés, aucune création automatique', /Yaourt OFF Test A/.test($('.drawer__body').textContent) && /Yaourt OFF Test B/.test($('.drawer__body').textContent));
 check('aucun aliment créé avant sélection explicite', !store.getState().foods.some((f) => f.name.startsWith('Yaourt OFF Test')));
 const useButtons = () => $$('[data-off-use]');
 check('un bouton de sélection par résultat', useButtons().length === 2);
 click(useButtons().find((b) => b.dataset.offUse === '2222222222222'));
 await wait();
-check('le BON résultat sélectionné préremplit le formulaire (pas le premier par défaut)', $('[data-f="name"]').value === 'Yaourt OFF Test B' && Number($('[data-f="kcal"]').value) === 45);
+check('le BON résultat sélectionné préremplit le formulaire (pas le premier par défaut)', $('[data-f="name"]').value === 'Yaourt OFF Test B');
+wizardNext(); // general -> nutrition
+await wait();
+check('kcal du BON résultat préremplit le formulaire', Number($('[data-f="kcal"]').value) === 45);
 globalThis.fetch = realFetch;
 click($('[data-form-cancel]'));
 await wait();
@@ -2941,7 +2997,9 @@ await wait();
 console.log('\n— Chantier Open Food Facts : une réponse périmée (recherche précédente) n’écrase jamais une recherche plus récente');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="name"]'));
 await wait();
 let resolveSlow;
 let fastCalled = false;
@@ -2959,8 +3017,8 @@ await new Promise((r) => setTimeout(r, 600)); // la recherche "rapide" part et s
 check('la recherche la plus récente s’est bien exécutée', fastCalled);
 resolveSlow?.(); // la réponse "périmée" arrive maintenant, après la plus récente
 await wait();
-check('seul le résultat de la recherche la plus récente est affiché', /RÉSULTAT RÉCENT/.test($('[data-off-backdrop]').textContent));
-check('la réponse périmée n’a PAS écrasé l’affichage', !/RÉSULTAT PÉRIMÉ/.test($('[data-off-backdrop]').textContent));
+check('seul le résultat de la recherche la plus récente est affiché', /RÉSULTAT RÉCENT/.test($('.drawer__body').textContent));
+check('la réponse périmée n’a PAS écrasé l’affichage', !/RÉSULTAT PÉRIMÉ/.test($('.drawer__body').textContent));
 globalThis.fetch = realFetch;
 click($('[data-form-cancel]'));
 await wait();
@@ -2968,25 +3026,29 @@ await wait();
 console.log('\n— Chantier Open Food Facts : erreur réseau — message explicite, jamais un blocage silencieux');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 type($('[data-off-barcode]'), '1234567890123');
 globalThis.fetch = async () => { throw new TypeError('network down'); };
 click($('[data-off-barcode-go]'));
 await wait();
-check('message d’erreur réseau explicite affiché', /[Cc]onnexion.*[Oo]pen Food Facts/.test($('[data-off-backdrop]').textContent) || /réseau/i.test($('[data-off-backdrop]').textContent));
+check('message d’erreur réseau explicite affiché', /[Cc]onnexion.*[Oo]pen Food Facts/.test($('.drawer__body').textContent) || /réseau/i.test($('.drawer__body').textContent));
 check('bouton « Réessayer » proposé', !!$('[data-off-retry]'));
 globalThis.fetch = realFetch;
-click($('[data-off-cancel]'));
-await wait();
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Open Food Facts : remplace une saisie manuelle déjà en cours seulement après confirmation');
-click($('[data-new]'));
+openNewFoodManual();
 await wait();
 type($('[data-f="name"]'), 'Saisie manuelle déjà commencée');
-click($('[data-off-open]'));
+wizardPrev(); // general -> start (revient choisir OFF sans perdre la saisie, captureDraft() la conserve)
+await wait();
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 type($('[data-off-barcode]'), '5555555555555');
 globalThis.fetch = async () => jsonRes({
@@ -3009,27 +3071,33 @@ await wait();
 console.log('\n— Chantier Open Food Facts : catégorie suggérée depuis les categories_tags, toujours modifiable');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 type($('[data-off-barcode]'), '7777777777777');
 globalThis.fetch = async () => jsonRes({
   status: 1, code: '7777777777777',
   product: {
     product_name: 'Yaourt nature Test Catégorie', categories_tags: ['en:yogurts', 'en:dairies'],
-    nutriments: { 'energy-kcal_100g': 60 },
+    nutriments: { 'energy-kcal_100g': 60, proteins_100g: 4, carbohydrates_100g: 5, fat_100g: 2 },
   },
 });
 click($('[data-off-barcode-go]'));
 await wait();
-check('catégorie suggérée affichée sur la fiche produit avant même sélection', /Catégorie suggérée : Produit laitier/.test($('[data-off-backdrop]').textContent));
+check('catégorie suggérée affichée sur la fiche produit avant même sélection', /Catégorie suggérée : Produit laitier/.test($('.drawer__body').textContent));
 click($('[data-off-use]'));
 await wait();
 check('catégorie correctement préremplie dans le formulaire (laitier)', $('[data-f="category"]').value === 'laitier');
-check('indication que la catégorie est une suggestion modifiable', /Suggestion Open Food Facts/.test($('[data-form-backdrop]').textContent));
+// L'indication « Suggestion Open Food Facts » (liée aux champs offUrl/off-
+// FetchedAt, retirés du modèle de données — Task #70) n'existe plus : la
+// suggestion reste simplement modifiable, sans mention annexe.
 // L'utilisateur reste libre de modifier la suggestion AVANT enregistrement —
 // et ce choix manuel doit être conservé, jamais silencieusement rétabli.
 change($('[data-f="category"]'), 'matiere_grasse');
 type($('[data-f="name"]'), 'Yaourt nature Test Catégorie (corrigé)');
+wizardNext(); wizardNext(); wizardNext(); // general -> nutrition -> units -> purchase ([data-save] y vit)
+await wait();
 click($('[data-save]'));
 await wait();
 const createdCatOverride = store.getState().foods.find((f) => f.barcode === '7777777777777');
@@ -3039,7 +3107,7 @@ globalThis.fetch = realFetch;
 console.log('\n— Chantier Open Food Facts : la modification d’un aliment EXISTANT n’est jamais affectée par la catégorisation automatique');
 click($('[data-edit="' + createdCatOverride.id + '"]'));
 await wait();
-check('aucun bouton de recherche Open Food Facts en modification (uniquement à la création)', !$('[data-off-open]'));
+check('aucun accès à la recherche Open Food Facts en modification (assistant réservé à la création)', !$('[data-start-choice]'));
 check('la catégorie enregistrée (choix manuel précédent) reste intacte à l’ouverture', $('[data-f="category"]').value === 'matiere_grasse');
 check('aucune indication de suggestion sur un aliment déjà enregistré en modification', !/Suggestion Open Food Facts/.test($('[data-form-backdrop]').textContent));
 click($('[data-form-cancel]'));
@@ -3097,11 +3165,12 @@ console.log('\n— Chantier Scanner caméra : bouton absent quand la caméra n�
 restoreCameraSupport();
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 check('aucun bouton « Scanner » proposé sans support caméra', !$('[data-off-scan-open]'));
 check('la recherche OFF manuelle reste pleinement utilisable malgré l’absence de caméra', !$('[data-off-barcode]')?.disabled);
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
@@ -3109,7 +3178,9 @@ console.log('\n— Chantier Scanner caméra : détection réussie -> transmise t
 stubCameraSupport();
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 check('bouton « Scanner un code-barres » proposé (caméra prise en charge)', !!$('[data-off-scan-open]'));
 {
@@ -3135,9 +3206,9 @@ check('bouton « Scanner un code-barres » proposé (caméra prise en charge)', 
   await wait();
   check('le scanner s’est refermé après une détection réussie', !$('[data-scanner-backdrop]'));
   check('la caméra a bien été arrêtée (plus aucune piste active)', calls[0].stopCount >= 1);
-  check('le panneau OFF reste ouvert, avec le résultat trouvé (recherche existante réutilisée, jamais dupliquée)', /Produit scanné Test/.test($('[data-off-backdrop]').textContent));
+  check('le panneau OFF reste ouvert, avec le résultat trouvé (recherche existante réutilisée, jamais dupliquée)', /Produit scanné Test/.test($('.drawer__body').textContent));
   check('une seule recherche OFF déclenchée pour une seule détection', fetchCount === 1);
-  check('aucune création automatique : le formulaire n’est pas encore rempli tant que « Utiliser ce produit » n’a pas été cliqué', $('[data-f="name"]').value !== 'Produit scanné Test');
+  check('aucune création automatique : le formulaire n’est pas encore rempli tant que « Utiliser ce produit » n’a pas été cliqué', $('[data-f="name"]')?.value !== 'Produit scanné Test');
   click($('[data-off-use]'));
   await wait();
   check('code-barres transmis AVEC son zéro initial jusqu’au formulaire', $('[data-f="barcode"]').value === '00012345678905');
@@ -3151,7 +3222,9 @@ await wait();
 console.log('\n— Chantier Scanner caméra : "rien dans le cadre" (frames sans code lisible) ne déclenche jamais d’erreur affichée');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   const { lib, calls } = makeFakeScannerLib();
@@ -3172,14 +3245,15 @@ await wait();
   scannerLib.__setTestLib(null);
 }
 click($('[data-scanner-close]'));
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : prévention des détections répétées (une seule recherche OFF même avec plusieurs résultats émis)');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   const { lib, calls } = makeFakeScannerLib();
@@ -3201,9 +3275,14 @@ await wait();
 console.log('\n— Chantier Scanner caméra : permission refusée -> message clair, repli vers la saisie manuelle, rien n’est perdu');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
 await wait();
-type($('[data-off-name]'), 'Saisie déjà commencée avant le scan');
+click($('[data-off-submode-choice="barcode"]'));
+await wait();
+// le bouton « Scanner » ne vit que dans le sous-mode code-barres : la saisie
+// "déjà en cours" à préserver est donc celle du champ code-barres lui-même
+// (plus l'équivalent fonctionnel du champ nom/marque de l'ancien panneau unique).
+type($('[data-off-barcode]'), '1234567890123');
 {
   const { lib } = makeFakeScannerLib({
     onStart: () => { const e = new Error('refusé'); e.name = 'NotAllowedError'; throw e; },
@@ -3216,8 +3295,8 @@ type($('[data-off-name]'), 'Saisie déjà commencée avant le scan');
   check('bouton de repli vers la saisie manuelle proposé', !!$('[data-scanner-manual]'));
   click($('[data-scanner-manual]'));
   await wait();
-  check('scanner refermé, retour au panneau OFF', !$('[data-scanner-backdrop]') && !!$('[data-off-backdrop]'));
-  check('la saisie déjà en cours dans le panneau OFF n’a pas été perdue', $('[data-off-name]').value === 'Saisie déjà commencée avant le scan');
+  check('scanner refermé, retour au panneau OFF', !$('[data-scanner-backdrop]') && !!$('[data-off-barcode]'));
+  check('la saisie déjà en cours dans le panneau OFF n’a pas été perdue', $('[data-off-barcode]').value === '1234567890123');
   scannerLib.__setTestLib(null);
 }
 click($('[data-form-cancel]'));
@@ -3226,7 +3305,9 @@ await wait();
 console.log('\n— Chantier Scanner caméra : absence de caméra détectée (NotFoundError) -> message distinct, jamais une exception');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   const { lib } = makeFakeScannerLib({
@@ -3238,14 +3319,15 @@ await wait();
   check('message spécifique à l’absence de caméra', /aucune caméra/i.test($('[data-scanner-backdrop]').textContent));
   scannerLib.__setTestLib(null);
 }
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : changement de caméra — arrête l’ancien flux avant d’en ouvrir un nouveau, jamais deux flux actifs');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   scannerLib.__setTestDevices([
@@ -3273,14 +3355,15 @@ await wait();
   scannerLib.__setTestLib(null);
 }
 click($('[data-scanner-close]'));
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : simplifie la liste des caméras sur un iPhone multi-objectifs (jamais la liste brute)');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   // Reproduit exactement le cas réel signalé (capture d'écran utilisateur,
@@ -3311,14 +3394,15 @@ await wait();
   scannerLib.__setTestLib(null);
 }
 click($('[data-scanner-close]'));
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : sur ordinateur (aucune notion avant/arrière), la liste reste telle quelle');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   scannerLib.__setTestDevices([
@@ -3335,14 +3419,15 @@ await wait();
   scannerLib.__setTestLib(null);
 }
 click($('[data-scanner-close]'));
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : flash/torche — proposé seulement si le matériel le permet, jamais activé automatiquement');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   const { lib, calls } = makeFakeScannerLib({ withTorch: true });
@@ -3360,14 +3445,15 @@ await wait();
   scannerLib.__setTestLib(null);
 }
 click($('[data-scanner-close]'));
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : pas de bouton flash quand le matériel ne le permet pas');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   const { lib } = makeFakeScannerLib(); // withTorch non précisé -> switchTorch absent, comme une caméra sans flash
@@ -3377,17 +3463,20 @@ await wait();
   check('aucun bouton flash proposé (matériel non compatible)', !$('[data-scanner-torch]'));
   scannerLib.__setTestLib(null);
 }
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : fermeture (bouton, puis Échap) — caméra arrêtée, saisie en cours jamais perdue');
-click($('[data-new]'));
+openNewFoodManual();
 await wait();
 type($('[data-f="name"]'), 'Nom déjà saisi dans le formulaire principal');
-click($('[data-off-open]'));
+wizardPrev(); // general -> start (captureDraft() conserve la saisie)
 await wait();
-type($('[data-off-name]'), 'Recherche déjà en cours');
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
+await wait();
+type($('[data-off-barcode]'), '2345678901234');
 {
   const { lib, calls } = makeFakeScannerLib();
   scannerLib.__setTestLib(lib);
@@ -3396,8 +3485,7 @@ type($('[data-off-name]'), 'Recherche déjà en cours');
   click($('[data-scanner-close]'));
   await wait();
   check('fermeture par le bouton : caméra arrêtée', calls[0].stopCount >= 1);
-  check('fermeture par le bouton : panneau OFF toujours ouvert avec sa saisie intacte', $('[data-off-name]').value === 'Recherche déjà en cours');
-  check('le formulaire principal n’a pas été réinitialisé', $('[data-f="name"]').value === 'Nom déjà saisi dans le formulaire principal');
+  check('fermeture par le bouton : panneau OFF toujours ouvert avec sa saisie intacte', $('[data-off-barcode]').value === '2345678901234');
   scannerLib.__setTestLib(null);
 }
 {
@@ -3408,18 +3496,24 @@ type($('[data-off-name]'), 'Recherche déjà en cours');
   document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await wait();
   check('Échap coupe la caméra', calls[0].stopCount >= 1);
-  check('Échap referme uniquement le scanner (pas tout le formulaire)', !$('[data-scanner-backdrop]') && !!$('[data-off-backdrop]'));
-  check('la saisie du panneau OFF survit à la fermeture par Échap', $('[data-off-name]').value === 'Recherche déjà en cours');
+  check('Échap referme uniquement le scanner (pas tout le formulaire)', !$('[data-scanner-backdrop]') && !!$('[data-off-barcode]'));
+  check('la saisie du panneau OFF survit à la fermeture par Échap', $('[data-off-barcode]').value === '2345678901234');
   scannerLib.__setTestLib(null);
 }
-click($('[data-off-cancel]'));
+wizardPrev(); wizardPrev(); // off-search -> off-mode -> start
+await wait();
+click($('[data-start-choice="manual"]'));
+await wait();
+check('le formulaire principal n’a pas été réinitialisé (saisie conservée en revenant au mode manuel)', $('[data-f="name"]').value === 'Nom déjà saisi dans le formulaire principal');
 click($('[data-form-cancel]'));
 await wait();
 
 console.log('\n— Chantier Scanner caméra : changer d’écran coupe la caméra en arrière-plan (jamais active une fois quitté)');
 click($('[data-new]'));
 await wait();
-click($('[data-off-open]'));
+click($('[data-start-choice="off"]'));
+await wait();
+click($('[data-off-submode-choice="barcode"]'));
 await wait();
 {
   const { lib, calls } = makeFakeScannerLib();
@@ -3527,7 +3621,7 @@ console.log('\n— Chantier recherche catalogue par code-barres : éditeur de re
   });
   click($('[data-off-barcode-go]'));
   await wait();
-  check('produit trouvé affiché', /Chips Test Régression/.test($('[data-off-backdrop]')?.textContent || ''));
+  check('produit trouvé affiché', /Chips Test Régression/.test($('.drawer__body')?.textContent || ''));
   click($('[data-off-use]'));
   await wait();
   check('aucune pop-up « Remplacer la saisie actuelle » sur un formulaire jamais touché (régression corrigée)',
@@ -3632,7 +3726,6 @@ console.log('\n— Chantier recherche catalogue par code-barres : composition d�
   globalThis.fetch = realFetch;
   scannerLib.__setTestLib(null);
 }
-click($('[data-off-cancel]'));
 click($('[data-form-cancel]'));
 await wait();
 app.navigate('recipes');

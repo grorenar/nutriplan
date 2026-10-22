@@ -4088,7 +4088,11 @@ test('P3.1.8 — findDuplicateGroups() détecte bien un groupe fusionnable (bout
   check('le groupe contient aussi foodB et l’aliment conservé (même nom de base)', members.includes(foodB.id) && members.includes(keep.id));
 });
 
-test('Open Food Facts — champs de la fiche aliment : round-trip stateToTables()/tablesToState() complet', () => {
+test('Open Food Facts — champ de la fiche aliment conservé (barcode) : round-trip stateToTables()/tablesToState()', () => {
+  // Les autres champs OFF (nutriments complémentaires, Nutri-Score/NOVA/
+  // Eco-Score, textes, images…) ont été retirés du modèle (retour
+  // utilisateur, refonte de la création d'aliment) : seul barcode subsiste,
+  // réellement utilisé (détection de doublon, scan).
   const s = defaultState();
   const offFood = {
     id: 'f_off_roundtrip', name: 'Produit OFF Test', category: 'autre', brand: 'MarqueOFF',
@@ -4099,39 +4103,40 @@ test('Open Food Facts — champs de la fiche aliment : round-trip stateToTables(
     cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
     // zéro initial réel : un vrai EAN français commence souvent par 0
     barcode: '03017620422003',
-    satFat: 10.6, sugars: 56.3, salt: 0.107, sodium: null, // sodium absent, salt présent : jamais confondus
-    nutriScore: 'e', novaGroup: 4, ecoScore: null,
-    ingredientsText: 'Sucre, huile de palme, NOISETTES 13%.', allergensText: 'noisettes, lait, soja',
-    imageUrl: 'https://images.openfoodfacts.org/x.jpg', imageThumbUrl: 'https://images.openfoodfacts.org/x.100.jpg',
-    offUrl: 'https://world.openfoodfacts.org/product/3017620422003', offQuantity: '400 g',
-    offFetchedAt: '2026-01-15T10:00:00.000Z',
   };
   s.foods = [offFood];
   const tables = stateToTables(s);
   const row = tables.foods[0];
   check('barcode transmis comme chaîne (jamais un nombre)', typeof row.barcode === 'string' && row.barcode === '03017620422003');
+  check('aucune colonne retirée envoyée (sat_fat, nutri_score, image_url…)',
+    !('sat_fat' in row) && !('nutri_score' in row) && !('image_url' in row) && !('off_url' in row));
 
   const back = tablesToState({ foods: tables.foods });
   const roundTripped = back.foods[0];
   check('barcode préservé, zéro initial intact', roundTripped.barcode === '03017620422003');
-  check('sucres (valeur réelle) préservés', roundTripped.sugars === 56.3);
   check('fibre = 0 (vraie valeur) préservée, jamais perdue au round-trip', roundTripped.fiber === 0);
-  check('sodium absent reste null après round-trip (jamais confondu avec salt)', roundTripped.sodium === null);
-  check('sel présent ET distinct du sodium après round-trip', roundTripped.salt === 0.107 && roundTripped.salt !== roundTripped.sodium);
-  check('Nutri-Score préservé', roundTripped.nutriScore === 'e');
-  check('groupe NOVA préservé comme nombre', roundTripped.novaGroup === 4);
-  check('Eco-Score absent reste null', roundTripped.ecoScore === null);
-  check('texte des ingrédients préservé intégralement', roundTripped.ingredientsText === offFood.ingredientsText);
-  check('texte des allergènes préservé', roundTripped.allergensText === offFood.allergensText);
-  check('URL de la fiche OFF préservée (traçabilité de la source)', roundTripped.offUrl === offFood.offUrl);
-  check('horodatage de récupération préservé (traçabilité)', roundTripped.offFetchedAt === offFood.offFetchedAt);
 
-  // un aliment SANS lien OFF (création manuelle classique) ne doit jamais se
-  // voir attribuer de valeurs OFF par défaut autres que null.
+  // un aliment venant d'une sauvegarde ANTÉRIEURE à ce retrait (ancien export
+  // encore porteur de ces champs) ne doit plus jamais les faire réapparaître
+  // une fois passé par normalizeFood().
+  const legacy = normalizeFood({
+    id: 'f_legacy', name: 'Ancien aliment OFF', category: 'autre', kcal: 100, protein: 1, carbs: 1, fat: 1,
+    satFat: 10.6, sugars: 56.3, salt: 0.107, sodium: 0.04,
+    nutriScore: 'e', novaGroup: 4, ecoScore: 'd',
+    ingredientsText: 'Sucre, huile de palme.', allergensText: 'noisettes',
+    imageUrl: 'https://images.openfoodfacts.org/x.jpg', imageThumbUrl: 'https://images.openfoodfacts.org/x.100.jpg',
+    offUrl: 'https://world.openfoodfacts.org/product/x', offQuantity: '400 g',
+    offFetchedAt: '2026-01-15T10:00:00.000Z',
+  });
+  check('un aliment d’avant ce retrait est purgé de ces champs au chargement (normalizeFood())',
+    !('satFat' in legacy) && !('sugars' in legacy) && !('salt' in legacy) && !('sodium' in legacy)
+    && !('nutriScore' in legacy) && !('novaGroup' in legacy) && !('ecoScore' in legacy)
+    && !('ingredientsText' in legacy) && !('allergensText' in legacy)
+    && !('imageUrl' in legacy) && !('imageThumbUrl' in legacy)
+    && !('offUrl' in legacy) && !('offQuantity' in legacy) && !('offFetchedAt' in legacy));
+
   const manual = normalizeFood({ id: 'f_manual', name: 'Pomme', category: 'fruit', kcal: 52, protein: 0.3, carbs: 14, fat: 0.2 });
   check('aliment créé manuellement : barcode absent reste null, jamais une chaîne vide forcée ni 0', manual.barcode === null);
-  check('aliment créé manuellement : aucune valeur OFF inventée (satFat/sugars/salt/sodium restent null)',
-    manual.satFat === null && manual.sugars === null && manual.salt === null && manual.sodium === null);
 });
 
 /* ---------------------------------------------------------------- bilan */

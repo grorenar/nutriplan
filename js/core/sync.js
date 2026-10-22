@@ -145,23 +145,12 @@ const foodRow = (f) => ({
   prep_time: f.prepTime ?? null,
   equipment: f.equipment || null,
   instructions: f.instructions || null,
-  // Open Food Facts — purement informatif (cf. normalizeFood(), store.js).
-  // barcode toujours une chaîne, jamais convertie en nombre.
+  // Code-barres — purement informatif (détection de doublon, scan), toujours
+  // une chaîne, jamais convertie en nombre. Les autres champs Open Food
+  // Facts (nutriments complémentaires, Nutri-Score/NOVA/Eco-Score, textes,
+  // images…) ont été retirés du modèle (retour utilisateur, cf.
+  // RETIRED_FOOD_FIELDS — store.js) : jamais envoyés ni relus.
   barcode: f.barcode || null,
-  sat_fat: f.satFat ?? null,
-  sugars: f.sugars ?? null,
-  salt: f.salt ?? null,
-  sodium: f.sodium ?? null,
-  nutri_score: f.nutriScore || null,
-  nova_group: f.novaGroup ?? null,
-  eco_score: f.ecoScore || null,
-  ingredients_text: f.ingredientsText || null,
-  allergens_text: f.allergensText || null,
-  image_url: f.imageUrl || null,
-  image_thumb_url: f.imageThumbUrl || null,
-  off_url: f.offUrl || null,
-  off_quantity: f.offQuantity || null,
-  off_fetched_at: f.offFetchedAt || null,
 });
 
 const foodFromRow = (r) => ({
@@ -201,22 +190,9 @@ const foodFromRow = (r) => ({
   // PostgreSQL renvoie un autre format ISO : on renormalise pour garder
   // un tri des "aliments récents" cohérent entre les appareils.
   lastUsed: r.last_used ? new Date(r.last_used).toISOString() : null,
-  // Open Food Facts — purement informatif. barcode toujours relu comme chaîne.
+  // Code-barres — purement informatif, toujours relu comme chaîne. Les
+  // autres champs Open Food Facts ont été retirés du modèle (cf. ci-dessus).
   barcode: r.barcode !== null && r.barcode !== undefined ? String(r.barcode) : null,
-  satFat: r.sat_fat === null || r.sat_fat === undefined ? null : Number(r.sat_fat),
-  sugars: r.sugars === null || r.sugars === undefined ? null : Number(r.sugars),
-  salt: r.salt === null || r.salt === undefined ? null : Number(r.salt),
-  sodium: r.sodium === null || r.sodium === undefined ? null : Number(r.sodium),
-  nutriScore: r.nutri_score || null,
-  novaGroup: r.nova_group === null || r.nova_group === undefined ? null : Number(r.nova_group),
-  ecoScore: r.eco_score || null,
-  ingredientsText: r.ingredients_text || null,
-  allergensText: r.allergens_text || null,
-  imageUrl: r.image_url || null,
-  imageThumbUrl: r.image_thumb_url || null,
-  offUrl: r.off_url || null,
-  offQuantity: r.off_quantity || null,
-  offFetchedAt: r.off_fetched_at || null,
 });
 
 /**

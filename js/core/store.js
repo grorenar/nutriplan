@@ -98,9 +98,23 @@ export function load() {
   return state;
 }
 
+// Champs OFF annexes retirés (retour utilisateur) : jamais utilisés par le
+// moteur nutritionnel ni affichés nulle part dans la fiche aliment une fois
+// enregistrée (satFat/sugars/salt/sodium dupliquaient les macros "pour
+// information" ; nutriScore/novaGroup/ecoScore/ingredientsText/allergensText/
+// imageUrl/imageThumbUrl/offUrl/offQuantity/offFetchedAt ne servaient qu'à un
+// bloc d'affichage lui-même retiré) — pur volume de base inutile. `barcode`
+// seul reste : identifiant produit, réellement utilisé (détection de doublon,
+// scan). Toujours purgés ici au chargement, pour qu'un aliment sauvegardé
+// AVANT ce retrait (ancien export/sync) ne les fasse pas réapparaître.
+const RETIRED_FOOD_FIELDS = [
+  'satFat', 'sugars', 'salt', 'sodium', 'nutriScore', 'novaGroup', 'ecoScore',
+  'ingredientsText', 'allergensText', 'imageUrl', 'imageThumbUrl', 'offUrl', 'offQuantity', 'offFetchedAt',
+];
+
 /** Complète un aliment venant d'une version antérieure (ou d'un import partiel). */
 export function normalizeFood(f) {
-  return {
+  const out = {
     brand: '', fiber: 0, cookedFactor: 1, unitName: '', gramsPerUnit: 0, fractionable: true,
     price: null, packageWeight: null, batchAllowed: false, favorite: false, lastUsed: null,
     // état des valeurs nutritionnelles : « prêt à consommer » est la valeur
@@ -111,15 +125,9 @@ export function normalizeFood(f) {
     shelfLifeDays: null,
     requiresCooking: false,
     cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
-    // Open Food Facts (recherche/préremplissage de la fiche aliment) : tous
-    // purement informatifs, jamais utilisés par le moteur nutritionnel
-    // (macros/objectifs restent kcal/protein/carbs/fat/fiber uniquement).
     // `barcode` est TOUJOURS une chaîne (jamais Number()) pour préserver un
     // éventuel zéro initial. null = non renseigné, jamais 0/'' par défaut.
-    barcode: null, satFat: null, sugars: null, salt: null, sodium: null,
-    nutriScore: null, novaGroup: null, ecoScore: null,
-    ingredientsText: null, allergensText: null,
-    imageUrl: null, imageThumbUrl: null, offUrl: null, offQuantity: null, offFetchedAt: null,
+    barcode: null,
     ...f,
     // saisie par unités entières par défaut pour un aliment non fractionnable
     unitEntry: f.unitEntry ?? (Number(f.gramsPerUnit) > 0 && f.fractionable === false),
@@ -129,6 +137,8 @@ export function normalizeFood(f) {
     // la valeur est ensuite modifiable dans la fiche aliment.
     requiresCooking: f.requiresCooking ?? (Boolean(f.cookingMethod) || f.referenceState === 'cru'),
   };
+  for (const key of RETIRED_FOOD_FIELDS) delete out[key];
+  return out;
 }
 
 /**
