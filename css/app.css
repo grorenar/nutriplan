@@ -1172,6 +1172,29 @@ tbody tr:hover td { background: var(--surface-alt); }
 
 /* ---------------------------------------------------------- lecture de code-barres par caméra */
 
+/* Modale centrale à bord arrondi (retour utilisateur : cohérence avec le
+   reste de la DA, plus un volet latéral) — même recette que .wizard/.composer,
+   volontairement plus étroite (juste le cadre de visée + quelques contrôles
+   conditionnels, pas une liste à faire défiler). */
+.scanner-modal {
+  position: fixed; inset: 0; background: rgba(18, 32, 22, .5);
+  display: flex; align-items: center; justify-content: center; z-index: 40; padding: 24px;
+}
+.scanner-modal__dialog.drawer__panel {
+  width: min(420px, 100%); height: auto; max-height: min(640px, 92vh);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden;
+  display: flex; flex-direction: column; animation: none !important;
+}
+.scanner-modal__head.drawer__head { flex: none; position: static; padding: 14px 18px; }
+.scanner-modal__body.drawer__body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 18px; }
+/* Mention de confidentialité : volontairement en retrait (petite, atténuée)
+   — réelle mais jamais le premier élément que l'œil accroche dans la boîte. */
+.scanner-modal__privacy { display: block; margin-top: 10px; color: var(--ink-faint); line-height: 1.4; }
+@media (max-width: 860px) {
+  .scanner-modal { padding: 0; }
+  .scanner-modal__dialog.drawer__panel { width: 100%; height: 100%; max-height: none; border-radius: 0; }
+}
+
 .scanner-frame {
   position: relative; width: 100%; aspect-ratio: 4 / 3;
   background: #0b1115; border-radius: var(--radius); overflow: hidden;

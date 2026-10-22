@@ -173,19 +173,28 @@ function simplifyCameraChoices(cameras) {
 }
 
 function scannerPanelHtml() {
-  return `<div class="drawer" data-scanner-backdrop>
-    <div class="drawer__panel" style="width:min(520px,100%)">
-      <div class="drawer__head"><div class="row">
+  // Modale centrale à bord arrondi (retour utilisateur : cohérence avec le
+  // reste de la DA — plus un volet latéral à l'ancienne), même recette que
+  // .wizard/.composer : .scanner-modal pilote seul le positionnement/fond,
+  // les sous-éléments gardent leur double classe (…drawer__panel, etc.) pour
+  // hériter des styles de base sans rien dupliquer côté JS (détection
+  // d'ouverture, structure). Volontairement étroite (vidéo 4/3 + quelques
+  // contrôles, pas une liste à faire défiler) et aussi peu chargée que
+  // possible : rien ici que le cadre de visée, l'état courant et les seuls
+  // contrôles qui s'appliquent (caméra/flash, uniquement s'il y a un choix).
+  return `<div class="scanner-modal" data-scanner-backdrop>
+    <div class="scanner-modal__dialog drawer__panel" role="dialog" aria-label="Scanner un code-barres">
+      <div class="scanner-modal__head drawer__head"><div class="row">
         <h3 style="flex:1">Scanner un code-barres</h3>
         <button class="btn btn--ghost" data-scanner-close type="button">Fermer</button>
       </div></div>
-      <div class="drawer__body">
+      <div class="scanner-modal__body drawer__body">
         <div class="scanner-frame">
           <video id="scanner-video" class="scanner-frame__video" autoplay muted playsinline></video>
           <div class="scanner-frame__guide" aria-hidden="true"></div>
         </div>
         <div id="scanner-chrome" style="margin-top:12px">${scannerChromeHtml()}</div>
-        <small style="display:block;margin-top:12px">La lecture se fait entièrement sur cet appareil : aucune image n'est envoyée à un serveur. Seul le code-barres détecté est utilisé pour la recherche.</small>
+        <small class="scanner-modal__privacy">La lecture se fait entièrement sur cet appareil : aucune image n'est envoyée à un serveur. Seul le code-barres détecté est utilisé pour la recherche.</small>
       </div>
     </div>
   </div>`;
