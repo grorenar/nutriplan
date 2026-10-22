@@ -459,7 +459,7 @@ function formPanel(s) {
 /** Contenu de .drawer__body pour la MODIFICATION d'une fiche existante — toutes les sections à la suite, jamais d'étapes (réutilisé tel quel par refreshOpenForm()). */
 function formBodyHtml(f) {
   return `${generalFieldsHtml(f)}
-        ${isScannerSupported() ? `<div class="row" style="margin:-10px 0 16px">
+        ${isScannerSupported() ? `<div class="row" style="margin:12px 0 0">
           <button class="btn btn--sm btn--ghost" data-swap-scan type="button">🔄 Permuter via un nouveau code-barres</button>
         </div>` : ''}
         ${nutritionFieldsHtml(f)}
