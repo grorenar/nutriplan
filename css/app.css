@@ -180,6 +180,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   height: 100vh;
   border-right: 1px solid var(--rail-line);
   box-shadow: 1px 0 0 rgba(18,32,22,.02);
+  /* Un élément sticky que le navigateur repeint au fil du scroll (plutôt que
+     de le confier au compositeur GPU) peut trembler de 1px par endroits —
+     visible surtout sur un détail fin comme le logo (retour utilisateur :
+     "la feuille bouge un peu, comme si verrouillé"). transform force son
+     propre calque composité, rendu indépendant du contenu qui défile. */
+  transform: translateZ(0);
 }
 .rail__brand {
   display: flex; align-items: center; gap: 11px;

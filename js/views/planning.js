@@ -39,6 +39,17 @@ let summaryDay = -1; // -1 = semaine complète, sinon index du jour (0-based)
 // visuels natifs du navigateur (curseur, image fantôme), jamais lu au drop.
 let dragPayload = null; // { mealId, mode: 'move' | 'duplicate' }
 
+// Position de défilement de la page au tout début du geste (mousedown, avant
+// même que le glisser ne démarre) — retour utilisateur : un glisser-déposer
+// ramenait systématiquement la page tout en haut. Creusé : le saut à zéro se
+// produit PENDANT le geste natif lui-même (confirmé en instrumentant un vrai
+// événement de glisser), avant même que `drop`/handleDrop() ne s'exécutent —
+// capturer la position seulement au moment du dépôt (dans render(), plus bas)
+// est donc déjà trop tard, la valeur lue serait déjà celle, erronée, après le
+// saut. Capturée ici (mousedown, avant tout saut possible), puis réappliquée
+// explicitement par handleDrop() une fois le dépôt traité.
+let dragStartScrollY = null;
+
 const DAY_COL_WIDTH = 272;
 const DAY_COL_GAP = 16;
 let resizeWired = false;
@@ -71,6 +82,11 @@ function balancedRowSizes(n, perRow) {
 }
 
 export function render(root) {
+  // Position de défilement de la PAGE (root n'est pas lui-même l'élément qui
+  // défile, cf. .main/.view dans app.css) — capturée AVANT de remplacer tout
+  // le contenu de la vue, restaurée après (retour utilisateur : un glisser-
+  // déposer dans le planning ramenait la page tout en haut à chaque fois).
+  const scrollY = window.scrollY;
   const s = getState();
   const byId = foodsById();
   const recipesMap = recipesById();
@@ -135,6 +151,7 @@ export function render(root) {
   `;
 
   wire(root);
+  window.scrollTo(0, scrollY);
 
   // Recalcule la répartition par ligne au redimensionnement (jamais pour une
   // autre vue : root n'a alors plus de .board, le re-rendu est un no-op sans
@@ -393,11 +410,20 @@ function moveMealTo(s, srcId, dstId, { readjust = true } = {}) {
 function handleDrop(root, dstId) {
   const payload = dragPayload;
   dragPayload = null;
-  if (!payload) return;
+  // Capturée au tout début du geste (mousedown, cf. dragStartScrollY plus
+  // haut) : par le moment où ce rendu s'exécute, window.scrollY a déjà
+  // potentiellement sauté à 0 (saut survenant PENDANT le geste natif
+  // lui-même) — restaurer explicitement avec CETTE valeur après chaque
+  // render() ci-dessous, plutôt que de se fier à ce que render() capture de
+  // son côté (déjà trop tard à ce stade).
+  const savedScrollY = dragStartScrollY;
+  dragStartScrollY = null;
+  const restoreScroll = () => { if (savedScrollY !== null) window.scrollTo(0, savedScrollY); };
+  if (!payload) { restoreScroll(); return; }
   const s0 = getState();
   const dst = s0.meals.find((m) => m.id === dstId);
-  if (!dst) return;
-  if (payload.mealId === dstId) return; // dépose sur soi-même : rien à faire
+  if (!dst) { restoreScroll(); return; }
+  if (payload.mealId === dstId) { restoreScroll(); return; } // dépose sur soi-même : rien à faire
   const dstWasFilled = dst.items.length > 0;
 
   if (payload.mode === 'duplicate') {
@@ -405,6 +431,7 @@ function handleDrop(root, dstId) {
       update((s) => { copyMealTo(s, payload.mealId, dstId, { readjust: true }); });
       toast('Repas dupliqué');
       render(root);
+      restoreScroll();
     };
     if (dstWasFilled) {
       pendingConfirm = {
@@ -414,6 +441,7 @@ function handleDrop(root, dstId) {
         onConfirm: apply,
       };
       render(root);
+      restoreScroll();
     } else {
       apply();
     }
@@ -423,6 +451,7 @@ function handleDrop(root, dstId) {
   update((s) => { moveMealTo(s, payload.mealId, dstId, { readjust: true }); });
   toast(dstWasFilled ? 'Repas permutés' : 'Repas déplacé');
   render(root);
+  restoreScroll();
 }
 
 function wire(root) {
@@ -538,6 +567,7 @@ function wireDragAndDrop(root) {
     let pendingMode = 'move';
     card.addEventListener('mousedown', (e) => {
       pendingMode = e.target.closest('.meal-slot__drag-handle') ? 'duplicate' : 'move';
+      dragStartScrollY = window.scrollY;
     });
     card.addEventListener('dragstart', (e) => {
       if (e.target.closest('button, details, summary')) { e.preventDefault(); return; }
