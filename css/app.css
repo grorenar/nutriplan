@@ -591,17 +591,21 @@ tbody tr:hover td { background: var(--surface-alt); }
    .target-table-wrap en overflow-x permettent un vrai défilement horizontal
    plutôt qu'un écrasement illisible sur petit écran. */
 .target-table-wrap { overflow-x: auto; margin-bottom: 10px; }
-.target-table { width: 100%; min-width: 480px; table-layout: fixed; border-collapse: collapse; }
-.target-table th, .target-table td { padding: 6px 8px; }
+/* min-width réduit : les tableaux Thomas/Julie sont désormais côte à côte
+   (retour utilisateur), donc chacun dispose d'environ la moitié de la
+   carte — un seuil trop élevé déclencherait un défilement interne inutile
+   sur la plupart des écrans. */
+.target-table { width: 100%; min-width: 360px; table-layout: fixed; border-collapse: collapse; }
+.target-table th, .target-table td { padding: 6px 6px; }
 .target-table th { font-size: var(--fs-xs); font-weight: 700; text-align: center; white-space: nowrap; }
-.target-table th:first-child, .target-table td:first-child { text-align: left; width: 30%; }
+.target-table th:first-child, .target-table td:first-child { text-align: left; width: 36%; }
 .target-table td:not(:first-child) { text-align: center; }
 .target-table tbody tr { border-top: 1px solid var(--line); }
 .target-table__row-label { font-weight: 600; font-size: var(--fs-sm); white-space: nowrap; }
 .target-table__row--total { font-weight: 800; background: var(--brand-50); }
 .target-table__row--total td { border-top: 2px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
 .target-table__total-value { font-variant-numeric: tabular-nums; }
-input.target-input { width: 82%; max-width: 110px; min-height: 36px; padding: 6px 8px; text-align: center; font-variant-numeric: tabular-nums; }
+input.target-input { width: 85%; max-width: 76px; min-height: 36px; padding: 6px 4px; text-align: center; font-variant-numeric: tabular-nums; }
 /* Masque les flèches natives du spinner number : avec un texte centré, leur
    présence asymétrique (toujours à droite) recasse visuellement le centrage. */
 input.target-input::-webkit-outer-spin-button, input.target-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }

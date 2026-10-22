@@ -45,7 +45,7 @@ export async function render(root) {
                 </div>`
               : ''
           }
-          ${PERSONS.map((p) => targetTable(p, s)).join('')}
+          <div class="grid grid--2" style="align-items:start">${PERSONS.map((p) => targetTable(p, s)).join('')}</div>
           <div class="row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
             <label class="field" style="max-width:160px">Tolérance (%)
               <input type="number" step="1" min="1" max="25" data-tol value="${num(s.settings.tolerance * 100, 0)}"></label>
@@ -200,7 +200,8 @@ function targetTable(person, s) {
     return `<tr><td class="target-table__row-label">${MEAL_ICONS[type] || ''} ${esc(MEAL_TYPES[type])}</td>${cells}</tr>`;
   }).join('');
 
-  return `<div class="row" style="margin:14px 0 8px;align-items:center">
+  return `<div>
+    <div class="row" style="margin:0 0 8px;align-items:center">
       <h3 class="person-name person-name--${person}" style="margin:0">${PERSON_LABEL[person]}</h3>
       <span class="spacer"></span>
       <button type="button" class="btn btn--sm btn--ghost" data-dup-targets="${person}" data-dup-to="${other}">📋 Dupliquer sur ${PERSON_LABEL[other]}</button>
@@ -216,7 +217,8 @@ function targetTable(person, s) {
           ${rows}
         </tbody>
       </table>
-    </div>`;
+    </div>
+  </div>`;
 }
 
 function wire(root) {
