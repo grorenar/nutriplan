@@ -1644,7 +1644,7 @@ check('mode local expliqué dans le compte', /Mode local uniquement/.test($('#vi
 
 console.log('\n— Plan d’amélioration : clarifications ergonomiques (3A, 3B, D, F, H)');
 check('« Ajustement automatique » déplacé dans Objectifs nutritionnels (3B)',
-  $('[data-autoadjust]')?.closest('.card')?.querySelector('h2')?.textContent === 'Objectifs nutritionnels');
+  /Objectifs nutritionnels/.test($('[data-autoadjust]')?.closest('.card')?.querySelector('h2')?.textContent || ''));
 check('la case « Ajustement automatique » fonctionne toujours après déplacement',
   $('[data-autoadjust]').checked === store.getState().settings.autoAdjust);
 check('export/import JSON distingué de l’enregistrement auto et du cloud (D)',
@@ -2743,19 +2743,19 @@ check('confirmation : option bien supprimée', store.getState().breakfasts.lengt
 console.log('\n— Chantier P1 : Paramètres — « Rétablir les objectifs par défaut » (confirmation bloquante)');
 click($('[data-view="settings"]'));
 await wait();
-store.update((s) => { s.settings.targets.thomas.day.kcal = 1234; });
+store.update((s) => { s.settings.targets.thomas.breakfast.kcal = 1234; });
 await wait();
 click($('[data-reset-targets]'));
 await wait();
-check('confirmation affichée, rien modifié avant confirmation', !!$('[data-action-confirm]') && store.getState().settings.targets.thomas.day.kcal === 1234);
+check('confirmation affichée, rien modifié avant confirmation', !!$('[data-action-confirm]') && store.getState().settings.targets.thomas.breakfast.kcal === 1234);
 click($('[data-action-cancel]'));
 await wait();
-check('« Annuler » : objectif inchangé', store.getState().settings.targets.thomas.day.kcal === 1234);
+check('« Annuler » : objectif inchangé', store.getState().settings.targets.thomas.breakfast.kcal === 1234);
 click($('[data-reset-targets]'));
 await wait();
 click($('[data-action-confirm]'));
 await wait();
-check('confirmation : objectifs rétablis par défaut', store.getState().settings.targets.thomas.day.kcal !== 1234);
+check('confirmation : objectifs rétablis par défaut', store.getState().settings.targets.thomas.breakfast.kcal !== 1234);
 
 console.log('\n— Chantier P3 : écran Aliments — fusion de doublons détectés (parcours complet)');
 let foodKeepId, foodAwayId, recipeMergeId;

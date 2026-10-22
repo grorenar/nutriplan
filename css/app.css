@@ -579,15 +579,24 @@ tbody tr:hover td { background: var(--surface-alt); }
 .food-row__name { font-size: var(--fs-sm); }
 .food-row__cat { font-size: var(--fs-xs); font-weight: 700; margin-top: 2px; }
 
-/* Objectifs de macros par repas (Paramètres) : une carte par repas plutôt
-   qu'un tableau dense de champs nus. */
-.target-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 18px; }
-.target-card { background: #fff; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
-.target-card__head { font-weight: 700; font-size: var(--fs-sm); margin-bottom: 10px; }
-.target-card__fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.target-field { display: flex; flex-direction: column; gap: 3px; }
-.target-field__label { font-size: 10px; font-weight: 700; }
-.target-field input { width: 100%; }
+/* Objectifs de macros par repas (Paramètres) : un tableau compact par
+   personne, une ligne par repas — plus sobre en espace que les anciennes
+   grandes cartes à champs nus (retour utilisateur). */
+.target-table-wrap { overflow-x: auto; margin-bottom: 10px; }
+/* min-width empêche les colonnes de s'écraser sous les saisies sur petit
+   écran (retour utilisateur) : sous ce seuil, .target-table-wrap défile
+   horizontalement plutôt que de comprimer les champs jusqu'à l'illisible. */
+.target-table { width: 100%; min-width: 460px; border-collapse: collapse; }
+.target-table th, .target-table td { padding: 5px 6px; }
+.target-table th { font-size: var(--fs-xs); font-weight: 700; text-align: center; white-space: nowrap; }
+.target-table th:first-child { text-align: left; }
+.target-table td:not(:first-child) { text-align: center; }
+.target-table tbody tr { border-top: 1px solid var(--line); }
+.target-table__row-label { font-weight: 600; font-size: var(--fs-sm); white-space: nowrap; }
+.target-table__row--total { font-weight: 800; background: var(--brand-50); }
+.target-table__row--total td { border-top: 2px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
+.target-table__total-value { font-variant-numeric: tabular-nums; }
+.target-input { width: 56px; padding: 4px 5px; text-align: center; font-variant-numeric: tabular-nums; }
 
 .person-band { border-left: 3px solid var(--line-strong); padding-left: 10px; }
 .person-band--thomas { border-color: var(--thomas); }
@@ -613,23 +622,6 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .form-section__head .ico { font-size: var(--fs-md); line-height: 1; }
 .form-section__head h3 { flex: 1; color: var(--brand-700); }
-
-/* ---------------------------------------------------------- onglets */
-
-/* Navigation secondaire de l'écran Paramètres : tuiles plutôt qu'onglets
-   (retour utilisateur — plus esthétique). Même mécanisme de sélection que
-   l'ancienne version (data-tab/aria-selected, un seul panneau visible à la
-   fois), seule la présentation du sélecteur change. */
-.settings-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px; }
-.settings-tile {
-  display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center;
-  border: 1px solid var(--line); background: #fff; border-radius: var(--radius-lg);
-  padding: 16px 10px; cursor: pointer; box-shadow: var(--shadow-card);
-}
-.settings-tile:hover { border-color: var(--brand-400); background: var(--brand-50); }
-.settings-tile[aria-selected="true"] { background: var(--brand-600); border-color: var(--brand-600); color: #fff; }
-.settings-tile__icon { font-size: 26px; }
-.settings-tile__label { font-size: var(--fs-xs); font-weight: 700; }
 
 /* ---------------------------------------------------------- planning : tableau de jours */
 

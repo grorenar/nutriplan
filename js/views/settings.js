@@ -8,121 +8,121 @@ import * as sync from '../core/sync.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 import { donutChart } from './charts.js';
 
-const TYPES = ['day', 'breakfast', 'lunch', 'snack_afternoon', 'dinner', 'snack_evening'];
-// Repas réellement sommés pour l'aperçu quotidien — 'day' exclu : c'est un
-// objectif global optionnel, saisi séparément (souvent laissé à 0), jamais
-// mêlé à la somme des repas réels pour ne pas compter deux fois le même besoin.
-const DAY_MEAL_TYPES = TYPES.filter((t) => t !== 'day');
+// Repas réellement sommés pour le total "Journée" — calculé à l'affichage
+// (dailyTotal()), jamais saisi ni stocké séparément : une seule source de
+// vérité (les objectifs par repas), affichée en lecture seule en tête de
+// tableau comme simple repère (retour utilisateur — l'ancien champ "Journée"
+// éditable n'était lu nulle part et pouvait diverger de la vraie somme).
+const DAY_MEAL_TYPES = ['breakfast', 'lunch', 'snack_afternoon', 'dinner', 'snack_evening'];
+const MEAL_ICONS = {
+  breakfast: '☀️',
+  lunch: '🍽️',
+  snack_afternoon: '🍪',
+  dinner: '🌙',
+  snack_evening: '🌃',
+};
 let importReport = null; // doublons probables repérés au dernier import
 let pendingConfirm = null; // { title, message, confirmLabel, onConfirm } — P1, remplace confirm() natif
-
-// Onglets plutôt qu'un long empilement de cartes (refonte graphique) : chaque
-// section garde exactement son contenu/comportement d'avant, seule la
-// présentation change. L'onglet actif est un état d'écran ordinaire (même
-// mécanisme que `pendingConfirm`/`importReport`), pas une route — il revient
-// à « Objectifs nutritionnels » à la réouverture de l'écran, comme avant.
-const TABS = [
-  { id: 'targets', label: 'Objectifs nutritionnels', icon: '🎯' },
-  { id: 'cycle', label: 'Cycle', icon: '📅' },
-  { id: 'batch', label: 'Batch cooking', icon: '🍲' },
-  { id: 'data', label: 'Données', icon: '🗂️' },
-  { id: 'account', label: 'Compte', icon: '☁️' },
-];
-let activeTab = 'targets';
+let showTargetsHelp = false; // bascule du panneau d'aide (retour utilisateur, cf. mock-up fourni)
 
 export async function render(root) {
   const s = getState();
 
   root.innerHTML = `
-    <div class="settings-tiles" role="tablist" aria-label="Sections des paramètres">
-      ${TABS.map(
-        (t) => `<button type="button" class="settings-tile" role="tab" data-tab="${t.id}" aria-selected="${t.id === activeTab}">
-          <span class="settings-tile__icon" aria-hidden="true">${t.icon}</span>
-          <span class="settings-tile__label">${t.label}</span>
-        </button>`
-      ).join('')}
-    </div>
-
-    <div data-panel="targets" ${activeTab === 'targets' ? '' : 'hidden'}>
-      <div class="page-grid">
-        <div class="page-grid__main">
-          <div class="card">
-            <div class="card__head"><h2>Objectifs nutritionnels</h2><p>Les besoins caloriques et macros par repas, pour Thomas et Julie.</p></div>
-            ${PERSONS.map((p) => targetTable(p, s)).join('')}
-            <div class="row" style="margin-top:10px">
-              <label class="field" style="max-width:200px">Tolérance (%)
-                <input type="number" step="1" min="1" max="25" data-tol value="${num(s.settings.tolerance * 100, 0)}"></label>
-              <button class="btn btn--sm" data-reset-targets>Rétablir les objectifs par défaut</button>
-            </div>
-            <small>Les objectifs de la journée sont indicatifs : l'application vise les objectifs par repas, sans corriger les éventuelles incohérences.</small>
-            <label class="check" style="margin-top:10px"><input type="checkbox" data-autoadjust ${s.settings.autoAdjust ? 'checked' : ''}> Ajustement automatique des quantités</label>
-            <small>Recalcule automatiquement les quantités d'un repas pour viser ces objectifs, à chaque modification. Peut aussi être activé/désactivé ponctuellement depuis l'éditeur de repas.</small>
+    <div class="page-grid">
+      <div class="page-grid__main">
+        <div class="card">
+          <div class="card__head">
+            <h2>🎯 Objectifs nutritionnels</h2>
+            <p>Définis tes besoins nutritionnels par type de repas, pour chaque personne.</p>
+            <button type="button" class="btn btn--sm btn--ghost" data-help-toggle>❓ Aide et conseils</button>
           </div>
-        </div>
-        <div class="page-grid__aside">
-          <div class="card">
-            <div class="card__head"><h3>Aperçu quotidien</h3><p>Répartition de tes objectifs sur une journée.</p></div>
-            ${PERSONS.map((p) => dailyOverview(p, s)).join('')}
+          ${
+            showTargetsHelp
+              ? `<div class="pill pill--accent pill--wrap" style="margin-bottom:14px">
+                  La ligne « Journée » est calculée automatiquement : c'est la somme des repas ci-dessous, pas une valeur à saisir.
+                  L'application vise les objectifs par repas (la tolérance ci-dessous fixe la marge acceptée lors de l'ajustement automatique des quantités), sans corriger les éventuelles incohérences entre repas.
+                </div>`
+              : ''
+          }
+          ${PERSONS.map((p) => targetTable(p, s)).join('')}
+          <div class="row" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+            <label class="field" style="max-width:160px">Tolérance (%)
+              <input type="number" step="1" min="1" max="25" data-tol value="${num(s.settings.tolerance * 100, 0)}"></label>
+            <label class="check"><input type="checkbox" data-autoadjust ${s.settings.autoAdjust ? 'checked' : ''}> Ajustement automatique des quantités</label>
+            <span class="spacer"></span>
+            <button class="btn btn--sm" data-reset-targets>Rétablir les objectifs par défaut</button>
           </div>
         </div>
       </div>
-    </div>
-
-    <div class="card" data-panel="cycle" ${activeTab === 'cycle' ? '' : 'hidden'}>
-      <div class="card__head"><h2>Cycle</h2><p>Durée du cycle de repas et budget de courses associé.</p></div>
-      <div class="grid grid--3">
-        <label class="field">Premier jour du cycle
-          <select data-startday>${WEEKDAYS.map((d, i) => `<option value="${i}" ${s.settings.cycle.startWeekday === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
-        <label class="field">Durée (jours)
-          <input type="number" min="1" max="14" data-duration value="${s.settings.cycle.duration}"></label>
-        <label class="field">Budget cible du cycle (€)
-          <input type="number" step="1" min="0" data-budget value="${s.settings.budget}"></label>
+      <div class="page-grid__aside">
+        <div class="card">
+          <div class="card__head"><h3>Aperçu quotidien</h3><p>Répartition de tes objectifs sur une journée.</p></div>
+          ${PERSONS.map((p) => dailyOverview(p, s)).join('')}
+          <div class="pill pill--accent pill--wrap">💡 Ces valeurs sont utilisées pour générer tes repas et vérifier l'équilibre nutritionnel de tes journées.</div>
+        </div>
       </div>
     </div>
 
-    <div class="card" data-panel="batch" ${activeTab === 'batch' ? '' : 'hidden'}>
-      <div class="card__head"><h2>Batch cooking</h2><p>Active les sessions de préparation groupée et leur durée de conservation.</p></div>
-      <div class="row">
-        <label class="check"><input type="checkbox" data-batch-enabled ${s.settings.batch.enabled ? 'checked' : ''}> Activer le batch cooking</label>
-        <label class="field" style="max-width:220px">Conservation maximale (jours)
-          <input type="number" min="1" max="7" data-batch-days value="${s.settings.batch.maxDays}"></label>
+    <div class="grid grid--2" style="margin-top:14px">
+      <div class="card">
+        <div class="card__head"><h2>📅 Cycle</h2><p>Durée du cycle de repas et budget de courses associé.</p></div>
+        <div class="grid grid--3">
+          <label class="field">Premier jour du cycle
+            <select data-startday>${WEEKDAYS.map((d, i) => `<option value="${i}" ${s.settings.cycle.startWeekday === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+          <label class="field">Durée (jours)
+            <input type="number" min="1" max="14" data-duration value="${s.settings.cycle.duration}"></label>
+          <label class="field">Budget cible du cycle (€)
+            <input type="number" step="1" min="0" data-budget value="${s.settings.budget}"></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card__head"><h2>🍲 Batch cooking</h2><p>Active les sessions de préparation groupée et leur durée de conservation.</p></div>
+        <div class="row">
+          <label class="check"><input type="checkbox" data-batch-enabled ${s.settings.batch.enabled ? 'checked' : ''}> Activer le batch cooking</label>
+          <label class="field" style="max-width:220px">Conservation maximale (jours)
+            <input type="number" min="1" max="7" data-batch-days value="${s.settings.batch.maxDays}"></label>
+        </div>
       </div>
     </div>
 
-    <div class="card" data-panel="data" ${activeTab === 'data' ? '' : 'hidden'}>
-      <div class="card__head"><h2>Données</h2><p>Sauvegarde portable et actions sensibles sur le cycle en cours.</p></div>
-      <div class="row">
-        <button class="btn" data-export>Exporter en JSON</button>
-        <label class="btn" style="display:inline-flex;align-items:center">Importer un JSON
-          <input type="file" accept="application/json" data-import style="display:none">
-        </label>
+    <div class="grid grid--2" style="margin-top:14px">
+      <div class="card">
+        <div class="card__head"><h2>🗂️ Données</h2><p>Sauvegarde portable et actions sensibles sur le cycle en cours.</p></div>
+        <div class="row">
+          <button class="btn" data-export>Exporter en JSON</button>
+          <label class="btn" style="display:inline-flex;align-items:center">Importer un JSON
+            <input type="file" accept="application/json" data-import style="display:none">
+          </label>
+        </div>
+        <small style="display:block;margin-top:8px" class="muted">Export/Import JSON : un fichier portable que tu télécharges ou réimportes toi-même — distinct de l'enregistrement automatique dans ce navigateur (silencieux, à chaque modification) et du compte cloud ci-contre (partagé entre appareils).</small>
+        ${
+          importReport
+            ? `<div class="card" style="margin-top:12px;border-color:#ecd7ae;background:var(--warn-bg)">
+                <strong>Doublons possibles dans la banque importée</strong>
+                <ul style="margin:6px 0 0;padding-left:18px">
+                  ${importReport
+                    .map((g) => `<li>${esc(g.food.name)} ~ ${g.similar.map((x) => esc(x.food.name)).join(', ')}</li>`)
+                    .join('')}
+                </ul>
+                <small>Aucun aliment n'a été fusionné ni supprimé : vérifie-les dans l'écran Aliments.</small>
+                <div class="row" style="margin-top:8px"><button class="btn btn--sm" data-dismiss-import>Masquer</button></div>
+              </div>`
+            : ''
+        }
+        <div class="row" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
+          <strong class="tag" style="color:var(--off)">Zone sensible</strong>
+          <span class="spacer"></span>
+          <button class="btn btn--danger" data-reset-cycle>Réinitialiser le cycle</button>
+        </div>
+        <small>La réinitialisation du cycle efface le planning, les achats cochés, les quantités de batch et les compteurs d'utilisation des catalogues. Elle ne touche ni à la banque alimentaire, ni aux objectifs, ni aux options des catalogues.</small>
       </div>
-      <small style="display:block;margin-top:8px" class="muted">Export/Import JSON : un fichier portable que tu télécharges ou réimportes toi-même — distinct de l'enregistrement automatique dans ce navigateur (silencieux, à chaque modification) et du compte cloud ci-dessous (partagé entre appareils).</small>
-      ${
-        importReport
-          ? `<div class="card" style="margin-top:12px;border-color:#ecd7ae;background:var(--warn-bg)">
-              <strong>Doublons possibles dans la banque importée</strong>
-              <ul style="margin:6px 0 0;padding-left:18px">
-                ${importReport
-                  .map((g) => `<li>${esc(g.food.name)} ~ ${g.similar.map((x) => esc(x.food.name)).join(', ')}</li>`)
-                  .join('')}
-              </ul>
-              <small>Aucun aliment n'a été fusionné ni supprimé : vérifie-les dans l'écran Aliments.</small>
-              <div class="row" style="margin-top:8px"><button class="btn btn--sm" data-dismiss-import>Masquer</button></div>
-            </div>`
-          : ''
-      }
-      <div class="row" style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
-        <strong class="tag" style="color:var(--off)">Zone sensible</strong>
-        <span class="spacer"></span>
-        <button class="btn btn--danger" data-reset-cycle>Réinitialiser le cycle</button>
-      </div>
-      <small>La réinitialisation du cycle efface le planning, les achats cochés, les quantités de batch et les compteurs d'utilisation des catalogues. Elle ne touche ni à la banque alimentaire, ni aux objectifs, ni aux options des catalogues.</small>
-    </div>
 
-    <div class="card" data-panel="account" ${activeTab === 'account' ? '' : 'hidden'}>
-      <div class="card__head"><h2>Compte et synchronisation</h2></div>
-      <div data-account>Chargement…</div>
+      <div class="card">
+        <div class="card__head"><h2>☁️ Compte et synchronisation</h2></div>
+        <div data-account>Chargement…</div>
+      </div>
     </div>
     ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
   `;
@@ -132,14 +132,12 @@ export async function render(root) {
 }
 
 /**
- * Donut de répartition calorique de la journée (somme des repas réels,
- * 'day' exclu — cf. DAY_MEAL_TYPES) : protéines/glucides/lipides pondérés
- * par leur apport calorique réel (4/4/9 kcal par gramme), pas par leur
- * seul poids en grammes — c'est la proportion qui compte nutritionnellement,
- * affichage à titre indicatif, n'affecte jamais aucun calcul du moteur.
+ * Somme des objectifs des repas réels d'une personne — seule source de
+ * vérité du total "Journée", utilisée à la fois par le donut ci-dessous et
+ * par la ligne "Journée" (lecture seule) du tableau d'objectifs.
  */
-function dailyOverview(person, s) {
-  const total = DAY_MEAL_TYPES.reduce(
+function dailyTotal(person, s) {
+  return DAY_MEAL_TYPES.reduce(
     (acc, type) => {
       const t = s.settings.targets[person][type] || { kcal: 0, protein: 0, carbs: 0, fat: 0 };
       acc.kcal += t.kcal; acc.protein += t.protein; acc.carbs += t.carbs; acc.fat += t.fat;
@@ -147,6 +145,17 @@ function dailyOverview(person, s) {
     },
     { kcal: 0, protein: 0, carbs: 0, fat: 0 }
   );
+}
+
+/**
+ * Donut de répartition calorique de la journée : protéines/glucides/lipides
+ * pondérés par leur apport calorique réel (4/4/9 kcal par gramme), pas par
+ * leur seul poids en grammes — c'est la proportion qui compte
+ * nutritionnellement, affichage à titre indicatif, n'affecte jamais aucun
+ * calcul du moteur.
+ */
+function dailyOverview(person, s) {
+  const total = dailyTotal(person, s);
   const segments = [
     // value = apport calorique réel (g × kcal/g) : détermine la part de l'anneau ;
     // displayValue = grammes, tel qu'affiché dans la légende.
@@ -167,39 +176,73 @@ function dailyOverview(person, s) {
 }
 
 /**
- * Objectifs de macros par repas (P4, retour utilisateur) — une carte par
- * repas plutôt qu'un tableau dense de 24 champs nus : mêmes data-target/
- * data-type/data-key qu'avant (même mécanisme de saisie, wire() inchangé),
- * seule la présentation change. Icône + couleur par macro réutilisent
- * MACRO_META, déjà la référence constante dans tout le reste de l'app
- * (planning, éditeur de repas).
+ * Objectifs de macros par repas — un tableau compact par personne (une ligne
+ * par repas, une colonne par macro) plutôt que des grandes cartes à champs
+ * nus (retour utilisateur : trop d'espace pour peu de texte). La ligne
+ * "Journée" est en lecture seule (dailyTotal()) : ce n'est plus un champ
+ * saisi séparément — cf. discussion sur l'ancien champ "Journée" inerte.
+ * Mêmes data-target/data-type/data-key qu'avant pour les repas (wire()
+ * inchangé sur ce point) ; icône + couleur par macro réutilisent MACRO_META,
+ * déjà la référence constante dans tout le reste de l'app.
  */
 function targetTable(person, s) {
-  const cards = TYPES.map((type) => {
+  const other = person === 'thomas' ? 'julie' : 'thomas';
+  const total = dailyTotal(person, s);
+  const macroKeys = Object.keys(MACRO_META);
+
+  const totalCells = macroKeys.map((k) => `<td class="target-table__total-value">${num(total[k], 0)}</td>`).join('');
+
+  const rows = DAY_MEAL_TYPES.map((type) => {
     const t = s.settings.targets[person][type] || { kcal: 0, protein: 0, carbs: 0, fat: 0 };
-    const fields = Object.keys(MACRO_META)
-      .map((k) => {
-        const meta = MACRO_META[k];
-        return `<label class="target-field">
-          <span class="target-field__label" style="color:var(--${meta.cls})">${meta.icon} ${meta.short}</span>
-          <input type="number" step="1" min="0" value="${t[k]}" data-target="${person}" data-type="${type}" data-key="${k}">
-        </label>`;
-      })
+    const cells = macroKeys
+      .map((k) => `<td><input type="number" step="1" min="0" class="target-input" value="${t[k]}" data-target="${person}" data-type="${type}" data-key="${k}"></td>`)
       .join('');
-    return `<div class="target-card">
-      <div class="target-card__head">${esc(MEAL_TYPES[type])}</div>
-      <div class="target-card__fields">${fields}</div>
-    </div>`;
+    return `<tr><td class="target-table__row-label">${MEAL_ICONS[type] || ''} ${esc(MEAL_TYPES[type])}</td>${cells}</tr>`;
   }).join('');
 
-  return `<h3 class="person-name person-name--${person}" style="margin:12px 0 10px">${PERSON_LABEL[person]}</h3>
-    <div class="target-grid">${cards}</div>`;
+  return `<div class="row" style="margin:14px 0 8px;align-items:center">
+      <h3 class="person-name person-name--${person}" style="margin:0">${PERSON_LABEL[person]}</h3>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn--sm btn--ghost" data-dup-targets="${person}" data-dup-to="${other}">📋 Dupliquer sur ${PERSON_LABEL[other]}</button>
+    </div>
+    <div class="target-table-wrap">
+      <table class="target-table">
+        <thead><tr>
+          <th></th>
+          ${macroKeys.map((k) => `<th style="color:var(--${MACRO_META[k].cls})">${MACRO_META[k].icon} ${MACRO_META[k].short}</th>`).join('')}
+        </tr></thead>
+        <tbody>
+          <tr class="target-table__row--total"><td class="target-table__row-label">Journée</td>${totalCells}</tr>
+          ${rows}
+        </tbody>
+      </table>
+    </div>`;
 }
 
 function wire(root) {
-  root.querySelectorAll('[data-tab]').forEach((btn) =>
+  root.querySelector('[data-help-toggle]')?.addEventListener('click', () => {
+    showTargetsHelp = !showTargetsHelp;
+    render(root);
+  });
+
+  root.querySelectorAll('[data-dup-targets]').forEach((btn) =>
     btn.addEventListener('click', (e) => {
-      activeTab = e.currentTarget.dataset.tab;
+      const from = e.currentTarget.dataset.dupTargets;
+      const to = e.currentTarget.dataset.dupTo;
+      pendingConfirm = {
+        title: `Dupliquer les objectifs de ${PERSON_LABEL[from]} vers ${PERSON_LABEL[to]} ?`,
+        message: `Les objectifs actuels de ${PERSON_LABEL[to]} seront remplacés par ceux de ${PERSON_LABEL[from]}.`,
+        confirmLabel: 'Dupliquer',
+        onConfirm: () => {
+          update((s) => {
+            DAY_MEAL_TYPES.forEach((type) => {
+              s.settings.targets[to][type] = { ...s.settings.targets[from][type] };
+            });
+          });
+          toast(`Objectifs dupliqués vers ${PERSON_LABEL[to]}`);
+          render(root);
+        },
+      };
       render(root);
     })
   );
@@ -209,6 +252,10 @@ function wire(root) {
       const { target: person, type, key } = e.target.dataset;
       const v = Math.max(0, Number(e.target.value) || 0);
       update((s) => { s.settings.targets[person][type][key] = v; });
+      // la ligne "Journée" (calculée) et le donut "Aperçu quotidien" dépendent
+      // de ce repas : on rafraîchit (l'événement `change` n'arrive qu'à la
+      // sortie du champ, jamais à chaque frappe, donc sans effet sur la saisie).
+      render(root);
     })
   );
 
