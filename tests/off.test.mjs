@@ -260,6 +260,23 @@ await testAsync('searchProductsByText() : résultats hors-sujet écartés — ne
   restoreFetch();
 });
 
+await testAsync('searchProductsByText() : un nombre isolé dans la saisie (quantité séparée par un espace) n\'empêche pas le filtre de fonctionner', async () => {
+  // Retour utilisateur : taper le titre exact « Pinsa 230g – Harrys – 230 g »
+  // (avec la quantité répétée, séparée par un espace) faisait exiger le mot
+  // isolé "230", absent de la fiche ("230g" y est collé) -> plus aucun
+  // produit ne matchait tout, y compris le bon -> repli sur liste complète.
+  mockFetchOnce(async () => jsonRes({
+    count: 2,
+    hits: [
+      { code: '1', product_name: 'Pinsa 230g', brands: 'Harrys', nutriments: {} },
+      { code: '2', product_name: 'Confiture de fraise', brands: 'Albert Ménès', nutriments: {} },
+    ],
+  }));
+  const res = await searchProductsByText({ name: 'Pinsa 230g – Harrys – 230 g', brand: '' });
+  check('le bon produit reste trouvé malgré le "230" isolé dans la saisie', res.status === 'ok' && res.results.length === 1 && res.results[0].code === '1');
+  restoreFetch();
+});
+
 await testAsync('searchProductsByText() : filtre « tous les mots » jamais trop strict — repli sur la liste complète si personne ne matche tout', async () => {
   // Si le resserrement ne garde aucun produit (mots répartis ailleurs que
   // nom/marque, orthographe différente…), mieux vaut montrer une liste trop

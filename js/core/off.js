@@ -164,9 +164,17 @@ function parseSearchResponse(json) {
  * sur d'autres champs que nom/marque, ou l'orthographe diffère), on retombe
  * sur la liste complète plutôt que de masquer un résultat que ce filtre,
  * volontairement simple, aurait raté à tort.
+ *
+ * Les nombres isolés (ex. « 230 » venant de « 230 g » séparé par un espace
+ * dans la saisie) sont exclus des mots exigés — repéré en usage réel : une
+ * quantité se découpe différemment selon qu'elle est collée (« 230g », tel
+ * qu'indexé par OFF) ou séparée par un espace (« 230 g », tel que tapé par
+ * l'utilisateur) ; les exiger comme un mot à part entière ne garde alors
+ * AUCUN produit — y compris le bon — et déclenche le repli sur la liste
+ * complète ci-dessus, ce qui défait tout le resserrement.
  */
 function filterRelevantProducts(products, terms) {
-  const words = normalizeWords(terms).trim().split(' ').filter((w) => w.length >= 2);
+  const words = normalizeWords(terms).trim().split(' ').filter((w) => w.length >= 2 && !/^\d+$/.test(w));
   if (!words.length) return products;
   return products.filter((p) => {
     const haystack = normalizeWords(
@@ -180,7 +188,17 @@ function filterRelevantProducts(products, terms) {
  * Recherche textuelle par nom et/ou marque (deux champs distincts, combinables).
  * @returns {Promise<{status:'ok', count, results:[{code,raw,draft}]} | {status:'no-results'} | {status:'error', error} | {status:'aborted'}>}
  */
-export async function searchProductsByText({ name = '', brand = '' } = {}, { signal, page = 1, pageSize = 20 } = {}) {
+// 100 (plutôt que les 20 d'origine) : confirmé en usage réel (retour
+// utilisateur) que le bon produit peut carrément être ABSENT des 20 premiers
+// résultats renvoyés par Search-a-licious pour une recherche à deux mots
+// (classement par défaut non confirmé — vraisemblablement la popularité du
+// produit, pas la pertinence texte, cf. commentaire de filterRelevantProducts()
+// ci-dessus) : resserrer côté client (filterRelevantProducts()) ne sert à
+// rien si le produit pertinent n'est même pas dans la page récupérée. Un seul
+// appel réseau dans tous les cas (page_size ne change pas le nombre de
+// requêtes, seulement leur taille) — sans impact sur la limite de 10
+// req/min publiée par OFF pour la recherche.
+export async function searchProductsByText({ name = '', brand = '' } = {}, { signal, page = 1, pageSize = 100 } = {}) {
   const terms = [name, brand].map((s) => String(s ?? '').trim()).filter(Boolean).join(' ');
   if (!terms) return { status: 'error', error: 'Indique un nom ou une marque.' };
   const params = new URLSearchParams({
