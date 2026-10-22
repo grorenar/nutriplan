@@ -150,59 +150,20 @@ function parseSearchResponse(json) {
 }
 
 /**
- * Champs qu'on peut restreindre explicitement (`champ:mot`) dans la requête
- * Search-a-licious SANS risque confirmé : `product_name` et `generic_name`
- * sont tous les deux de type `text_lang` dans la config réelle d'OFF
- * (openfoodfacts/search-a-licious, data/config/openfoodfacts.yml) — même
- * type, même traitement (sous-champs par langue générés automatiquement).
- *
- * `brands` en est volontairement EXCLU malgré `full_text_search: true` :
- * TESTÉ EN PRODUCTION (retour utilisateur) — l'inclure dans une clause
- * `brands:mot` explicite fait renvoyer une erreur 500 par
- * search.openfoodfacts.org, de façon apparemment intermittente (pas à
- * chaque requête). `brands` est le SEUL des trois champs d'un type
- * différent (`taxonomy`, indexé comme simple champ "keyword" sans sous-champ
- * de langue puisque `synonyms_strategy: "none"` dans cette config — confirmé
- * en lisant app/indexing.py/app/config.py) : le candidat le plus probable
- * pour expliquer un traitement différent côté serveur, même si le mécanisme
- * exact du 500 n'a pas pu être identifié avec certitude (ni reproduit : accès
- * direct à search.openfoodfacts.org bloqué depuis ce bac à sable). Un mot de
- * marque passe donc par la recherche libre non restreinte (dernier terme de
- * buildSearchQuery() ci-dessous) plutôt que par une clause `brands:` — cette
- * voie fonctionnait déjà, sans erreur, avant toute tentative de restriction
- * de champs.
- */
-const SEARCH_FIELD_SCOPED = ['product_name', 'generic_name'];
-
-/**
- * Construit une requête Search-a-licious au format Lucene : chaque mot doit
- * apparaître dans `product_name`, `generic_name`, OU n'importe quel champ en
- * recherche libre (non restreint — inclut `brands`, cf. SEARCH_FIELD_SCOPED
- * ci-dessus) ; tous les mots sont exigés (AND entre les groupes). Syntaxe
- * confirmée en lisant la documentation officielle (Query Language Guide,
- * openfoodfacts/search-a-licious) et le moteur de requête (app/query.py —
- * parseur Lucene `luqum`, `default_operator = MUST`).
- *
- * Chaque mot est déjà passé par normalizeWords() (lettres/chiffres
- * uniquement) avant d'arriver ici : aucun caractère spécial Lucene
- * (parenthèses, deux-points, guillemets…) ne peut donc s'y glisser.
- */
-function buildSearchQuery(words) {
-  return words
-    .map((w) => `(${SEARCH_FIELD_SCOPED.map((f) => `${f}:${w}`).join(' OR ')} OR ${w})`)
-    .join(' AND ');
-}
-
-/**
- * Filet de sécurité côté client, en complément de buildSearchQuery()
- * ci-dessus : si jamais le comportement réel de l'instance OFF en
- * production diverge de ce que documentation/code source laissent attendre
- * (déjà arrivé deux fois dans ce fichier, cf. historique), on ne fait jamais
- * confiance aveuglément à ce que le serveur renvoie comme pertinent — on
- * revérifie que nom/marque contiennent bien tous les mots tapés. Jamais une
- * liste totalement vide pour autant : si ce resserrement n'en garde aucun,
- * on retombe sur la liste complète plutôt que de masquer un résultat que ce
- * filtre, volontairement simple, aurait raté à tort.
+ * Search-a-licious peut renvoyer des produits ne correspondant qu'à UN SEUL
+ * des mots cherchés (voire indirectement, via un autre champ indexé que le
+ * nom/la marque), sans qu'un paramètre de tri par pertinence texte ait pu
+ * être confirmé (cf. commentaire d'en-tête : schéma/API non vérifiables avec
+ * certitude depuis ce bac à sable). Repéré en usage réel (retour
+ * utilisateur) : « pinsa harrys » renvoyait une vingtaine de résultats
+ * hétéroclites, quand le site OFF lui-même, sur la même recherche, n'en
+ * affiche qu'un seul. On resserre donc côté client en ne gardant que les
+ * produits dont le nom OU la marque contiennent TOUS les mots tapés
+ * (recherche « ET », jamais « OU ») — jamais une liste totalement vide pour
+ * autant : si ce resserrement n'en garde aucun (ex. les mots sont répartis
+ * sur d'autres champs que nom/marque, ou l'orthographe diffère), on retombe
+ * sur la liste complète plutôt que de masquer un résultat que ce filtre,
+ * volontairement simple, aurait raté à tort.
  *
  * Les nombres isolés (ex. « 230 » venant de « 230 g » séparé par un espace
  * dans la saisie) sont exclus des mots exigés — repéré en usage réel : une
@@ -212,7 +173,8 @@ function buildSearchQuery(words) {
  * AUCUN produit — y compris le bon — et déclenche le repli sur la liste
  * complète ci-dessus, ce qui défait tout le resserrement.
  */
-function filterRelevantProducts(products, words) {
+function filterRelevantProducts(products, terms) {
+  const words = normalizeWords(terms).trim().split(' ').filter((w) => w.length >= 2 && !/^\d+$/.test(w));
   if (!words.length) return products;
   return products.filter((p) => {
     const haystack = normalizeWords(
@@ -225,19 +187,43 @@ function filterRelevantProducts(products, words) {
 /**
  * Recherche textuelle par nom et/ou marque (deux champs distincts, combinables).
  * @returns {Promise<{status:'ok', count, results:[{code,raw,draft}]} | {status:'no-results'} | {status:'error', error} | {status:'aborted'}>}
+ *
+ * NE PAS utiliser de syntaxe Lucene avancée dans `q` (parenthèses, AND/OR,
+ * `champ:valeur`...) — DEUX tentatives différentes, toutes deux confirmées
+ * valides en lisant la documentation et le code source du projet
+ * (openfoodfacts/search-a-licious sur GitHub, accessible depuis ce bac à
+ * sable contrairement aux domaines OFF eux-mêmes), ont chacune provoqué une
+ * erreur 500 bien réelle en production (confirmée via la console du
+ * navigateur par l'utilisateur, pas une supposition) :
+ *   1. `(product_name:x OR brands:x OR generic_name:x) AND (...)` — tous
+ *      les champs du full text restreints explicitement.
+ *   2. `(product_name:x OR generic_name:x OR x) AND (...)` — seconde
+ *      tentative, `brands` explicitement RETIRÉ (hypothèse : type de champ
+ *      `taxonomy` différent des deux autres, `text_lang`) — ÉCHEC IDENTIQUE,
+ *      ce qui élimine `brands` comme cause et pointe plutôt vers la syntaxe
+ *      Lucene elle-même (parenthèses/AND/OR/`champ:`), non supportée par
+ *      l'instance réellement déployée malgré ce qu'en dit le dépôt `main`
+ *      (version différente ? configuration différente ? jamais vérifiable
+ *      avec certitude sans accès direct à search.openfoodfacts.org, bloqué
+ *      depuis ce bac à sable). `q` reste donc des termes bruts, sans aucune
+ *      syntaxe de requête structurée — seule forme confirmée fonctionner en
+ *      production à ce jour.
  */
 // 100 (plutôt que les 20 d'origine) : confirmé en usage réel (retour
-// utilisateur) que le bon produit peut être absent même d'une page de
-// résultats généreuse si sa fiche OFF est incomplète. Un seul appel réseau
-// dans tous les cas (page_size ne change pas le nombre de requêtes,
-// seulement leur taille) — sans impact sur la limite de 10 req/min publiée
-// par OFF pour la recherche.
+// utilisateur) que le bon produit peut carrément être ABSENT des 20 premiers
+// résultats renvoyés par Search-a-licious pour une recherche à deux mots
+// (classement par défaut non confirmé — vraisemblablement la popularité du
+// produit, pas la pertinence texte, cf. commentaire de filterRelevantProducts()
+// ci-dessus) : resserrer côté client (filterRelevantProducts()) ne sert à
+// rien si le produit pertinent n'est même pas dans la page récupérée. Un seul
+// appel réseau dans tous les cas (page_size ne change pas le nombre de
+// requêtes, seulement leur taille) — sans impact sur la limite de 10
+// req/min publiée par OFF pour la recherche.
 export async function searchProductsByText({ name = '', brand = '' } = {}, { signal, page = 1, pageSize = 100 } = {}) {
   const terms = [name, brand].map((s) => String(s ?? '').trim()).filter(Boolean).join(' ');
   if (!terms) return { status: 'error', error: 'Indique un nom ou une marque.' };
-  const words = normalizeWords(terms).trim().split(' ').filter((w) => w.length >= 2 && !/^\d+$/.test(w));
   const params = new URLSearchParams({
-    q: words.length ? buildSearchQuery(words) : terms,
+    q: terms,
     page: String(page),
     page_size: String(pageSize),
     langs: 'fr',
@@ -247,7 +233,7 @@ export async function searchProductsByText({ name = '', brand = '' } = {}, { sig
   if (!res.ok) return { status: 'error', error: res.error };
   const { products, count } = parseSearchResponse(res.json);
   if (!products.length) return { status: 'no-results', count: 0, results: [] };
-  const relevant = filterRelevantProducts(products, words);
+  const relevant = filterRelevantProducts(products, terms);
   const kept = relevant.length ? relevant : products;
   return {
     status: 'ok',
