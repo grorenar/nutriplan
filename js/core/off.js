@@ -71,6 +71,17 @@ const PRODUCT_FIELDS = [
   'image_front_url', 'image_front_small_url', 'image_url', 'url',
   'nutriments', 'nutriscore_grade', 'nova_group', 'ecoscore_grade',
   'ingredients_text', 'ingredients_text_fr', 'allergens_tags', 'traces_tags',
+  // preparation/preparation_fr : champ texte libre OFF (section "Autres
+  // informations" d'une fiche produit) — même convention de suffixe de
+  // langue que conservation_conditions/ingredients_text, confirmée en
+  // lisant le code source d'openfoodfacts-server (lib/ProductOpener/
+  // Config_opff.pm, qui liste "preparation" aux côtés de
+  // "conservation_conditions" parmi les champs texte par langue — accès
+  // direct à la documentation API officielle non confirmable depuis ce bac
+  // à sable, FIXME/incomplète sur ce champ précis). Retour utilisateur :
+  // reprendre ce texte (quand il existe) dans le champ Préparation
+  // (instructions) de la fiche Nutriplan, jamais recalculé ni résumé.
+  'preparation', 'preparation_fr',
 ].join(',');
 
 /**
@@ -335,6 +346,15 @@ export function mapOffProductToFoodDraft(p, code) {
     ecoScore: p.ecoscore_grade ? String(p.ecoscore_grade).toLowerCase() : null,
     ingredientsText: p.ingredients_text_fr?.trim() || p.ingredients_text?.trim() || null,
     allergensText: allergens.length ? allergens.join(', ') : null,
+    // instructions : SEUL champ OFF texte libre encore repris sur la fiche
+    // persistée (contrairement à ingredientsText/allergensText ci-dessus,
+    // uniquement affichés sur la carte de résultat de recherche) — un champ
+    // "Préparation" existe déjà côté Nutriplan (retour utilisateur) et ce
+    // texte OFF, quand il existe, y a sa place telle quelle : jamais résumée
+    // ni reformulée, et seulement si non vide (sinon le champ existant,
+    // éventuellement déjà saisi à la main, n'est jamais écrasé par du vide —
+    // cf. applyOffDraft()/OFF_DRAFT_FIELDS, foods.js : `key in draft`).
+    instructions: p.preparation_fr?.trim() || p.preparation?.trim() || null,
     imageUrl: p.image_front_url || p.image_url || null,
     imageThumbUrl: p.image_front_small_url || null,
     offUrl: p.url || (code ? `https://world.openfoodfacts.org/product/${code}` : null),

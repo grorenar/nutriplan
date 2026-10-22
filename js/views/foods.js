@@ -811,7 +811,7 @@ const runTextSearchDebounced = debounce((root) => runTextSearch(root), 500);
 // de recherche (offResultCard()) pour identifier le bon produit, mais ces
 // champs-là n'existent plus sur un aliment enregistré (retour utilisateur) :
 // jamais copiés dans le formulaire, pour ne pas les faire réapparaître.
-const OFF_DRAFT_FIELDS = ['barcode', 'name', 'category', 'brand', 'kcal', 'protein', 'carbs', 'fat', 'fiber', 'packageWeight'];
+const OFF_DRAFT_FIELDS = ['barcode', 'name', 'category', 'brand', 'kcal', 'protein', 'carbs', 'fat', 'fiber', 'packageWeight', 'instructions'];
 
 /**
  * Préremplit le formulaire avec un produit OFF choisi explicitement. Si le

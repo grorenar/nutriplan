@@ -126,6 +126,19 @@ test('mapOffProductToFoodDraft() : indicateurs complémentaires (Nutri-Score, NO
   check('allergènes ET traces combinés, préfixe de langue retiré', d.allergensText === 'milk, gluten');
 });
 
+test('mapOffProductToFoodDraft() : préparation OFF reprise telle quelle dans "instructions" (retour utilisateur)', () => {
+  const d1 = mapOffProductToFoodDraft({
+    nutriments: {},
+    preparation: 'Bake at 220°C.',
+    preparation_fr: 'Enfourner 5 minutes à 220°, chaleur tournante.',
+  }, '1');
+  check('version française privilégiée quand disponible', d1.instructions === 'Enfourner 5 minutes à 220°, chaleur tournante.');
+  const d2 = mapOffProductToFoodDraft({ nutriments: {}, preparation: 'Bake at 220°C.' }, '2');
+  check('repli sur la version non traduite si pas de version française', d2.instructions === 'Bake at 220°C.');
+  const d3 = mapOffProductToFoodDraft({ nutriments: {} }, '3');
+  check('absente de la fiche OFF -> null, jamais une chaîne vide inventée', d3.instructions === null);
+});
+
 test('mapOffProductToFoodDraft() : category déduite via suggestCategoryFromOff() quand la correspondance est fiable', () => {
   const d = mapOffProductToFoodDraft({ nutriments: {}, categories_tags: ['en:yogurts', 'en:dairies'] }, '1');
   check('catégorie Nutriplan correctement déduite (laitier)', d.category === 'laitier');
