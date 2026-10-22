@@ -64,7 +64,7 @@ export async function render(root) {
       </div>
     </div>
 
-    <div class="grid grid--2" style="margin-top:14px">
+    <div class="grid grid--2" style="margin-top:14px;align-items:start">
       <div class="card">
         <div class="card__head"><h2>📅 Cycle</h2><p>Durée du cycle de repas et budget de courses associé.</p></div>
         <div class="grid grid--3">
@@ -87,7 +87,7 @@ export async function render(root) {
       </div>
     </div>
 
-    <div class="grid grid--2" style="margin-top:14px">
+    <div class="grid grid--2" style="margin-top:14px;align-items:start">
       <div class="card">
         <div class="card__head"><h2>🗂️ Données</h2><p>Sauvegarde portable et actions sensibles sur le cycle en cours.</p></div>
         <div class="row">

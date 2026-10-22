@@ -267,6 +267,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: var(--shadow-card);
 }
 .card + .card { margin-top: 14px; }
+/* Dans une grille (ex. tuiles Paramètres), l'espacement vient déjà de
+   .grid { gap }, jamais de cet empilement vertical — sinon la 2e carte
+   d'une rangée démarre plus bas que la 1re. */
+.grid > .card + .card { margin-top: 0; }
 .card__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin-bottom: 14px; }
 .card__head > h2, .card__head > h3 { flex: 1; }
 /* Un sous-titre (<p>) passe toujours sur sa propre ligne, sous le titre —
@@ -581,22 +585,27 @@ tbody tr:hover td { background: var(--surface-alt); }
 
 /* Objectifs de macros par repas (Paramètres) : un tableau compact par
    personne, une ligne par repas — plus sobre en espace que les anciennes
-   grandes cartes à champs nus (retour utilisateur). */
+   grandes cartes à champs nus (retour utilisateur), mais occupant bien
+   toute la largeur de la carte (mock-up fourni) : colonnes proportionnelles
+   (table-layout: fixed) plutôt qu'au plus juste du contenu. min-width +
+   .target-table-wrap en overflow-x permettent un vrai défilement horizontal
+   plutôt qu'un écrasement illisible sur petit écran. */
 .target-table-wrap { overflow-x: auto; margin-bottom: 10px; }
-/* min-width empêche les colonnes de s'écraser sous les saisies sur petit
-   écran (retour utilisateur) : sous ce seuil, .target-table-wrap défile
-   horizontalement plutôt que de comprimer les champs jusqu'à l'illisible. */
-.target-table { width: 100%; min-width: 460px; border-collapse: collapse; }
-.target-table th, .target-table td { padding: 5px 6px; }
+.target-table { width: 100%; min-width: 480px; table-layout: fixed; border-collapse: collapse; }
+.target-table th, .target-table td { padding: 6px 8px; }
 .target-table th { font-size: var(--fs-xs); font-weight: 700; text-align: center; white-space: nowrap; }
-.target-table th:first-child { text-align: left; }
+.target-table th:first-child, .target-table td:first-child { text-align: left; width: 30%; }
 .target-table td:not(:first-child) { text-align: center; }
 .target-table tbody tr { border-top: 1px solid var(--line); }
 .target-table__row-label { font-weight: 600; font-size: var(--fs-sm); white-space: nowrap; }
 .target-table__row--total { font-weight: 800; background: var(--brand-50); }
 .target-table__row--total td { border-top: 2px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
 .target-table__total-value { font-variant-numeric: tabular-nums; }
-.target-input { width: 56px; padding: 4px 5px; text-align: center; font-variant-numeric: tabular-nums; }
+input.target-input { width: 82%; max-width: 110px; min-height: 36px; padding: 6px 8px; text-align: center; font-variant-numeric: tabular-nums; }
+/* Masque les flèches natives du spinner number : avec un texte centré, leur
+   présence asymétrique (toujours à droite) recasse visuellement le centrage. */
+input.target-input::-webkit-outer-spin-button, input.target-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input.target-input { -moz-appearance: textfield; }
 
 .person-band { border-left: 3px solid var(--line-strong); padding-left: 10px; }
 .person-band--thomas { border-color: var(--thomas); }
