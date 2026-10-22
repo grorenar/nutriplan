@@ -782,11 +782,21 @@ function pickerResults(state) {
     })
     .join('')}</div>`;
 
+  // Retour utilisateur : les boutons pleine largeur « ‹ Page précédente / Page
+  // suivante › » encadrant un texte qui passait à la ligne (panneau de
+  // recherche étroit) donnaient un pavé qui retombait sur deux lignes
+  // disgracieuses. Remplacé par deux boutons ronds compacts (chevrons) de
+  // part et d'autre d'un repère de page centré sur deux lignes COURTES (le
+  // numéro, puis le total en petit) — tient sur une seule ligne quelle que
+  // soit la largeur du panneau.
   const pager = totalPages > 1
     ? `<div class="picker__pager">
-        <button type="button" class="btn btn--sm" data-picker-page="prev" ${pickerPage === 0 ? 'disabled' : ''}>‹ Page précédente</button>
-        <span class="muted">Page ${pickerPage + 1} / ${totalPages} (${total} aliments)</span>
-        <button type="button" class="btn btn--sm" data-picker-page="next" ${pickerPage >= totalPages - 1 ? 'disabled' : ''}>Page suivante ›</button>
+        <button type="button" class="picker__pager-btn" data-picker-page="prev" ${pickerPage === 0 ? 'disabled' : ''} aria-label="Page précédente">‹</button>
+        <span class="picker__pager-info">
+          <strong>Page ${pickerPage + 1} / ${totalPages}</strong>
+          <small>${total} aliments</small>
+        </span>
+        <button type="button" class="picker__pager-btn" data-picker-page="next" ${pickerPage >= totalPages - 1 ? 'disabled' : ''} aria-label="Page suivante">›</button>
       </div>`
     : '';
 

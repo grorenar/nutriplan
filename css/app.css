@@ -1004,7 +1004,36 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .picker__results button:hover { background: var(--brand-50); }
 .picker__results .cat { font-size: var(--fs-xs); color: var(--ink-soft); }
-.picker__pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+/* Pagination de la grille de résultats (editor.js::pickerResults()) :
+   chevrons ronds compacts de part et d'autre d'un repère de page centré,
+   toujours sur une seule ligne même dans le panneau de recherche étroit du
+   composeur (retour utilisateur — l'ancien pavé « ‹ Page précédente /
+   Page suivante › » retombait sur deux lignes disgracieuses). */
+.picker__pager {
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+/* Spécificité : `.picker__pager .picker__pager-btn` (deux classes) doit
+   l'emporter sur l'ancienne règle `.picker__results button` (une classe +
+   un type, cf. plus haut) dont le pager hérite en tant que descendant —
+   sinon ces boutons ronds redeviennent `display:block;width:100%` comme un
+   bouton de liste, invisible dans son propre conteneur flex. */
+.picker__pager .picker__pager-btn {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  border: 1px solid var(--line-strong); background: #fff; color: var(--ink);
+  font-size: 18px; font-weight: 700; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0; margin: 0;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease;
+}
+.picker__pager .picker__pager-btn:hover:not(:disabled) { background: var(--brand-50); border-color: var(--brand-400); color: var(--brand-700); }
+.picker__pager .picker__pager-btn:disabled { opacity: .35; cursor: default; }
+.picker__pager-info {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  min-width: 110px; text-align: center;
+}
+.picker__pager-info strong { font-size: var(--fs-xs); font-weight: 700; }
+.picker__pager-info small { font-size: 10px; font-weight: 600; color: var(--ink-soft); }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip {
