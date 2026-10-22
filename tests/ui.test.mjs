@@ -3295,8 +3295,87 @@ type($('[data-off-barcode]'), '1234567890123');
   check('bouton de repli vers la saisie manuelle proposé', !!$('[data-scanner-manual]'));
   click($('[data-scanner-manual]'));
   await wait();
-  check('scanner refermé, retour au panneau OFF', !$('[data-scanner-backdrop]') && !!$('[data-off-barcode]'));
-  check('la saisie déjà en cours dans le panneau OFF n’a pas été perdue', $('[data-off-barcode]').value === '1234567890123');
+  // Retour utilisateur : ce bouton se contentait de refermer le panneau sans
+  // rien proposer d'autre ("ça ferme sans suite") -- un vrai champ de saisie
+  // doit maintenant apparaître, menant à la même suite qu'une lecture caméra.
+  check('scanner toujours ouvert, mais avec un champ de saisie manuelle', !!$('[data-scanner-backdrop]') && !!$('[data-scanner-manual-input]'));
+  check('bouton Valider désactivé tant que rien n’est saisi', $('[data-scanner-manual-submit]').disabled);
+  type($('[data-scanner-manual-input]'), '9999999999999');
+  await wait();
+  check('bouton Valider actif une fois un code saisi', !$('[data-scanner-manual-submit]').disabled);
+  globalThis.fetch = async () => jsonRes({ status: 0, code: '9999999999999', status_verbose: 'product not found' });
+  click($('[data-scanner-manual-submit]'));
+  await wait();
+  globalThis.fetch = realFetch;
+  check('scanner refermé après validation, retour au panneau OFF', !$('[data-scanner-backdrop]') && !!$('[data-off-barcode]'));
+  // [data-off-barcode] lui-même n'est volontairement jamais ré-affiché par
+  // renderOffStatus() (évite la perte de focus pendant une frappe, cf. son
+  // commentaire) : c'est la zone de statut qui prouve que le code tapé à la
+  // main a bien été utilisé pour la recherche (même suite qu'un scan caméra).
+  check('le code tapé à la main a bien déclenché la recherche OFF (résultat "non trouvé" du mock)', /Aucun produit trouvé/.test($('#off-status').textContent));
+  scannerLib.__setTestLib(null);
+}
+click($('[data-form-cancel]'));
+await wait();
+
+console.log('\n— Permutation d’un aliment existant : scanner un nouveau code-barres change son identité SANS changer son id (retour utilisateur)');
+click($('[data-edit="' + createdOff.id + '"]'));
+await wait();
+check('bouton de permutation proposé sur la fiche d’édition', !!$('[data-swap-scan]'));
+{
+  const { lib } = makeFakeScannerLib({
+    onStart: () => { const e = new Error('refusé'); e.name = 'NotAllowedError'; throw e; },
+  });
+  scannerLib.__setTestLib(lib);
+  click($('[data-swap-scan]'));
+  await wait();
+  click($('[data-scanner-manual]'));
+  await wait();
+  type($('[data-scanner-manual-input]'), '4444444444444');
+  await wait();
+  globalThis.fetch = async () => jsonRes({
+    status: 1, code: '4444444444444',
+    product: {
+      product_name_fr: 'Pâte à tartiner NOUVELLE', brands: 'NouvelleMarque',
+      nutriments: { 'energy-kcal_100g': 400, proteins_100g: 5, carbohydrates_100g: 40, fat_100g: 20 },
+    },
+  });
+  click($('[data-scanner-manual-submit]'));
+  await wait();
+  globalThis.fetch = realFetch;
+  check('nom remplacé par celui du nouveau produit scanné', $('[data-f="name"]').value === 'Pâte à tartiner NOUVELLE');
+  check('marque remplacée', $('[data-f="brand"]').value === 'NouvelleMarque');
+  check('code-barres remplacé', $('[data-f="barcode"]').value === '4444444444444');
+  check('macros remplacées', Number($('[data-f="kcal"]').value) === 400);
+  click($('[data-save]'));
+  await wait();
+  const afterSwap = store.getState().foods.find((f) => f.id === createdOff.id);
+  check('même id après enregistrement — recettes/repas qui l’utilisaient héritent de la permutation sans rien resaisir', !!afterSwap);
+  check('les nouvelles valeurs sont bien persistées sur CETTE fiche (pas un doublon créé)', afterSwap.name === 'Pâte à tartiner NOUVELLE' && afterSwap.barcode === '4444444444444');
+  check('un seul aliment au total pour ce code-barres (pas de doublon)', store.getState().foods.filter((f) => f.barcode === '4444444444444').length === 1);
+  scannerLib.__setTestLib(null);
+}
+
+console.log('\n— Permutation : code-barres déjà utilisé par un AUTRE aliment -> refusée, jamais deux fiches avec le même code');
+click($('[data-edit="' + createdOff.id + '"]'));
+await wait();
+{
+  const other = store.getState().foods.find((f) => f.barcode && f.barcode !== '4444444444444' && f.id !== createdOff.id);
+  const { lib } = makeFakeScannerLib({
+    onStart: () => { const e = new Error('refusé'); e.name = 'NotAllowedError'; throw e; },
+  });
+  scannerLib.__setTestLib(lib);
+  click($('[data-swap-scan]'));
+  await wait();
+  click($('[data-scanner-manual]'));
+  await wait();
+  type($('[data-scanner-manual-input]'), other.barcode);
+  await wait();
+  const nameBefore = $('[data-f="name"]').value;
+  click($('[data-scanner-manual-submit]'));
+  await wait();
+  check('permutation refusée (code déjà pris par un autre aliment), rien n’a changé sur le formulaire', $('[data-f="name"]').value === nameBefore);
+  check('message d’erreur explicite', new RegExp(other.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(lastToastText()));
   scannerLib.__setTestLib(null);
 }
 click($('[data-form-cancel]'));
@@ -3669,6 +3748,19 @@ console.log('\n— Chantier recherche catalogue par code-barres : éditeur de re
   check('une erreur caméra ne produit jamais la pop-up « aucun résultat catalogue » (la recherche n’a même pas commencé)',
     !$('[data-action-confirm]') && !/Aucun aliment avec ce code-barres/.test($('#drawer').textContent));
   click($('[data-scanner-manual]'));
+  await wait();
+  // Retour utilisateur (planning) : ce bouton refermait le panneau sans rien
+  // proposer ("ça ferme sans suite") -- vérifie que la saisie manuelle mène
+  // bien à la MÊME suite qu'un code lu caméra (handleBarcodeDetected()),
+  // jamais un second parcours distinct selon la source du code.
+  check('champ de saisie manuelle proposé plutôt qu’une fermeture immédiate', !!$('[data-scanner-manual-input]'));
+  type($('[data-scanner-manual-input]'), '8888888888888');
+  await wait();
+  click($('[data-scanner-manual-submit]'));
+  await wait();
+  check('scanner refermé après validation', !$('[data-scanner-backdrop]'));
+  check('code inconnu -> pop-up de création proposée (même suite qu’un code lu caméra, pas un silence)', !!$('[data-action-confirm]'));
+  click($('[data-action-cancel]'));
   await wait();
   scannerLib.__setTestLib(null);
 }

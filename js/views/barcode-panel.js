@@ -54,6 +54,19 @@ export function openScannerPanel(onDetected) {
   runScan();
 }
 
+/**
+ * Termine le scanner avec un code, qu'il vienne d'une lecture caméra
+ * réussie (runScan()) ou d'une saisie manuelle (wireScannerChrome()) —
+ * MÊME suite dans les deux cas : panneau refermé puis callback appelé,
+ * jamais de logique dupliquée selon la source du code.
+ */
+function finishWithCode(code) {
+  if (!scanner) return;
+  const callback = onDetectedCallback;
+  closeScannerPanel();
+  callback?.(code);
+}
+
 /** Referme le panneau et coupe la caméra, sans rien faire d'autre (l'écran/tiroir en dessous reste intact). */
 export function closeScannerPanel() {
   scanner?.controls?.stop();
@@ -95,9 +108,7 @@ async function runScan(deviceId) {
     deviceId,
     onDetected: (code) => {
       if (!scanner) return; // panneau déjà refermé (rare, détection juste avant la fermeture)
-      const callback = onDetectedCallback;
-      closeScannerPanel(); // caméra coupée ET panneau retiré AVANT d'appeler l'appelant
-      callback?.(code);
+      finishWithCode(code); // caméra coupée ET panneau retiré AVANT d'appeler l'appelant
     },
     onError: (message) => {
       if (!scanner) return;
@@ -215,6 +226,19 @@ function scannerChromeHtml() {
         <button class="btn btn--sm btn--ghost" data-scanner-manual type="button">Saisie manuelle</button>
       </div>
     </div>`);
+  } else if (s.status === 'manual') {
+    // Même suite qu'une lecture caméra réussie (finishWithCode()) — un code
+    // tapé à la main est tout aussi valable qu'un code lu par la caméra,
+    // jamais un second parcours différent côté appelant.
+    parts.push(`<div class="card">
+      <label class="field">Code-barres
+        <input type="text" inputmode="numeric" pattern="[0-9]*" data-scanner-manual-input placeholder="Ex. 3017620422003" autofocus>
+      </label>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn--sm btn--primary" data-scanner-manual-submit type="button" disabled>Valider</button>
+        <button class="btn btn--sm btn--ghost" data-scanner-manual-cancel type="button">Annuler</button>
+      </div>
+    </div>`);
   } else {
     parts.push(`<p class="muted">Positionne le code-barres dans le cadre — la lecture est automatique.</p>`);
   }
@@ -252,7 +276,24 @@ function wireScanner() {
 function wireScannerChrome() {
   if (!scanner) return;
   document.querySelector('[data-scanner-retry]')?.addEventListener('click', () => runScan(scanner.activeDeviceId || undefined));
-  document.querySelector('[data-scanner-manual]')?.addEventListener('click', () => closeScannerPanel());
+  document.querySelector('[data-scanner-manual]')?.addEventListener('click', () => {
+    scanner.controls?.stop(); // la caméra reste potentiellement en erreur derrière : coupée explicitement, jamais laissée active sans flux affiché
+    scanner.controls = null;
+    scanner.status = 'manual';
+    renderScannerChrome();
+  });
+  const manualInput = document.querySelector('[data-scanner-manual-input]');
+  const manualSubmitBtn = document.querySelector('[data-scanner-manual-submit]');
+  const submitManual = () => {
+    const code = (manualInput?.value || '').replace(/[^0-9]/g, '');
+    if (code) finishWithCode(code);
+  };
+  manualInput?.addEventListener('input', () => {
+    if (manualSubmitBtn) manualSubmitBtn.disabled = !manualInput.value.replace(/[^0-9]/g, '');
+  });
+  manualInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitManual(); });
+  document.querySelector('[data-scanner-manual-submit]')?.addEventListener('click', submitManual);
+  document.querySelector('[data-scanner-manual-cancel]')?.addEventListener('click', () => runScan(scanner.activeDeviceId || undefined));
   document.querySelector('[data-scanner-camera]')?.addEventListener('change', (e) => runScan(e.target.value));
   document.querySelector('[data-scanner-torch]')?.addEventListener('click', async () => {
     if (!scanner?.controls) return;

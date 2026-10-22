@@ -18,7 +18,12 @@ import { clamp } from './util.js';
 export const CATEGORIES = [
   { id: 'proteine', label: 'Protéine', icon: '🍗' },
   { id: 'feculent', label: 'Féculent', icon: '🌾' },
-  { id: 'legumineuse', label: 'Légumineuse', icon: '🫘' },
+  // 🍲 plutôt que 🫘 (haricots) : ce dernier (Unicode 14.0, 2021) s'affiche
+  // en carré vide ("tofu") sur les systèmes dont la police d'émojis n'a pas
+  // encore ce glyphe (retour utilisateur) -- 🍲 (Unicode 6.0, 2010) est
+  // universellement pris en charge, et reste un rappel visuel raisonnable
+  // (légumineuses en plat mijoté/soupe).
+  { id: 'legumineuse', label: 'Légumineuse', icon: '🍲' },
   { id: 'legume', label: 'Légume', icon: '🥦' },
   { id: 'fruit', label: 'Fruit', icon: '🍎' },
   { id: 'laitier', label: 'Produit laitier', icon: '🧀' },

@@ -327,7 +327,11 @@ const blank = () => ({
   kcal: 0, protein: 0, carbs: 0, fat: 0, fiber: 0,
   referenceState: 'pret', cookedFactor: 1, unitName: '', gramsPerUnit: 0,
   fractionable: true, unitEntry: false, price: null, packageWeight: null,
-  batchAllowed: false, shelfLifeDays: null, requiresCooking: false, favorite: false, lastUsed: null,
+  // true par défaut (retour utilisateur) : la plupart des aliments créés le
+  // sont, decocher au cas par cas coûte moins cher que de devoir y penser à
+  // chaque création -- ne change rien aux aliments déjà enregistrés (lu tel
+  // quel depuis le stockage, jamais réinitialisé par ce défaut).
+  batchAllowed: true, shelfLifeDays: null, requiresCooking: false, favorite: false, lastUsed: null,
   cookingMethod: '', cookingTemp: null, cookingTime: null, prepTime: null, equipment: '', instructions: '',
   // Code-barres (cf. normalizeFood(), store.js) — null tant que rien n'a été
   // récupéré ou saisi, jamais 0 ou ''. Les autres champs Open Food Facts
@@ -455,6 +459,9 @@ function formPanel(s) {
 /** Contenu de .drawer__body pour la MODIFICATION d'une fiche existante — toutes les sections à la suite, jamais d'étapes (réutilisé tel quel par refreshOpenForm()). */
 function formBodyHtml(f) {
   return `${generalFieldsHtml(f)}
+        ${isScannerSupported() ? `<div class="row" style="margin:-10px 0 16px">
+          <button class="btn btn--sm btn--ghost" data-swap-scan type="button">🔄 Permuter via un nouveau code-barres</button>
+        </div>` : ''}
         ${nutritionFieldsHtml(f)}
         ${unitsFieldsHtml(f)}
         ${purchaseFieldsHtml(f)}
@@ -682,6 +689,47 @@ function openScanner(root) {
   });
 }
 
+/**
+ * Permutation d'un aliment existant (retour utilisateur) : remplace son
+ * identité (nom/marque/catégorie/macros/code-barres/préparation) par celle
+ * d'un autre produit scanné, SANS changer son id — toute recette/repas qui
+ * l'utilise hérite donc automatiquement des nouvelles valeurs, sans rien
+ * resaisir ailleurs. N'écrase QUE les champs sourcés depuis OFF
+ * (OFF_DRAFT_FIELDS, même sous-ensemble que la sélection d'un produit à la
+ * création) : prix, batch cooking, état de référence, cuisson… restent
+ * ceux déjà renseignés, une permutation de marque ne change pas la façon
+ * dont on le prépare ou le stocke.
+ *
+ * Comme pour applyOffDraft() : jamais appliqué silencieusement au store,
+ * seulement au brouillon (formDraft) déjà visible à l'écran — la
+ * permutation reste modifiable, et seul un « Enregistrer » explicite la
+ * persiste réellement.
+ */
+function openSwapScanner(root) {
+  if (!editing || editing === 'new') return;
+  const currentId = editing;
+  openScannerPanel(async (rawCode) => {
+    const code = normalizeBarcode(rawCode);
+    if (!code) { toast('Code-barres illisible, réessaie.', 'error'); return; }
+    const other = foodByBarcode(code);
+    if (other && other.id !== currentId) {
+      toast(`Ce code-barres correspond déjà à « ${other.name} » dans ta banque — impossible de l'utiliser aussi ici.`, 'error');
+      return;
+    }
+    toast('Recherche du produit sur Open Food Facts…');
+    const res = await fetchProductByBarcode(code);
+    if (editing !== currentId) return; // fiche refermée/changée pendant la recherche
+    if (res.status === 'not-found') { toast('Aucun produit trouvé pour ce code-barres sur Open Food Facts.', 'error'); return; }
+    if (res.status !== 'found') { toast(res.error || 'Recherche impossible.', 'error'); return; }
+    const picked = {};
+    for (const key of OFF_DRAFT_FIELDS) if (key in res.draft) picked[key] = res.draft[key];
+    const base = formDraft || getState().foods.find((x) => x.id === currentId);
+    formDraft = { ...base, ...picked, id: currentId };
+    toast('Aliment permuté avec la fiche Open Food Facts — vérifie les valeurs avant d\'enregistrer');
+    render(root);
+  });
+}
+
 function offSearchStatusHtml(o) {
   if (o.status === 'loading') return `<p class="muted">Recherche en cours…</p>`;
   if (o.status === 'error') {
@@ -712,7 +760,8 @@ function offResultCard({ code, draft }, { standalone }) {
     draft.kcal !== null ? `${num(draft.kcal, 0)} kcal` : '',
     macro('P', draft.protein), macro('G', draft.carbs), macro('L', draft.fat),
   ].filter(Boolean).join(' · ');
-  return `<div class="card" style="margin-bottom:${standalone ? 0 : '10px'}">
+  return `<div class="card" style="margin-bottom:${standalone ? 0 : '10px'}${existing ? ';border-color:#ecd7ae' : ''}">
+    ${existing ? `<div class="pill pill--warn pill--wrap" style="margin-bottom:10px">⚠️ Déjà dans ta banque : « ${esc(existing.name)} »</div>` : ''}
     <div class="row" style="align-items:flex-start">
       ${draft.imageThumbUrl ? `<img src="${esc(draft.imageThumbUrl)}" alt="" style="width:56px;height:56px;object-fit:contain;border-radius:var(--radius-sm,6px);background:#fff" loading="lazy">` : ''}
       <div style="flex:1;min-width:0">
@@ -726,9 +775,8 @@ function offResultCard({ code, draft }, { standalone }) {
     ${
       existing
         ? `<div class="row" style="margin-top:8px;flex-wrap:wrap">
-             <small style="flex:1;min-width:100%">Déjà dans ta banque : « ${esc(existing.name)} ».</small>
              <button class="btn btn--sm btn--primary" data-off-open-existing="${esc(existing.id)}">Ouvrir cette fiche</button>
-             <button class="btn btn--sm btn--ghost" data-off-use="${esc(code)}">Utiliser quand même</button>
+             <button class="btn btn--sm btn--ghost" data-off-use="${esc(code)}">Créer quand même un doublon</button>
            </div>`
         : `<div class="row" style="margin-top:8px"><button class="btn btn--sm btn--primary" data-off-use="${esc(code)}">Utiliser ce produit</button></div>`
     }
@@ -1325,6 +1373,8 @@ function wireDrawerBody(root) {
     toast('Aliment enregistré');
     render(root);
   });
+
+  root.querySelector('[data-swap-scan]')?.addEventListener('click', () => openSwapScanner(root));
 
   root.querySelector('[data-delete]')?.addEventListener('click', (e) => {
     const id = e.currentTarget.dataset.delete;
