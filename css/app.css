@@ -785,6 +785,31 @@ tbody tr:hover td { background: var(--surface-alt); }
   display: flex; flex-direction: column;
 }
 .composer__head { flex: none; background: var(--surface); border-bottom: 1px solid var(--line); padding: 16px 20px; }
+/* Bande compacte Thomas/Julie (editor.js::renderCompactSummary()) — deux
+   colonnes, toujours visibles sans défiler, au-dessus de l'assiette ET de la
+   recherche (retour utilisateur). */
+.composer__summary { flex: none; display: flex; background: var(--surface-alt); border-bottom: 1px solid var(--line); }
+.composer__summary-person { flex: 1; min-width: 0; padding: 8px 20px; display: flex; flex-direction: column; gap: 4px; }
+.composer__summary-person + .composer__summary-person { border-left: 1px solid var(--line); }
+.composer__summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.composer__summary-name { flex: none; font-size: var(--fs-xs); font-weight: 700; }
+.composer__summary-name--thomas { color: var(--thomas); }
+.composer__summary-name--julie { color: var(--julie); }
+.composer__summary-rings { flex: none; display: flex; gap: 6px; }
+.composer__summary-ring { display: flex; flex-direction: column; align-items: center; gap: 1px; cursor: default; }
+.composer__summary-ring .ring__pct { font-size: 9px; }
+.composer__summary-ring-label { font-size: 11px; line-height: 1; }
+.composer__summary-status {
+  font-size: var(--fs-xs); color: var(--ink-soft); line-height: 1.4;
+  display: flex; flex-wrap: wrap; gap: 2px 8px;
+}
+.composer__summary-deltas { font-variant-numeric: tabular-nums; }
+.composer__summary-hint { color: var(--ink); font-weight: 600; }
+.composer__summary-ok { color: var(--ok); font-weight: 700; }
+@media (max-width: 860px) {
+  .composer__summary { flex-direction: column; }
+  .composer__summary-person + .composer__summary-person { border-left: 0; border-top: 1px solid var(--line); }
+}
 .composer__main { flex: 1; min-height: 0; display: flex; }
 .composer__plate-pane {
   flex: 0 0 340px; width: 340px; padding: 18px; overflow-y: auto;

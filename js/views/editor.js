@@ -212,7 +212,7 @@ export function renderEditor() {
 
   const platePane = `
     ${renderPlate(entity, byId, recipesMap, preparationsMap)}
-    ${renderSummary(entity, byId, targets, tol, state, recipesMap, preparationsMap)}
+    ${renderDetails(entity, byId, state, recipesMap, preparationsMap)}
     ${renderItems(entity, byId, recipesMap, preparationsMap)}`;
 
   const pickerPane = `
@@ -228,6 +228,7 @@ export function renderEditor() {
       <div class="composer" data-close-backdrop>
         <div class="composer__dialog" role="dialog" aria-label="Édition du repas">
           <div class="composer__head"></div>
+          <div class="composer__summary"></div>
           <div class="composer__main">
             <div class="composer__plate-pane"></div>
             <div class="composer__picker-pane"></div>
@@ -237,6 +238,10 @@ export function renderEditor() {
     dialog = host.querySelector('.composer__dialog');
   }
   dialog.querySelector('.composer__head').innerHTML = head;
+  // Bande compacte Thomas/Julie, au-dessus de l'assiette ET de la recherche
+  // (retour utilisateur) — toujours visible, jamais besoin de défiler pour
+  // voir ce qu'il reste à ajuster.
+  dialog.querySelector('.composer__summary').innerHTML = renderCompactSummary(entity, byId, targets, tol, state, recipesMap, preparationsMap);
   dialog.querySelector('.composer__plate-pane').innerHTML = platePane;
   dialog.querySelector('.composer__picker-pane').innerHTML = pickerPane;
 
@@ -245,18 +250,74 @@ export function renderEditor() {
   wire(host, entity);
 }
 
-function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, preparationsMap = {}) {
+/**
+ * Bande compacte Thomas/Julie, au-dessus de l'assiette ET de la recherche
+ * d'ingrédient (retour utilisateur direct — les deux "tuiles" macros/anneaux
+ * vivaient sous l'assiette, invisibles sans défiler). Anneaux COLORÉS PAR
+ * STATUT (vert/orange/rouge, cf. evaluate()) plutôt que par macro : l'info
+ * utile ici est "qu'est-ce qui cloche", l'icône suffit déjà à dire quelle
+ * macro c'est. Les puces .macro (valeur/cible détaillées) disparaissent de
+ * cette bande — redondantes avec l'infobulle du cercle — pour rester vraiment
+ * compacte ; le volume et les ingrédients exclus, moins centraux pour "quoi
+ * ajouter/retirer en un coup d'œil", restent près de la liste détaillée
+ * (renderDetails(), plus bas).
+ */
+const SUMMARY_STATUS_COLOR = { ok: 'var(--ok)', warn: 'var(--warn)', off: 'var(--off)' };
+
+function renderCompactSummary(entity, byId, targets, tol, state, recipesMap = {}, preparationsMap = {}) {
   const blocks = PERSONS.map((person) => {
-    // cible nutritionnelle UNIQUE pour tout le repas (décision §6) : les
-    // sections ne sont jamais des sous-problèmes d'optimisation séparés.
     const macros = mealMacros(entity.items, byId, person, recipesMap, preparationsMap);
     const ev = evaluate(macros, targets[person], tol);
     const diag = diagnose(macros, targets[person], state.foods, tol);
-    // le volume, lui, est analysé INDÉPENDAMMENT par section (décision §6/§8) :
-    // un plat volumineux ne doit pas noyer une entrée ou un dessert normaux
-    // dans une seule masse globale. Un petit-déjeuner/collation (P3.1) n'a
-    // qu'un seul groupe (pas de sous-division Entrée/Plat/…) : analyse sur
-    // la totalité des items, libellée par CATALOG_HEADING.
+    const rings = ev.rows
+      .map((r) => {
+        const meta = MACRO_META[r.key];
+        const pct = r.target > 0 ? (r.value / r.target) * 100 : 0;
+        const value = `${num(r.value, r.key === 'kcal' ? 0 : 1)}${r.key === 'kcal' ? '' : ' g'}`;
+        const target = `${num(r.target, 0)}${r.key === 'kcal' ? '' : ' g'}`;
+        // r.label (court, cf. MACRO_KEYS : "P"/"G"/"L"/"kcal") plutôt que
+        // meta.label (long, "Protéines"/"Glucides"…) — cohérent avec le
+        // reste de l'app (puces, en-têtes de colonnes) partout où la place
+        // manque.
+        return `<div class="composer__summary-ring is-${r.status}" title="${esc(r.label)} : ${esc(value)} / ${esc(target)}">
+          ${progressRing(pct, { size: 36, thickness: 4, color: SUMMARY_STATUS_COLOR[r.status] || 'var(--ink-faint)', label: meta.label })}
+          <span class="composer__summary-ring-label">${meta.icon}</span>
+        </div>`;
+      })
+      .join('');
+    const status = diag
+      ? `<span class="composer__summary-deltas">${esc(
+          diag.rows.map((r) => `${r.label} ${r.delta > 0 ? '+' : ''}${num(r.delta, r.key === 'kcal' ? 0 : 1)}`).join(' · ')
+        )}</span>${
+          diag.suggestions.length
+            ? `<span class="composer__summary-hint">→ ${esc(diag.suggestions.join(', '))}</span>`
+            : ''
+        }`
+      : `<span class="composer__summary-ok">Dans la cible ±${Math.round(tol * 100)} %</span>`;
+    return `<div class="composer__summary-person composer__summary-person--${person}">
+      <div class="composer__summary-head">
+        <span class="composer__summary-name composer__summary-name--${person}">${PERSON_LABEL[person]}</span>
+        <div class="composer__summary-rings">${rings}</div>
+      </div>
+      <div class="composer__summary-status">${status}</div>
+    </div>`;
+  }).join('');
+  return blocks;
+}
+
+/**
+ * Volume (analyse par section) et ingrédients exclus du total faute de
+ * conversion — informations ponctuelles/rares, laissées près de la liste
+ * détaillée plutôt que dans la bande compacte du haut (renderCompactSummary()),
+ * qui concentre ce qui doit rester visible en permanence (macros/anneaux).
+ */
+function renderDetails(entity, byId, state, recipesMap = {}, preparationsMap = {}) {
+  const blocks = PERSONS.map((person) => {
+    // le volume est analysé INDÉPENDAMMENT par section (décision §6/§8) : un
+    // plat volumineux ne doit pas noyer une entrée ou un dessert normaux dans
+    // une seule masse globale. Un petit-déjeuner/collation (P3.1) n'a qu'un
+    // seul groupe (pas de sous-division Entrée/Plat/…) : analyse sur la
+    // totalité des items, libellée par CATALOG_HEADING.
     const volBySection = ctx.kind === 'meal'
       ? sectionsUsed(entity.items)
           .map((section) => ({
@@ -266,39 +327,9 @@ function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, prepa
           .filter((x) => x.vol.level > 0)
       : [{ label: CATALOG_HEADING[targetType()], vol: analyzeMealVolume(entity.items, byId, person) }]
           .filter((x) => x.vol.level > 0);
-    const chips = ev.rows
-      .map(
-        (r) => `<span class="macro is-${r.status}">
-          <b>${num(r.value, r.key === 'kcal' ? 0 : 1)}</b>${r.key === 'kcal' ? '' : ' g'}
-          <span class="goal">/ ${num(r.target, 0)}</span>
-          <span class="goal">${r.label}</span></span>`
-      )
-      .join('');
-    // Anneaux de progression (retour utilisateur : "plus de visuel pour les
-    // objectifs macros") — même composant que la carte de synthèse du cycle
-    // (planning.js), mêmes classes CSS (day-summary__ring*) : une seule
-    // référence visuelle pour "macro en cours / objectif" dans toute l'app.
-    const rings = ev.rows
-      .map((r) => {
-        const meta = MACRO_META[r.key];
-        const pct = r.target > 0 ? (r.value / r.target) * 100 : 0;
-        return `<div class="day-summary__ring">
-          ${progressRing(pct, { size: 54, thickness: 5, color: `var(--${meta.cls})`, label: meta.label })}
-          <span class="day-summary__ring-label">${meta.icon} ${meta.short}</span>
-        </div>`;
-      })
-      .join('');
-    return `<div class="person-band person-band--${person}" style="margin-bottom:10px">
-      <div class="person-name person-name--${person}">${PERSON_LABEL[person]}</div>
-      <div class="day-summary__rings" style="margin:6px 0">${rings}</div>
-      <div class="macros" style="margin:4px 0 4px">${chips}</div>
-      ${
-        diag
-          ? `<small>Hors cible : ${diag.rows
-              .map((r) => `${r.label} ${r.delta > 0 ? '+' : ''}${num(r.delta, 0)}`)
-              .join(', ')}${diag.suggestions.length ? ` — piste : ${esc(diag.suggestions.join(', '))}` : ''}</small>`
-          : `<small>Tous les macros dans la cible ±${Math.round(tol * 100)} %.</small>`
-      }
+    if (!volBySection.length) return '';
+    return `<div class="person-band person-band--${person}" style="margin-bottom:6px">
+      <span class="person-name person-name--${person}">${PERSON_LABEL[person]}</span>
       ${volBySection
         .map(
           ({ label, vol }) => `<div class="tag${vol.level >= 2 ? ' sync-error' : ''}" style="margin-top:4px">
@@ -315,7 +346,8 @@ function renderSummary(entity, byId, targets, tol, state, recipesMap = {}, prepa
     ? `<div class="sync-error"><small>${excluded} ingrédient(s) exclu(s) du total : aucune conversion définie entre l'état pesé et celui de leurs valeurs nutritionnelles.</small></div>`
     : '';
 
-  return `<div class="card">${blocks}${notice}</div>`;
+  if (!blocks && !notice) return '';
+  return `<div class="card" style="margin-top:10px">${blocks}${notice}</div>`;
 }
 
 /**

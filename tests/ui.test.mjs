@@ -126,23 +126,27 @@ check('nom généré automatiquement : Féculent - Protéine - Légume',
 check('nameAuto reste actif tant qu’aucun nom n’a été saisi à la main',
   store.getState().meals[0].nameAuto === true);
 
-const macros = $$('#drawer .macro').slice(0, 4).map((m) => m.textContent.replace(/\s+/g, ' ').trim());
-console.log(`        ${macros.join(' | ')}`);
-check('macros affichées sans clic supplémentaire', macros.length === 4);
-check('glucides affichés "G" et non "C"', macros.some((m) => / G$/.test(m)) && !macros.some((m) => / C$/.test(m)), macros.join(' | '));
+// Bande compacte Thomas/Julie (composer__summary, au-dessus de l'assiette) :
+// un anneau par macro, classe is-ok/is-warn/is-off + infobulle "label : valeur
+// / cible" — remplace les anciennes puces .macro (déplacées/supprimées lors
+// du passage en bande compacte, retour utilisateur).
+const macroRings = $$('#drawer .composer__summary-ring').slice(0, 4);
+const macroTitles = macroRings.map((m) => m.getAttribute('title') || '');
+console.log(`        ${macroTitles.join(' | ')}`);
+check('macros affichées sans clic supplémentaire', macroRings.length === 4);
+check('glucides affichés "G" et non "C"', macroTitles.some((t) => /^G :/.test(t)) && !macroTitles.some((t) => /^C :/.test(t)), macroTitles.join(' | '));
 // coloration par rôle (P1.1, décision verrouillée — evaluate()/statusFor()
 // restent purement descriptifs, la fonction de coût n'est pas concernée) :
 // 1015/1050 kcal (-3,3 %, plafond) → ok ; 54,7/55 P (-0,5 %, plancher : tout
 // déficit, même minime, est au mieux "warn", jamais "ok") → warn ;
 // 118,2/120 G (-1,5 %, souple ±5 %) → ok ; 30,8/35 L (-12 %, plafond :
 // toujours "ok" sous la cible, quelle que soit la marge) → ok.
-const macroBadges = $$('#drawer .macro').slice(0, 4);
-check('kcal de Thomas dans la cible (plafond, léger déficit)', macroBadges[0].classList.contains('is-ok'), macroBadges[0].className);
+check('kcal de Thomas dans la cible (plafond, léger déficit)', macroRings[0].classList.contains('is-ok'), macroRings[0].className);
 check('protéines de Thomas signalées en léger déficit (plancher, jamais "ok" sous la cible)',
-  macroBadges[1].classList.contains('is-warn'), macroBadges[1].className);
-check('glucides de Thomas dans la cible (souple, ±5 %)', macroBadges[2].classList.contains('is-ok'), macroBadges[2].className);
+  macroRings[1].classList.contains('is-warn'), macroRings[1].className);
+check('glucides de Thomas dans la cible (souple, ±5 %)', macroRings[2].classList.contains('is-ok'), macroRings[2].className);
 check('lipides de Thomas dans la cible (plafond, sous la cible = toujours "ok")',
-  macroBadges[3].classList.contains('is-ok'), macroBadges[3].className);
+  macroRings[3].classList.contains('is-ok'), macroRings[3].className);
 
 console.log('\n— État pesé dans le repas');
 const pastaRow = $$('#drawer .item').find((el) => /Pâtes complètes/.test(el.textContent));
@@ -167,10 +171,17 @@ check('aucune macro calculée pour cet ingrédient',
   (pastaDrained.textContent.match(/[—\d]+ kcal/) || [''])[0]);
 check('ingrédient exclu du total du repas',
   /exclu\(s\) du total/.test($('#drawer').textContent));
-const totalDrained = Number(($('#drawer .macro')?.textContent.match(/(\d+)/) || [])[1]);
+// total kcal lu dans l'infobulle de l'anneau kcal (bande compacte du haut),
+// plus de puce .macro depuis le passage en bande compacte.
+const kcalTotal = () => Number(
+  ($$('#drawer .composer__summary-ring').find((r) => /^kcal :/.test(r.getAttribute('title') || ''))
+    ?.getAttribute('title')
+    .match(/kcal : (\d+)/) || [])[1]
+);
+const totalDrained = kcalTotal();
 change(pastaDrained.querySelector('[data-state]'), 'cru');
 await wait();
-const totalBack = Number(($('#drawer .macro')?.textContent.match(/(\d+)/) || [])[1]);
+const totalBack = kcalTotal();
 check('le total remonte une fois un état convertible choisi', totalBack > totalDrained,
   `${totalDrained} → ${totalBack}`);
 check('plus aucun avertissement de conversion',
