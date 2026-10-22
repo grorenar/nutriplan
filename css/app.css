@@ -767,7 +767,13 @@ tbody tr:hover td { background: var(--surface-alt); }
 }
 .drawer__panel {
   background: var(--bg); width: min(760px, 100%); height: 100%;
-  overflow-y: auto; box-shadow: var(--shadow-lg);
+  /* overflow-x: hidden explicite — sans lui, ne déclarer que overflow-y
+     fait implicitement passer overflow-x à "auto" (comportement standard
+     CSS), et le translateX() de l'animation d'entrée ci-dessous (slide-in)
+     dépasse alors brièvement le bord droit à l'ouverture de N'IMPORTE QUEL
+     tiroir, affichant une barre de défilement horizontale fantôme le temps
+     de l'animation (retour utilisateur). */
+  overflow-y: auto; overflow-x: hidden; box-shadow: var(--shadow-lg);
   display: flex; flex-direction: column;
 }
 .drawer__panel--form { width: min(560px, 100%); }
@@ -866,7 +872,13 @@ tbody tr:hover td { background: var(--surface-alt); }
   display: flex; flex-direction: column; animation: none !important;
 }
 .wizard__head.drawer__head { flex: none; position: static; padding: 16px 20px; }
-.wizard__body.drawer__body { flex: 1; min-height: 0; overflow-y: auto; }
+/* overflow-x: hidden explicite — sans lui, ne déclarer que overflow-y
+   (ci-dessus) fait implicitement passer overflow-x à "auto" (comportement
+   standard CSS), et le translateX() de l'animation de glissade ci-dessous
+   dépasse alors brièvement le bord droit au tout premier rendu, affichant
+   une barre de défilement horizontale fantôme le temps de l'animation
+   (retour utilisateur). */
+.wizard__body.drawer__body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 @media (max-width: 860px) {
   .wizard { padding: 0; }
   .wizard__dialog.drawer__panel { width: 100%; height: 100%; max-height: none; border-radius: 0; }
@@ -906,11 +918,15 @@ tbody tr:hover td { background: var(--surface-alt); }
 
 /* Glissade entre étapes (retour utilisateur) : .wizard-step est un nouveau
    nœud DOM à CHAQUE changement d'étape (newFoodStepBodyHtml() remplace tout
-   .wizard__body, jamais un patch ciblé) — l'animation se rejoue donc
-   naturellement à l'insertion, sans mécanique JS dédiée à la direction du
-   glissement. */
+   .wizard__body, jamais un patch ciblé). L'animation ne porte QUE sur le
+   modificateur --enter, ajouté côté JS (newFoodStepBodyHtml(), foods.js)
+   uniquement quand l'étape a réellement changé depuis le dernier rendu —
+   .wizard-step seul seul (sans --enter) est aussi un nouveau nœud à chaque
+   sur-couche ouverte par-dessus la même étape (calcul de rendement,
+   confirmation de fermeture…) : l'animer là aussi donnerait l'impression
+   erronée qu'une étape vient d'être franchie (retour utilisateur). */
 @media (prefers-reduced-motion: no-preference) {
-  .wizard-step { animation: wizard-step-in .22s ease-out; }
+  .wizard-step.wizard-step--enter { animation: wizard-step-in .22s ease-out; }
   @keyframes wizard-step-in {
     from { transform: translateX(22px); opacity: 0; }
     to { transform: none; opacity: 1; }

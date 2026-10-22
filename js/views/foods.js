@@ -30,6 +30,16 @@ let editing = null; // id d'aliment ou 'new'
 let newFoodStep = 'start';
 let offSubMode = null; // 'barcode' | 'name' — choix explicite à l'étape 'off-mode'
 let stepHistory = []; // pile des étapes précédentes (bouton Précédent)
+// Dernière étape pour laquelle la glissade (.wizard-step--enter, app.css) a
+// déjà été jouée — refreshOpenForm() réémet newFoodStepBodyHtml() à CHAQUE
+// render() (ouverture d'une sur-couche : calcul de rendement, confirmation
+// de fermeture…), pas seulement à un vrai changement d'étape ; sans ce
+// suivi, .wizard-step est un nouveau nœud DOM à chacun de ces rendus (le
+// body est toujours entièrement remplacé) et l'animation CSS — déclenchée
+// par la simple insertion du nœud — rejoue alors à tort (retour
+// utilisateur : « glisse comme si on venait de passer une étape » rien
+// qu'en fermant une pop-up par-dessus la même étape).
+let lastAnimatedStep = null;
 let similarWarning = null; // { list, pending } — popup de confirmation de doublon
 let formDraft = null;      // saisie en cours, préservée entre deux rendus du formulaire
 let yieldCalc = null;      // { raw, cooked, result, error } — aide au calcul du rendement
@@ -498,9 +508,12 @@ function newFoodHeadHtml() {
 /**
  * Corps de l'étape courante — enveloppé dans .wizard-step, dont la clé
  * data-step CHANGE à chaque étape : comme le body est entièrement remplacé
- * (jamais patché), cette div est toujours un nouveau nœud DOM à l'insertion,
- * ce qui rejoue naturellement l'animation CSS de glissade (app.css) sans
- * aucune mécanique JS dédiée.
+ * (jamais patché), cette div est toujours un nouveau nœud DOM à l'insertion.
+ * La classe wizard-step--enter (seule à porter l'animation CSS, app.css)
+ * n'est ajoutée que si newFoodStep a RÉELLEMENT changé depuis le dernier
+ * rendu (lastAnimatedStep ci-dessus) — refreshOpenForm() appelle cette
+ * fonction à chaque render(), y compris pour une sur-couche sans rapport
+ * avec l'étape (calcul de rendement, confirmation de fermeture…).
  */
 function newFoodStepBodyHtml(f) {
   let body;
@@ -517,7 +530,9 @@ function newFoodStepBodyHtml(f) {
       break;
     default: body = '';
   }
-  return `<div class="wizard-step" data-step="${newFoodStep}">${body}</div>${newFoodNavHtml(f)}`;
+  const justChanged = newFoodStep !== lastAnimatedStep;
+  lastAnimatedStep = newFoodStep;
+  return `<div class="wizard-step${justChanged ? ' wizard-step--enter' : ''}" data-step="${newFoodStep}">${body}</div>${newFoodNavHtml(f)}`;
 }
 
 /** Pied de l'étape : Précédent (dès qu'il y a un historique) + Suivant/Enregistrer sur les étapes de champs. */
@@ -945,6 +960,7 @@ function resetForm() {
   newFoodStep = 'start';
   offSubMode = null;
   stepHistory = [];
+  lastAnimatedStep = null;
   similarWarning = null;
   formDraft = null;
   yieldCalc = null;
