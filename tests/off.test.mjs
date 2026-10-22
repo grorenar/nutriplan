@@ -228,6 +228,21 @@ await testAsync('searchProductsByText() : recherche texte — endpoint DISTINCT 
   restoreFetch();
 });
 
+await testAsync('searchProductsByText() : requête restreinte aux champs nom/marque/nom générique (Lucene), confirmé via la doc et le code source de Search-a-licious', async () => {
+  // Par défaut Search-a-licious cherche sur BIEN PLUS de champs que nom/
+  // marque (ingrédients, catégories…) : restreindre explicitement via la
+  // syntaxe `champ:valeur` (confirmée dans la documentation officielle —
+  // Query Language Guide — et le code source, app/query.py/es_query_builder.py)
+  // élimine le bruit à la racine plutôt que de resserrer après coup.
+  let calledUrl = null;
+  mockFetchOnce(async (url) => { calledUrl = url; return jsonRes({ count: 0, hits: [] }); });
+  await searchProductsByText({ name: 'Pinsa', brand: 'Harrys' });
+  const q = decodeURIComponent(new URL(calledUrl, 'http://x').searchParams.get('q'));
+  check('chaque mot restreint à product_name/generic_name/brands via OR', /product_name:pinsa OR generic_name:pinsa OR brands:pinsa/.test(q) && /product_name:harrys OR generic_name:harrys OR brands:harrys/.test(q));
+  check('tous les mots exigés via AND entre les groupes', / AND /.test(q));
+  restoreFetch();
+});
+
 await testAsync('searchProductsByText() : analyse tolérante — autre nom de clé pour la liste de résultats', async () => {
   // le schéma exact de Search-a-licious n'a pas pu être vérifié avec
   // certitude (cf. commentaire d'en-tête de off.js) : vérifie que la lecture
@@ -298,7 +313,8 @@ await testAsync('searchProductsByText() : nom et marque combinables', async () =
   let calledUrl = null;
   mockFetchOnce(async (url) => { calledUrl = url; return jsonRes({ count: 0, hits: [] }); });
   await searchProductsByText({ name: 'yaourt', brand: 'Danone' });
-  check('les deux champs sont présents dans la requête envoyée', calledUrl.includes('yaourt') && calledUrl.includes('Danone'));
+  const q = decodeURIComponent(new URL(calledUrl, 'http://x').searchParams.get('q'));
+  check('les deux champs sont présents dans la requête envoyée (mots normalisés en minuscule)', q.includes('yaourt') && q.includes('danone'));
   restoreFetch();
 });
 

@@ -19,12 +19,15 @@
  *     infrastructure maintenant que Search-a-licious existe. Un 503 sans
  *     en-tête CORS est rapporté par le navigateur comme une erreur CORS
  *     (message trompeur : la cause réelle est le 503, visible uniquement via
- *     l'onglet Réseau des outils de développement). Search-a-licious est donc
- *     utilisé malgré un schéma de réponse non confirmé avec certitude :
- *     l'analyse de la réponse (parseSearchResponse() ci-dessous) reste
- *     volontairement tolérante (plusieurs noms de clé possibles pour le
- *     tableau de résultats) pour s'adapter sans casser si le schéma exact
- *     diffère légèrement de l'hypothèse retenue.
+ *     l'onglet Réseau des outils de développement). La FORME de la réponse
+ *     JSON reste non confirmée avec certitude (parseSearchResponse()
+ *     ci-dessous reste volontairement tolérante, plusieurs noms de clé
+ *     possibles) — en revanche la syntaxe de la REQUÊTE (paramètre `q`) a pu
+ *     être confirmée en lisant directement la documentation et le code
+ *     source du projet (openfoodfacts/search-a-licious sur GitHub,
+ *     accessible depuis ce bac à sable contrairement aux domaines OFF
+ *     eux-mêmes) : voir buildSearchQuery() plus bas pour le détail et les
+ *     fichiers exacts consultés.
  *
  * CORS : `search.openfoodfacts.org` ne renvoie pas d'en-tête
  * `Access-Control-Allow-Origin` pour un site tiers (confirmé en usage réel —
@@ -150,20 +153,56 @@ function parseSearchResponse(json) {
 }
 
 /**
- * Search-a-licious peut renvoyer des produits ne correspondant qu'à UN SEUL
- * des mots cherchés (voire indirectement, via un autre champ indexé que le
- * nom/la marque), sans qu'un paramètre de tri par pertinence texte ait pu
- * être confirmé (cf. commentaire d'en-tête : schéma/API non vérifiables avec
- * certitude depuis ce bac à sable). Repéré en usage réel (retour
- * utilisateur) : « pinsa harrys » renvoyait une vingtaine de résultats
- * hétéroclites, quand le site OFF lui-même, sur la même recherche, n'en
- * affiche qu'un seul. On resserre donc côté client en ne gardant que les
- * produits dont le nom OU la marque contiennent TOUS les mots tapés
- * (recherche « ET », jamais « OU ») — jamais une liste totalement vide pour
- * autant : si ce resserrement n'en garde aucun (ex. les mots sont répartis
- * sur d'autres champs que nom/marque, ou l'orthographe diffère), on retombe
- * sur la liste complète plutôt que de masquer un résultat que ce filtre,
- * volontairement simple, aurait raté à tort.
+ * Champs Search-a-licious réellement pertinents pour une recherche par
+ * nom/marque (confirmé en lisant la config de l'instance OFF elle-même —
+ * openfoodfacts/search-a-licious, data/config/openfoodfacts.yml — tous les
+ * trois `full_text_search: true`). Une requête texte brute cherche par
+ * défaut sur BIEN PLUS de champs que ça (ingrédients, catégories,
+ * allergènes…) : un mot peut donc « matcher » un produit totalement hors
+ * sujet simplement parce qu'il apparaît dans un champ sans rapport avec ce
+ * que l'utilisateur voulait identifier (nom ou marque) — cause confirmée des
+ * résultats hétéroclites remontés en usage réel pour « pinsa harrys ».
+ */
+const SEARCH_TEXT_FIELDS = ['product_name', 'generic_name', 'brands'];
+
+/**
+ * Construit une requête Search-a-licious au format Lucene plutôt qu'un
+ * simple `q=<texte>` : chaque mot doit apparaître dans AU MOINS UN des
+ * champs pertinents (OR), et TOUS les mots sont exigés (AND) — confirmé
+ * valide en lisant la documentation officielle (Query Language Guide,
+ * openfoodfacts/search-a-licious, docs/users/explain-query-language.md :
+ * opérateurs AND/OR/NOT, syntaxe `champ:valeur`, groupement par
+ * parenthèses) et le moteur de requête lui-même (app/query.py,
+ * app/es_query_builder.py — parseur Lucene `luqum`).
+ *
+ * Pourquoi pas simplement `q=<texte>` tel quel : par défaut Search-a-licious
+ * combine déjà les mots séparés par un espace en ET (app/query.py :
+ * `default_operator = MUST`), mais sur TOUS les champs indexés en full text
+ * (cf. SEARCH_TEXT_FIELDS ci-dessus) — un mot peut donc matcher un champ et
+ * l'autre mot un champ totalement différent du même document, sans rapport
+ * avec le nom ou la marque. Restreindre explicitement aux trois champs
+ * pertinents élimine cette source de bruit à la racine, côté serveur,
+ * plutôt que de resserrer après coup sur une page de résultats déjà
+ * potentiellement polluée par du bruit non pertinent.
+ *
+ * Chaque mot est déjà passé par normalizeWords() (lettres/chiffres
+ * uniquement) avant d'arriver ici : aucun caractère spécial Lucene
+ * (parenthèses, deux-points, guillemets…) ne peut donc s'y glisser.
+ */
+function buildSearchQuery(words) {
+  return words.map((w) => `(${SEARCH_TEXT_FIELDS.map((f) => `${f}:${w}`).join(' OR ')})`).join(' AND ');
+}
+
+/**
+ * Filet de sécurité côté client, en complément de buildSearchQuery()
+ * ci-dessus : si jamais le comportement réel de l'instance OFF en
+ * production diverge de ce que documentation/code source laissent attendre
+ * (déjà arrivé une fois dans ce fichier, cf. historique), on ne fait
+ * jamais confiance aveuglément à ce que le serveur renvoie comme pertinent
+ * — on revérifie que nom/marque contiennent bien tous les mots tapés.
+ * Jamais une liste totalement vide pour autant : si ce resserrement n'en
+ * garde aucun, on retombe sur la liste complète plutôt que de masquer un
+ * résultat que ce filtre, volontairement simple, aurait raté à tort.
  *
  * Les nombres isolés (ex. « 230 » venant de « 230 g » séparé par un espace
  * dans la saisie) sont exclus des mots exigés — repéré en usage réel : une
@@ -173,8 +212,7 @@ function parseSearchResponse(json) {
  * AUCUN produit — y compris le bon — et déclenche le repli sur la liste
  * complète ci-dessus, ce qui défait tout le resserrement.
  */
-function filterRelevantProducts(products, terms) {
-  const words = normalizeWords(terms).trim().split(' ').filter((w) => w.length >= 2 && !/^\d+$/.test(w));
+function filterRelevantProducts(products, words) {
   if (!words.length) return products;
   return products.filter((p) => {
     const haystack = normalizeWords(
@@ -189,20 +227,20 @@ function filterRelevantProducts(products, terms) {
  * @returns {Promise<{status:'ok', count, results:[{code,raw,draft}]} | {status:'no-results'} | {status:'error', error} | {status:'aborted'}>}
  */
 // 100 (plutôt que les 20 d'origine) : confirmé en usage réel (retour
-// utilisateur) que le bon produit peut carrément être ABSENT des 20 premiers
-// résultats renvoyés par Search-a-licious pour une recherche à deux mots
-// (classement par défaut non confirmé — vraisemblablement la popularité du
-// produit, pas la pertinence texte, cf. commentaire de filterRelevantProducts()
-// ci-dessus) : resserrer côté client (filterRelevantProducts()) ne sert à
-// rien si le produit pertinent n'est même pas dans la page récupérée. Un seul
-// appel réseau dans tous les cas (page_size ne change pas le nombre de
-// requêtes, seulement leur taille) — sans impact sur la limite de 10
-// req/min publiée par OFF pour la recherche.
+// utilisateur) que le bon produit peut être absent même d'une page de
+// résultats généreuse si sa fiche OFF est incomplète (marque non reliée à
+// la taxonomie `brands_tags` dont dépend le champ `brands` indexé, cf.
+// buildSearchQuery() ci-dessus) — aucun réglage de page_size ni de requête
+// ne peut faire apparaître un document absent de l'index. Un seul appel
+// réseau dans tous les cas (page_size ne change pas le nombre de requêtes,
+// seulement leur taille) — sans impact sur la limite de 10 req/min publiée
+// par OFF pour la recherche.
 export async function searchProductsByText({ name = '', brand = '' } = {}, { signal, page = 1, pageSize = 100 } = {}) {
   const terms = [name, brand].map((s) => String(s ?? '').trim()).filter(Boolean).join(' ');
   if (!terms) return { status: 'error', error: 'Indique un nom ou une marque.' };
+  const words = normalizeWords(terms).trim().split(' ').filter((w) => w.length >= 2 && !/^\d+$/.test(w));
   const params = new URLSearchParams({
-    q: terms,
+    q: words.length ? buildSearchQuery(words) : terms,
     page: String(page),
     page_size: String(pageSize),
     langs: 'fr',
@@ -212,7 +250,7 @@ export async function searchProductsByText({ name = '', brand = '' } = {}, { sig
   if (!res.ok) return { status: 'error', error: res.error };
   const { products, count } = parseSearchResponse(res.json);
   if (!products.length) return { status: 'no-results', count: 0, results: [] };
-  const relevant = filterRelevantProducts(products, terms);
+  const relevant = filterRelevantProducts(products, words);
   const kept = relevant.length ? relevant : products;
   return {
     status: 'ok',
