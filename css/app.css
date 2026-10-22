@@ -850,14 +850,16 @@ tbody tr:hover td { background: var(--surface-alt); }
    détaillée (quantités/verrous/sections, .items ci-dessous) reste affichée
    juste en dessous, inchangée. */
 .plate {
-  position: relative; margin: 4px auto 16px; width: 100%; max-width: 300px; min-height: 300px;
+  position: relative; margin: 4px auto 16px; width: 100%; max-width: 300px; aspect-ratio: 1 / 1;
+  min-height: 0; /* sans ça, aspect-ratio + overflow:visible agrandit quand même la boîte (taille minimale automatique du contenu) — exactement l'étirement que ce correctif supprime */
   border-radius: 50%;
   /* Porcelaine : rebord clair, "puits" central légèrement creusé — un vrai
      visuel de plat, plutôt qu'un simple cercle plat (retour utilisateur).
-     Pas d'aspect-ratio figé : un plat qui contient beaucoup d'ingrédients aux
-     noms complets (retour utilisateur — jamais tronqués) s'étire en hauteur
-     plutôt que de forcer un cercle parfait qui les comprimerait ou les
-     masquerait ; border-radius: 50% donne alors un ovale, toujours "assiette". */
+     Le plat GARDE une taille fixe (retour utilisateur : l'étirement en
+     hauteur rendait bizarre) : avec beaucoup d'ingrédients aux noms complets
+     (jamais tronqués), les jetons débordent visuellement du cercle plutôt
+     que de le déformer — overflow: visible, jamais clippé ni compressé. */
+  overflow: visible;
   background: radial-gradient(circle at 50% 50%, #ffffff 0 56%, #f3f0e7 58% 76%, #ffffff 78% 100%);
   box-shadow:
     inset 0 0 0 1px #eae5d6,
