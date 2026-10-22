@@ -228,6 +228,23 @@ await testAsync('searchProductsByText() : recherche texte — endpoint DISTINCT 
   restoreFetch();
 });
 
+await testAsync('searchProductsByText() : requête restreinte à product_name/generic_name (jamais brands, cause confirmée d\'un 500 en production)', async () => {
+  // Testé en production (retour utilisateur) : inclure `brands` dans une
+  // clause `champ:valeur` explicite fait planter search.openfoodfacts.org
+  // (500). product_name/generic_name sont tous deux de type text_lang
+  // (confirmé dans la config OFF) et ne posent pas ce problème -- un mot de
+  // marque passe donc par la recherche libre non restreinte (le terme brut,
+  // sans `brands:` devant), jamais par une clause de champ explicite.
+  let calledUrl = null;
+  mockFetchOnce(async (url) => { calledUrl = url; return jsonRes({ count: 0, hits: [] }); });
+  await searchProductsByText({ name: 'Pinsa', brand: 'Harrys' });
+  const q = decodeURIComponent(new URL(calledUrl, 'http://x').searchParams.get('q'));
+  check('jamais de clause "brands:" explicite', !/brands:/.test(q));
+  check('product_name/generic_name restreints pour chaque mot', /product_name:pinsa OR generic_name:pinsa OR pinsa/.test(q) && /product_name:harrys OR generic_name:harrys OR harrys/.test(q));
+  check('tous les mots exigés via AND entre les groupes', / AND /.test(q));
+  restoreFetch();
+});
+
 await testAsync('searchProductsByText() : analyse tolérante — autre nom de clé pour la liste de résultats', async () => {
   // le schéma exact de Search-a-licious n'a pas pu être vérifié avec
   // certitude (cf. commentaire d'en-tête de off.js) : vérifie que la lecture
@@ -298,7 +315,8 @@ await testAsync('searchProductsByText() : nom et marque combinables', async () =
   let calledUrl = null;
   mockFetchOnce(async (url) => { calledUrl = url; return jsonRes({ count: 0, hits: [] }); });
   await searchProductsByText({ name: 'yaourt', brand: 'Danone' });
-  check('les deux champs sont présents dans la requête envoyée', calledUrl.includes('yaourt') && calledUrl.includes('Danone'));
+  const q = decodeURIComponent(new URL(calledUrl, 'http://x').searchParams.get('q'));
+  check('les deux champs sont présents dans la requête envoyée (mots normalisés en minuscule)', q.includes('yaourt') && q.includes('danone'));
   restoreFetch();
 });
 
