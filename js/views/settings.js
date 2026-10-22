@@ -152,7 +152,7 @@ function dailyOverview(person, s) {
     // displayValue = grammes, tel qu'affiché dans la légende.
     { label: 'Protéines', value: total.protein * 4, displayValue: total.protein, color: 'var(--protein)', icon: '💪' },
     { label: 'Glucides', value: total.carbs * 4, displayValue: total.carbs, color: 'var(--carbs)', icon: '🌾' },
-    { label: 'Lipides', value: total.fat * 9, displayValue: total.fat, color: 'var(--fat)', icon: '💧' },
+    { label: 'Lipides', value: total.fat * 9, displayValue: total.fat, color: 'var(--fat)', icon: '🧈' },
   ];
   return `<div style="margin-bottom:16px">
     <h3 class="person-name person-name--${person}" style="margin-bottom:8px">${PERSON_LABEL[person]}</h3>

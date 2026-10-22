@@ -22,8 +22,8 @@ export const CATEGORIES = [
   { id: 'legume', label: 'Légume', icon: '🥦' },
   { id: 'fruit', label: 'Fruit', icon: '🍎' },
   { id: 'laitier', label: 'Produit laitier', icon: '🧀' },
-  { id: 'matiere_grasse', label: 'Matière grasse', icon: '🫒' },
-  { id: 'oleagineux', label: 'Noix & graines', icon: '🌰' },
+  { id: 'matiere_grasse', label: 'Matière grasse', icon: '🧈' },
+  { id: 'oleagineux', label: 'Noix & graines', icon: '🥜' },
   { id: 'autre', label: 'Autre', icon: '🏷️' },
 ];
 
@@ -38,7 +38,7 @@ export const MACRO_META = {
   kcal: { label: 'Calories', short: 'kcal', icon: '🔥', cls: 'kcal' },
   protein: { label: 'Protéines', short: 'P', icon: '💪', cls: 'protein' },
   carbs: { label: 'Glucides', short: 'G', icon: '🌾', cls: 'carbs' },
-  fat: { label: 'Lipides', short: 'L', icon: '💧', cls: 'fat' },
+  fat: { label: 'Lipides', short: 'L', icon: '🧈', cls: 'fat' },
 };
 
 export const STATES = [

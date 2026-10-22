@@ -16,15 +16,15 @@ import { openPrintDialog } from './views/print.js';
 import { stopActiveScanner } from './views/barcode-panel.js';
 
 const VIEWS = [
-  { id: 'planning', label: 'Planning', icon: '▤', render: planning.render, title: 'Planning du cycle' },
-  { id: 'foods', label: 'Aliments', icon: '◎', render: foods.render, title: 'Banque alimentaire' },
+  { id: 'planning', label: 'Planning', icon: '📅', render: planning.render, title: 'Planning du cycle' },
+  { id: 'foods', label: 'Aliments', icon: '🥑', render: foods.render, title: 'Banque alimentaire' },
   { id: 'recipes', label: 'Recettes', icon: '📖', render: recipes.render, title: 'Recettes' },
-  { id: 'breakfasts', label: 'Petits-déj.', icon: '☕', render: catalogs.renderBreakfasts, title: 'Petits-déjeuners' },
-  { id: 'snacks', label: 'Collations', icon: '◍', render: catalogs.renderSnacks, title: 'Collations' },
-  { id: 'preparations', label: 'Préparations', icon: '🍲', render: preparations.render, title: 'Préparations' },
-  { id: 'batch', label: 'Batch', icon: '⊞', render: batch.render, title: 'Batch cooking' },
-  { id: 'shopping', label: 'Courses', icon: '✓', render: shopping.render, title: 'Liste de courses' },
-  { id: 'settings', label: 'Paramètres', icon: '⚙', render: settings.render, title: 'Paramètres' },
+  { id: 'breakfasts', label: 'Petits-déj.', icon: '🥞', render: catalogs.renderBreakfasts, title: 'Petits-déjeuners' },
+  { id: 'snacks', label: 'Collations', icon: '🍎', render: catalogs.renderSnacks, title: 'Collations' },
+  { id: 'preparations', label: 'Préparations', icon: '🍳', render: preparations.render, title: 'Préparations' },
+  { id: 'batch', label: 'Batch', icon: '🥘', render: batch.render, title: 'Batch cooking' },
+  { id: 'shopping', label: 'Courses', icon: '🛒', render: shopping.render, title: 'Liste de courses' },
+  { id: 'settings', label: 'Paramètres', icon: '⚙️', render: settings.render, title: 'Paramètres' },
 ];
 
 let current = 'planning';
