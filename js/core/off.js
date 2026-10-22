@@ -53,6 +53,7 @@
 
 import { OFF_PROXY_URL } from '../config.js';
 import { suggestCategoryFromOff } from './off-category.js';
+import { normalizeWords } from './util.js';
 
 // Avec proxy configuré : mêmes chemins que ceux attendus par
 // cloudflare-worker/off-proxy.js (/product/{code}.json, /search). Sans
@@ -149,6 +150,33 @@ function parseSearchResponse(json) {
 }
 
 /**
+ * Search-a-licious peut renvoyer des produits ne correspondant qu'à UN SEUL
+ * des mots cherchés (voire indirectement, via un autre champ indexé que le
+ * nom/la marque), sans qu'un paramètre de tri par pertinence texte ait pu
+ * être confirmé (cf. commentaire d'en-tête : schéma/API non vérifiables avec
+ * certitude depuis ce bac à sable). Repéré en usage réel (retour
+ * utilisateur) : « pinsa harrys » renvoyait une vingtaine de résultats
+ * hétéroclites, quand le site OFF lui-même, sur la même recherche, n'en
+ * affiche qu'un seul. On resserre donc côté client en ne gardant que les
+ * produits dont le nom OU la marque contiennent TOUS les mots tapés
+ * (recherche « ET », jamais « OU ») — jamais une liste totalement vide pour
+ * autant : si ce resserrement n'en garde aucun (ex. les mots sont répartis
+ * sur d'autres champs que nom/marque, ou l'orthographe diffère), on retombe
+ * sur la liste complète plutôt que de masquer un résultat que ce filtre,
+ * volontairement simple, aurait raté à tort.
+ */
+function filterRelevantProducts(products, terms) {
+  const words = normalizeWords(terms).trim().split(' ').filter((w) => w.length >= 2);
+  if (!words.length) return products;
+  return products.filter((p) => {
+    const haystack = normalizeWords(
+      [p.product_name_fr, p.product_name, p.generic_name_fr, p.generic_name, p.brands].filter(Boolean).join(' ')
+    );
+    return words.every((w) => haystack.includes(` ${w} `));
+  });
+}
+
+/**
  * Recherche textuelle par nom et/ou marque (deux champs distincts, combinables).
  * @returns {Promise<{status:'ok', count, results:[{code,raw,draft}]} | {status:'no-results'} | {status:'error', error} | {status:'aborted'}>}
  */
@@ -166,10 +194,12 @@ export async function searchProductsByText({ name = '', brand = '' } = {}, { sig
   if (!res.ok) return { status: 'error', error: res.error };
   const { products, count } = parseSearchResponse(res.json);
   if (!products.length) return { status: 'no-results', count: 0, results: [] };
+  const relevant = filterRelevantProducts(products, terms);
+  const kept = relevant.length ? relevant : products;
   return {
     status: 'ok',
     count: count || products.length,
-    results: products.map((p) => {
+    results: kept.map((p) => {
       const code = normalizeBarcode(p.code);
       return { code, raw: p, draft: mapOffProductToFoodDraft(p, code) };
     }),

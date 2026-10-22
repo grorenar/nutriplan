@@ -242,6 +242,41 @@ await testAsync('searchProductsByText() : analyse tolérante — autre nom de cl
   restoreFetch();
 });
 
+await testAsync('searchProductsByText() : résultats hors-sujet écartés — ne garde que les produits dont nom/marque contiennent TOUS les mots cherchés', async () => {
+  // Retour utilisateur : « pinsa harrys » renvoyait en production une
+  // vingtaine de résultats très hétéroclites (ne matchant qu'un seul des
+  // deux mots), alors que le site OFF lui-même n'en affiche qu'un seul.
+  mockFetchOnce(async () => jsonRes({
+    count: 4,
+    hits: [
+      { code: '1', product_name: 'Pinsa 230g', brands: 'Harrys', nutriments: {} }, // les deux mots -> gardé
+      { code: '2', product_name: 'Pain de mie', brands: 'Harrys', nutriments: {} }, // "harrys" seul -> écarté
+      { code: '3', product_name: 'Pinsa 4 fromages', brands: 'Casa Leonardo', nutriments: {} }, // "pinsa" seul -> écarté
+      { code: '4', product_name: 'Brioche tranchée', brands: 'Jacquet', nutriments: {} }, // aucun des deux -> écarté
+    ],
+  }));
+  const res = await searchProductsByText({ name: 'pinsa harrys', brand: '' });
+  check('un seul résultat conservé, le vrai match', res.status === 'ok' && res.results.length === 1 && res.results[0].code === '1');
+  restoreFetch();
+});
+
+await testAsync('searchProductsByText() : filtre « tous les mots » jamais trop strict — repli sur la liste complète si personne ne matche tout', async () => {
+  // Si le resserrement ne garde aucun produit (mots répartis ailleurs que
+  // nom/marque, orthographe différente…), mieux vaut montrer une liste trop
+  // large que de cacher à tort un résultat pertinent que ce filtre simple
+  // n'aurait pas su reconnaître.
+  mockFetchOnce(async () => jsonRes({
+    count: 2,
+    hits: [
+      { code: '1', product_name: 'Yaourt nature', brands: 'MarqueA', nutriments: {} },
+      { code: '2', product_name: 'Fromage blanc', brands: 'MarqueB', nutriments: {} },
+    ],
+  }));
+  const res = await searchProductsByText({ name: 'produit totalement absent des deux fiches', brand: '' });
+  check('repli sur les 2 résultats renvoyés par OFF, rien de masqué', res.status === 'ok' && res.results.length === 2);
+  restoreFetch();
+});
+
 await testAsync('searchProductsByText() : nom et marque combinables', async () => {
   let calledUrl = null;
   mockFetchOnce(async (url) => { calledUrl = url; return jsonRes({ count: 0, hits: [] }); });
