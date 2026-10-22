@@ -851,29 +851,47 @@ tbody tr:hover td { background: var(--surface-alt); }
    juste en dessous, inchangée. */
 .plate {
   position: relative; margin: 4px auto 16px; width: 100%; max-width: 300px; aspect-ratio: 1 / 1;
-  min-height: 0; /* sans ça, aspect-ratio + overflow:visible agrandit quand même la boîte (taille minimale automatique du contenu) — exactement l'étirement que ce correctif supprime */
-  border-radius: 50%;
+  /* PAS de min-height:0 ici : la BOÎTE (zone de glisser-déposer + mise en
+     page des jetons) doit pouvoir grandir si le contenu déborde, pour que
+     l'espace réservé par le document grandisse avec elle et que les
+     éléments suivants (résumé macros, liste détaillée) ne se superposent
+     plus aux jetons en trop (retour utilisateur) — c'est la "taille
+     minimale automatique" par défaut du navigateur (aspect-ratio +
+     overflow:visible) qui fait exactement ça. Le CERCLE visuel, lui, ne
+     doit JAMAIS s'étirer en ovale : il est détaché dans ::before ci-dessous,
+     toujours carré (sa propre largeur pilote sa hauteur), épinglé en haut —
+     seule la zone EN DESSOUS de lui s'agrandit pour accueillir le débordement.
+  */
+  overflow: visible;
+  display: flex; flex-wrap: wrap; align-content: center; justify-content: center; align-items: center;
+  gap: 8px; padding: 18%;
+  isolation: isolate; /* le cercle (::before, z-index négatif) ne doit jamais passer devant un jeton */
+  transition: box-shadow .12s ease;
+}
+.plate::before {
   /* Porcelaine : rebord clair, "puits" central légèrement creusé — un vrai
      visuel de plat, plutôt qu'un simple cercle plat (retour utilisateur).
-     Le plat GARDE une taille fixe (retour utilisateur : l'étirement en
-     hauteur rendait bizarre) : avec beaucoup d'ingrédients aux noms complets
-     (jamais tronqués), les jetons débordent visuellement du cercle plutôt
-     que de le déformer — overflow: visible, jamais clippé ni compressé. */
-  overflow: visible;
+     Toujours carré (aspect-ratio indépendant de la hauteur réelle, grandie
+     ou non, de .plate) : le plat GARDE une taille fixe à l'œil (retour
+     utilisateur : l'étirement en ovale rendait bizarre), même quand .plate
+     grandit pour loger des jetons en trop. */
+  content: '';
+  position: absolute; top: 0; left: 0; width: 100%; aspect-ratio: 1 / 1;
+  border-radius: 50%;
   background: radial-gradient(circle at 50% 50%, #ffffff 0 56%, #f3f0e7 58% 76%, #ffffff 78% 100%);
   box-shadow:
     inset 0 0 0 1px #eae5d6,
     inset 0 10px 20px -10px rgba(18, 32, 22, .14),
     inset 0 -5px 10px rgba(255, 255, 255, .9),
     0 20px 30px -16px rgba(18, 32, 22, .4);
-  display: flex; flex-wrap: wrap; align-content: center; justify-content: center; align-items: center;
-  gap: 8px; padding: 18%;
+  z-index: -1;
   transition: background-color .12s ease, box-shadow .12s ease;
 }
-.plate.is-drop-target { background: var(--brand-50); box-shadow: inset 0 0 0 2px var(--brand-500), 0 20px 30px -16px rgba(18, 32, 22, .4); }
+.plate.is-drop-target::before { background: var(--brand-50); box-shadow: inset 0 0 0 2px var(--brand-500), 0 20px 30px -16px rgba(18, 32, 22, .4); }
 .plate__dropzone { display: none; }
 .plate.is-drop-target .plate__dropzone {
-  display: flex; position: absolute; inset: 0; border-radius: 50%; align-items: center; justify-content: center;
+  display: flex; position: absolute; top: 0; left: 0; width: 100%; aspect-ratio: 1 / 1; border-radius: 50%;
+  align-items: center; justify-content: center;
   font-weight: 700; color: var(--brand-700); font-size: var(--fs-sm); background: rgba(230, 241, 226, .85); z-index: 2;
   pointer-events: none;
 }

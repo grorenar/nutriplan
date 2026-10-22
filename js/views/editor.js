@@ -674,7 +674,7 @@ function renderItemRow(it, byId, recipesMap = {}, preparationsMap = {}) {
  * seul, perdu si on ne regardait que les clés protein/carbs/fat ici.
  */
 function suggestedCategories(state, entity) {
-  if (!entity) return new Set();
+  if (!entity) return new Map();
   const persons = entity.sameComposition === false && addFor !== 'both' ? [addFor] : PERSONS;
   const targets = targetsFor(state);
   const byId = foodsById();
@@ -698,13 +698,38 @@ function suggestedCategories(state, entity) {
     for (const k of MACRO_KEYS) { macros[k] += m[k] || 0; target[k] += t[k] || 0; }
   }
   const diag = diagnose(macros, target, state.foods, state.settings.tolerance);
-  const under = new Set();
-  for (const text of diag?.suggestions || []) {
-    if (text.includes('féculent')) under.add('feculent');
-    if (text.includes('matière grasse')) { under.add('matiere_grasse'); under.add('oleagineux'); }
-    if (text.includes('protéine')) under.add('proteine');
+  // Score de SÉVÉRITÉ par catégorie (ampleur relative du manque), pas un
+  // simple booléen "suggéré/pas suggéré" : retour utilisateur concret — un
+  // repas 100 % poulet où les protéines sont à 98 % (manque minime) et les
+  // glucides à 0 % (manque total) affichait quand même les protéines en
+  // premier, parce que l'ancien tri binaire mélangeait toutes les catégories
+  // "suggérées" dans leur ordre d'origine dans la banque (où « Protéine »
+  // précède « Féculent ») sans distinguer laquelle répond au manque le plus
+  // sévère. Avec un score, féculent (manque total) devance protéine (manque
+  // minime) quelle que soit leur position dans la banque.
+  const severity = new Map();
+  const bump = (cat, score) => severity.set(cat, Math.max(severity.get(cat) || 0, score));
+  const rows = diag?.rows || [];
+  for (const row of rows) {
+    if (row.key === 'kcal' || row.delta >= 0) continue; // excès, ou traité à part (repli ci-dessous)
+    const score = row.target > 0 ? -row.delta / row.target : 1;
+    if (row.key === 'protein') bump('proteine', score);
+    if (row.key === 'carbs') bump('feculent', score);
+    if (row.key === 'fat') { bump('matiere_grasse', score); bump('oleagineux', score); }
   }
-  return under;
+  // Repli kcal (identique à diagnose()) : uniquement si aucune macro précise
+  // n'a déjà donné de piste — un déficit calorique pur, sans carence isolée
+  // sur une macro, oriente vers féculent/matière grasse.
+  if (!severity.size) {
+    const kcalRow = rows.find((r) => r.key === 'kcal' && r.delta < 0);
+    if (kcalRow) {
+      const score = kcalRow.target > 0 ? -kcalRow.delta / kcalRow.target : 1;
+      bump('feculent', score);
+      bump('matiere_grasse', score);
+      bump('oleagineux', score);
+    }
+  }
+  return severity;
 }
 
 /**
@@ -716,8 +741,12 @@ function suggestedCategories(state, entity) {
  */
 function pickerList(state) {
   const all = filterFoods(state.foods, { query: pickerQuery, category: pickerCategory });
-  const suggested = suggestedCategories(state, entityFrom(state));
-  if (suggested.size) all.sort((a, b) => (suggested.has(b.category) ? 1 : 0) - (suggested.has(a.category) ? 1 : 0));
+  const severity = suggestedCategories(state, entityFrom(state));
+  const suggested = new Set(severity.keys());
+  // Tri par SÉVÉRITÉ (pas juste suggéré/pas suggéré) : la catégorie qui
+  // répond au manque le plus marqué passe devant, même si la banque contient
+  // beaucoup plus d'aliments d'une autre catégorie elle aussi suggérée.
+  if (severity.size) all.sort((a, b) => (severity.get(b.category) ?? -1) - (severity.get(a.category) ?? -1));
   const totalPages = Math.max(1, Math.ceil(all.length / PICKER_PAGE_SIZE));
   if (pickerPage >= totalPages) pickerPage = totalPages - 1;
   if (pickerPage < 0) pickerPage = 0;
