@@ -2482,6 +2482,53 @@ test('P0.2.7 — un aliment utilisé À LA FOIS directement ET via une recette (
 });
 
 /*
+ * Cas réel signalé (retour utilisateur, captures d'écran) : une recette dont
+ * UN ingrédient est saisi dans un état non convertible vers l'état de
+ * référence de sa fiche aliment (ex. "prêt" dans la recette, alors que la
+ * fiche de l'aliment est en "cru") fait disparaître cette quantité du
+ * besoin agrégé — SANS AUCUNE trace ni avertissement avant ce correctif.
+ * Contrairement à P0.2.7 (même état partout, agrégation correcte), ceci
+ * N'EST PAS un bug d'agrégation : aggregateNeeds() ne doit jamais inventer
+ * un poids pour une conversion non définie (toReferenceGrams() renvoie
+ * `null` à dessein). Le vrai bug était l'absence totale de signal pour
+ * l'utilisateur — corrigé par un avertissement "conversion impossible"
+ * (recipes.js : éditeur de recette ; batch.js : détail des ingrédients).
+ * Ce test verrouille le comportement du MOTEUR (silencieux par conception)
+ * et la DÉTECTION de l'état incriminé (conversionInfo), pour que l'alerte
+ * UI (testée côté ui.test.mjs) ait quelque chose de fiable à afficher.
+ */
+test('P0.2.8 — ingrédient de recette dans un état non convertible : sous-compté sans erreur, mais détectable via conversionInfo', () => {
+  const boeuf = F('Steak haché'); // referenceState 'cru' dans seed-foods.js
+  check('prérequis : la fiche de référence est bien en "cru"', boeuf.referenceState === 'cru');
+  boeuf.batchAllowed = true;
+
+  const recipe = newRecipe('Hachis parmentier (répro)', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 120, 'pret')]; // état MISMATCH volontaire
+  recipe.baseGrams = 550;
+  recipe.batchAllowed = true;
+  const recipesById = { [recipe.id]: recipe };
+
+  const itDirect = { ...item(boeuf, 294, { julie: 0 }) };
+  const itRecipe = { ...newRecipeMealItem(recipe.id, 2420), qty: { thomas: 2420, julie: 0 } };
+  const plan = buildBatchPlan(
+    batchTestState([mkMeal(0, 'lunch', [itDirect]), mkMeal(1, 'dinner', [itRecipe])]), byId, recipesById, {}
+  );
+
+  const c = plan[0].components.find((x) => x.food.id === boeuf.id);
+  check('le composant reste présent (usage direct toujours compté)', !!c);
+  check('mais la part venant de la recette (état "prêt" non convertible) est exclue — 294 g, pas 294+528',
+    c?.requiredRaw === 294, `${c?.requiredRaw}`);
+
+  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const ing = r.ingredients.find((i) => i.food.id === boeuf.id);
+  check('l’ingrédient est bien affiché à l’état "prêt" tel que saisi dans la recette (jamais corrigé silencieusement)',
+    ing.state === 'pret');
+  const conv = conversionInfo(ing.food, ing.state);
+  check('conversionInfo() détecte précisément ce cas (needed && !possible) — ce que l’UI utilise pour avertir',
+    conv.needed === true && conv.possible === false);
+});
+
+/*
  * Détail de la recette à l'échelle de ce qui est réellement préparé, et
  * répartition vers les gamelles de la session (écran batch, lecture seule —
  * jamais de modification du planning depuis buildBatchPlan()).

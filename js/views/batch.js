@@ -7,7 +7,7 @@
 import { getState, update, foodsById, recipesById, preparationsById } from '../core/store.js';
 import { buildBatchPlan, BATCH_CATEGORY_LABEL, YIELD_DEVIATION_THRESHOLD_PCT } from '../core/derive.js';
 import { dayName, esc, grams, num, toast } from '../core/util.js';
-import { MEAL_TYPES, PERSONS, PERSON_LABEL } from '../core/nutrition.js';
+import { MEAL_TYPES, PERSONS, PERSON_LABEL, conversionInfo } from '../core/nutrition.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 let pendingConfirm = null; // { title, message, onConfirm } — ajustement du rendement enregistré d'un aliment
@@ -313,9 +313,29 @@ function ingredientsDetail(c) {
   return `<div style="margin-top:8px">
     <strong>Recette totale à préparer</strong> — ${grams(c.preparedRaw)}
     <ul style="margin:4px 0 0;padding-left:18px">
-      ${c.ingredients.map((ing) => `<li>${grams(ing.qty)} ${esc(ing.food.name)}${ing.state ? ` (${esc(ing.state)})` : ''}</li>`).join('')}
+      ${c.ingredients.map(ingredientLine).join('')}
     </ul>
   </div>`;
+}
+
+/**
+ * Une ligne d'ingrédient de recette (détail "recette totale à préparer" ET
+ * "à assembler le jour même", même structure {food, qty, state}) — signale
+ * explicitement quand l'état saisi pour CET ingrédient n'est pas convertible
+ * vers l'état de référence de sa fiche aliment (ex. "prêt" alors que la
+ * fiche est en "cru", sans rendement cru/cuit entre les deux) : sans cette
+ * alerte, la quantité correspondante est silencieusement exclue du besoin
+ * agrégé par aggregateNeeds() (derive.js) — un aliment utilisé À LA FOIS
+ * directement ET via une telle recette paraît alors sous-compté, jamais
+ * signalé (retour utilisateur). aggregateNeeds() n'invente jamais de poids ;
+ * la correction revient à l'utilisateur, ici rendue visible.
+ */
+function ingredientLine(ing) {
+  const conv = conversionInfo(ing.food, ing.state || ing.food.referenceState);
+  const warn = conv.needed && !conv.possible
+    ? ` <span class="tag sync-error">⚠️ conversion impossible — non compté dans le besoin total, à corriger dans la recette ou la fiche aliment</span>`
+    : '';
+  return `<li>${grams(ing.qty)} ${esc(ing.food.name)}${ing.state ? ` (${esc(ing.state)})` : ''}${warn}</li>`;
 }
 
 /**
@@ -378,7 +398,7 @@ function sameDayItem(r) {
   if (!r.ingredients?.length) return `<li>${head}</li>`;
   return `<li>${head}
     <ul style="margin:2px 0 4px;padding-left:18px">
-      ${r.ingredients.map((ing) => `<li>${grams(ing.qty)} ${esc(ing.food.name)}${ing.state ? ` (${esc(ing.state)})` : ''}</li>`).join('')}
+      ${r.ingredients.map(ingredientLine).join('')}
     </ul>
   </li>`;
 }

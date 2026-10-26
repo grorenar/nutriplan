@@ -48,6 +48,7 @@ const app = await import(join(root, 'js/app.js'));
 const store = await import(join(root, 'js/core/store.js')); // même instance de module que celle utilisée par app.js
 const derive = await import(join(root, 'js/core/derive.js')); // lecture seule, pour valider les quantités affichées sans reparser le texte rendu
 const util = await import(join(root, 'js/core/util.js')); // num() — reproduit le formatage exact affiché, sans le redupliquer à la main
+const nutrition = await import(join(root, 'js/core/nutrition.js')); // conversionInfo()/STATES — pour choisir un état non convertible sans le deviner
 const sync = await import(join(root, 'js/core/sync.js'));
 const scannerLib = await import(join(root, 'js/core/barcode-scanner.js')); // même instance que celle utilisée par foods.js
 // js/config.js contient volontairement les vraies clés Supabase du projet
@@ -1345,6 +1346,48 @@ check('composition de référence stockée : 150 g Skyr + 50 g flocons',
   skyrRecipeSaved?.items.map((it) => it.qty).join(',') === '150,50', skyrRecipeSaved?.items.map((it) => it.qty).join(','));
 check('baseGrams = 200 g', skyrRecipeSaved?.baseGrams === 200, skyrRecipeSaved?.baseGrams);
 
+console.log('\n— Correction retour utilisateur : avertissement manquant sur un ingrédient de recette dans un état non convertible');
+// Cas réel (captures d'écran) : un ingrédient saisi dans un état qui ne peut
+// pas être ramené à l'état de référence de sa fiche aliment (ex. "prêt" alors
+// que la fiche est en "cru", sans rendement cru/cuit entre les deux) perd
+// silencieusement sa quantité dans le besoin agrégé (batch cooking, liste de
+// courses) — sans que rien ne le signale dans l'éditeur de recette. editor.js
+// avertit déjà pour ce cas sur un item de repas ; recipes.js ne le faisait pas.
+click($('[data-new]'));
+await wait();
+change($('[data-r="name"]'), 'Test avertissement conversion');
+change($('[data-r="kind"]'), 'weight');
+await wait();
+type($('[data-ing-search]'), 'skyr nature');
+click($$('[data-ing-add]').find((b) => /Skyr nature/i.test(b.textContent)));
+await wait();
+const skyrFood = store.getState().foods.find((f) => /Skyr nature/i.test(f.name));
+// état garanti NON convertible vers skyrFood.referenceState (ni identique, ni
+// une paire cru/cuit) : choisi dynamiquement plutôt que deviné en dur, pour
+// ne jamais dépendre de la donnée de seed précise de cet aliment.
+const badState = nutrition.STATES.map((s) => s.id).find((id) => {
+  const conv = nutrition.conversionInfo(skyrFood, id);
+  return conv.needed && !conv.possible;
+});
+check('prérequis : un état non convertible existe bien pour cet aliment (sinon le test ne prouve rien)', !!badState, badState);
+
+const ingStateBox = () => $('[data-ing-state="0"]').closest('.qty-box');
+check('état par défaut (identique à la fiche) : aucun avertissement de conversion', !/conversion impossible/.test(ingStateBox().textContent));
+
+change($('[data-ing-state="0"]'), badState);
+await wait();
+check(`état « ${badState} » (non convertible) choisi pour cet ingrédient : avertissement affiché`,
+  /conversion impossible/.test(ingStateBox().textContent));
+
+change($('[data-ing-state="0"]'), skyrFood.referenceState);
+await wait();
+check('retour à l’état de la fiche : avertissement disparu', !/conversion impossible/.test(ingStateBox().textContent));
+
+click($('[data-form-cancel]'));
+await wait();
+if ($('[data-unsaved-discard]')) { click($('[data-unsaved-discard]')); await wait(); }
+check('formulaire de test refermé sans enregistrer', !store.getState().recipes.some((r) => r.name === 'Test avertissement conversion'));
+
 console.log('\n— Éditeur de repas : recette « weight » déployée proportionnellement (composition dérivée, jamais stockée)');
 click($('[data-view="planning"]'));
 await wait();
@@ -1544,6 +1587,35 @@ check('un texte explicite remplace le champ (jamais un simple tiret identique au
 check('les autres mesures (à sortir, cuit nécessaire…) restent affichées normalement pour lui',
   ['À sortir', 'Je prépare', 'Surplus'].every((l) =>
     [...platCard.querySelectorAll('.batch-item__metric-label')].some((el) => el.textContent.trim() === l)));
+
+console.log('\n— Correction retour utilisateur : ingrédient de recette dans un état non convertible -> avertissement visible dans Batch');
+// Cas réel (captures d'écran) : un ingrédient de recette saisi dans un état
+// non convertible vers l'état de référence de sa fiche aliment perd
+// silencieusement sa quantité dans le besoin agrégé (derive.js,
+// aggregateNeeds) — rien ne le signalait auparavant dans l'écran Batch.
+let mismatchRecipeId;
+const boeufForMismatch = store.getState().foods.find((f) => f.id === measuredFoodId);
+const mismatchState = nutrition.STATES.map((s) => s.id).find((id) => {
+  const conv = nutrition.conversionInfo(boeufForMismatch, id);
+  return conv.needed && !conv.possible;
+});
+check('prérequis : un état non convertible existe pour cet aliment', !!mismatchState, mismatchState);
+store.update((s) => {
+  const r = store.newRecipe('Recette avec ingrédient mal renseigné', 'weight');
+  r.items = [store.newRecipeItem(boeufForMismatch.id, 100, mismatchState)];
+  r.baseGrams = 100;
+  r.batchAllowed = true;
+  mismatchRecipeId = r.id;
+  s.recipes.push(r);
+  s.meals[1].items = [...s.meals[1].items, { ...store.newRecipeMealItem(mismatchRecipeId, 300), qty: { thomas: 300, julie: 0 } }];
+});
+await wait();
+click($('[data-view="batch"]'));
+await wait();
+const mismatchRecipeCard = () => [...$$('td')].find((td) => td.textContent.includes('Recette avec ingrédient mal renseigné'));
+check('la recette apparaît bien dans « Recettes à préparer en batch »', !!mismatchRecipeCard());
+check('avertissement « conversion impossible » visible pour son ingrédient',
+  /conversion impossible/.test(mismatchRecipeCard().textContent));
 
 console.log('\n— Batch : suggestion de répartition du surplus entre les gamelles');
 check('la répartition du surplus apparaît dans le détail des gamelles (affichage seul, planning intact)',

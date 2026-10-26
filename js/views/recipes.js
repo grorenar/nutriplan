@@ -9,7 +9,7 @@ import { getState, update, newRecipe, newRecipeItem, foodByBarcode } from '../co
 import {
   CATEGORIES, STATES, recipeMacrosPer100g, canAddIngredientToRecipe,
   isUnitFood, isWholeUnitFood, toUnits, fromUnits, quantityStep, snapQuantity, initialQuantity,
-  portionGramsOf,
+  portionGramsOf, conversionInfo,
 } from '../core/nutrition.js';
 import { unitLabel, unitHint } from './editor.js';
 import { esc, num, toast, deepCopy } from '../core/util.js';
@@ -292,6 +292,21 @@ function formBodyHtml(r, s, byId) {
                 <select data-ing-state="${idx}">
                   ${STATES.map((st) => `<option value="${st.id}" ${(it.state || food?.referenceState) === st.id ? 'selected' : ''}>${st.label}</option>`).join('')}
                 </select>
+                ${
+                  // Même garde-fou que l'éditeur de repas (editor.js) pour les
+                  // items foodId — manquant jusqu'ici pour les ingrédients de
+                  // recette : un état non convertible vers food.referenceState
+                  // (ex. "prêt" alors que la fiche est en "cru") fait disparaître
+                  // SILENCIEUSEMENT la quantité du besoin agrégé (batch cooking,
+                  // liste de courses), sans qu'aucun poids faux ne soit jamais
+                  // inventé — retour utilisateur, aggregateNeeds() dans derive.js.
+                  (() => {
+                    const conv = conversionInfo(food, it.state || food.referenceState);
+                    return conv.needed && !conv.possible
+                      ? `<small class="sync-error">conversion impossible — non comptée dans le batch/les courses</small>`
+                      : '';
+                  })()
+                }
               </div>
             </div>
           </div>
