@@ -146,6 +146,16 @@ function subBatchRows(subBatches, startWeekday) {
  */
 function cookedObtainedCell(c) {
   if (!c.needsCooking) return '<span class="muted">—</span>';
+  // Un aliment "nécessite une cuisson" peut avoir des valeurs nutritionnelles
+  // définies à l'état "prêt à consommer" (ex. plat surgelé à réchauffer,
+  // cf. foods.js) : il n'y a alors pas de poids cru distinct à comparer au
+  // cuit obtenu, donc rien à mesurer ici — même condition que derive.js
+  // (measurable), pour ne jamais afficher un champ qui semble actif mais
+  // dont la saisie ne serait jamais relue (retour utilisateur : "le cuit
+  // obtenu ne fait rien ... et disparaît après une saisie").
+  if (c.food.referenceState !== 'cru') {
+    return '<span class="muted">— (déjà à l’état de référence de la fiche)</span>';
+  }
   // Convention d'affichage du rendement alignée sur la fiche aliment
   // (foods.js : coefficient décimal "×X,XX", jamais un pourcentage) — seul
   // le seuil de déclenchement de l'alerte reste exprimé en écart relatif (%),

@@ -2440,6 +2440,48 @@ test('P0.2.6 — une recette non batchAllowed n’apparaît PAS dans "à prépar
 });
 
 /*
+ * Retour utilisateur : « si je mets dans le planning de la viande hachée qui
+ * doit être cuite, et que je mets également une recette qui utilise cette
+ * même viande hachée, alors elle n'apparaît pas du tout dans "à préparer en
+ * batch" ». aggregateNeeds() déplie TOUJOURS une recette référencée
+ * directement (deployItem) avant d'agréger par aliment — un même aliment
+ * utilisé à la fois tel quel et via une recette doit donc former UNE SEULE
+ * ligne, somme des deux usages, jamais disparaître.
+ */
+test('P0.2.7 — un aliment utilisé À LA FOIS directement ET via une recette (même aliment) : une seule ligne agrégée, jamais absente', () => {
+  const boeuf = F('Steak haché');
+  boeuf.batchAllowed = true;
+  const recipe = newRecipe('Chili partagé', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
+  recipe.baseGrams = 1000;
+  recipe.batchAllowed = true;
+  const recipesById = { [recipe.id]: recipe };
+
+  const itDirect = { ...item(boeuf, 300, { julie: 0 }) };
+  const itRecipe = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
+
+  // même repas (cas le plus simple) :
+  const planSameMeal = buildBatchPlan(
+    batchTestState([mkMeal(0, 'lunch', [itDirect, itRecipe])]), byId, recipesById, {}
+  );
+  const cSame = planSameMeal[0].components.find((c) => c.food.id === boeuf.id);
+  check('présent (même repas) : la viande hachée n’a pas disparu', !!cSame);
+  check('quantité agrégée = 300 (direct) + 500 (recette) = 800 g', cSame?.requiredRaw === 800, `${cSame?.requiredRaw}`);
+
+  // deux repas distincts, même session :
+  const planTwoMeals = buildBatchPlan(
+    batchTestState([mkMeal(0, 'lunch', [itDirect]), mkMeal(1, 'dinner', [itRecipe])]), byId, recipesById, {}
+  );
+  const cTwo = planTwoMeals[0].components.find((c) => c.food.id === boeuf.id);
+  check('présent (deux repas, même session) : la viande hachée n’a pas disparu', !!cTwo);
+  check('quantité agrégée identique (300 + 500 = 800 g)', cTwo?.requiredRaw === 800, `${cTwo?.requiredRaw}`);
+
+  // la recette elle-même reste également listée à part (deux vues complémentaires)
+  check('la recette apparaît aussi dans recipesToPrepare (complémentaire, pas redondant)',
+    planTwoMeals[0].recipesToPrepare.some((r) => r.recipe.id === recipe.id));
+});
+
+/*
  * Détail de la recette à l'échelle de ce qui est réellement préparé, et
  * répartition vers les gamelles de la session (écran batch, lecture seule —
  * jamais de modification du planning depuis buildBatchPlan()).

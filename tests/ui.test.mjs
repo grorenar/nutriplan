@@ -1511,6 +1511,40 @@ check('confirmation : rendement enregistré mis à jour sur la fiche aliment',
 check('rendement théorique désormais aligné sur la mesure : plus d’écart, plus de bouton',
   !$$('[data-adjust-yield]').some((b) => b.dataset.adjustYield === batchKey));
 
+console.log('\n— Batch : « cuit obtenu » absent (lecture seule) pour un aliment dont les valeurs ne sont PAS à l’état cru');
+// Retour utilisateur : un aliment "nécessite une cuisson" avec des valeurs
+// nutritionnelles à l'état "prêt à consommer" (ex. plat surgelé à réchauffer
+// — combinaison volontairement permise par la fiche aliment, cf. foods.js)
+// n'a pas de poids cru distinct à comparer : le champ "cuit obtenu" ne doit
+// JAMAIS apparaître comme actif pour lui, sinon toute saisie y est
+// silencieusement ignorée (measurable=false côté derive.js).
+let platPretId;
+store.update((s) => {
+  const base = s.foods.find((f) => f.id === measuredFoodId);
+  const f = {
+    ...base, id: 'food_plat_pret_cuisson', name: 'Plat surgelé à réchauffer P1',
+    referenceState: 'pret', requiresCooking: true, batchAllowed: true,
+  };
+  platPretId = f.id;
+  s.foods.push(f);
+  s.meals[0].items = [...s.meals[0].items, {
+    id: 'it_plat_pret_p1', foodId: platPretId, free: null, state: 'pret',
+    qty: { thomas: 400, julie: 0 }, locked: { thomas: false, julie: false },
+  }];
+});
+await wait();
+click($('[data-view="batch"]'));
+await wait();
+const platCard = $$('.batch-item').find((card) => card.textContent.includes('Plat surgelé à réchauffer P1'));
+check('la carte du plat (prêt + nécessite cuisson) est bien listée en « à préparer en batch »', !!platCard);
+check('aucun champ « cuit obtenu » éditable pour lui (pas d’état cru distinct à mesurer)',
+  !platCard.querySelector('[data-cooked]'));
+check('un texte explicite remplace le champ (jamais un simple tiret identique au cas "ne se cuit pas")',
+  /déjà à l.état de référence/.test(platCard.textContent));
+check('les autres mesures (à sortir, cuit nécessaire…) restent affichées normalement pour lui',
+  ['À sortir', 'Je prépare', 'Surplus'].every((l) =>
+    [...platCard.querySelectorAll('.batch-item__metric-label')].some((el) => el.textContent.trim() === l)));
+
 console.log('\n— Batch : suggestion de répartition du surplus entre les gamelles');
 check('la répartition du surplus apparaît dans le détail des gamelles (affichage seul, planning intact)',
   /\(surplus à servir\)/.test($('#view').textContent));
