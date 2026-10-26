@@ -116,18 +116,10 @@ function batchSection(s, byId, recipesMap = {}, preparationsMap = {}) {
           .join('')}</ul>`
       : '<p>Rien dans cette catégorie.</p>';
 
-  return `<div class="print-section"><h2>Batch cooking</h2>
-    ${plan
-      .map(
-        (sess) => `<h3>Session ${sess.index + 1} — jours ${sess.startDay + 1} à ${sess.endDay + 1}</h3>
+  const sessionsHtml = plan.sessions
+    .map(
+      (sess) => `<h3>${esc(sess.label || 'Session sans nom')}</h3>
       <p>Gamelles à préparer : ${sess.gamelles.map((g) => esc(slot(g.dayIndex, g.mealType))).join(', ') || 'aucune'}.</p>
-      ${
-        sess.conservationAlerts?.length
-          ? `<p><strong>Conservation insuffisante :</strong></p><ul>${sess.conservationAlerts
-              .map((a) => `<li>${esc(a.message)}</li>`)
-              .join('')}</ul>`
-          : ''
-      }
 
       <p><strong>${BATCH_CATEGORY_LABEL.batch}</strong></p>
       <table><thead><tr>
@@ -152,9 +144,6 @@ function batchSection(s, byId, recipesMap = {}, preparationsMap = {}) {
           : '<tr><td colspan="6">Aucun composant batchable.</td></tr>'
       }</tbody></table>
 
-      <p><strong>${BATCH_CATEGORY_LABEL.cook}</strong></p>${sameDay(sess.cookSameDay)}
-      <p><strong>${BATCH_CATEGORY_LABEL.assemble}</strong></p>${sameDay(sess.assembleSameDay)}
-
       <p><strong>Détail des gamelles</strong></p>
       ${sess.gamelles
         .filter((g) => PERSONS.some((p) => g.persons[p].length))
@@ -174,8 +163,19 @@ function batchSection(s, byId, recipesMap = {}, preparationsMap = {}) {
           </div>`
         )
         .join('')}`
-      )
-      .join('')}
+    )
+    .join('');
+
+  const unassignedHtml = plan.unassignedGamelles.length
+    ? `<p><strong>Gamelles pas encore réparties dans une session :</strong></p>
+       <ul>${plan.unassignedGamelles.map((g) => `<li>${esc(slot(g.dayIndex, g.mealType))}${g.name ? ` — ${esc(g.name)}` : ''}</li>`).join('')}</ul>`
+    : '';
+
+  return `<div class="print-section"><h2>Batch cooking</h2>
+    ${plan.sessions.length ? sessionsHtml : '<p>Aucune session de batch créée.</p>'}
+    ${unassignedHtml}
+    <p><strong>${BATCH_CATEGORY_LABEL.cook}</strong></p>${sameDay(plan.cookSameDay)}
+    <p><strong>${BATCH_CATEGORY_LABEL.assemble}</strong></p>${sameDay(plan.assembleSameDay)}
   </div>`;
 }
 

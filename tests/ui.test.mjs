@@ -1478,6 +1478,14 @@ check('la fiche de l’aliment s’ouvre dans Aliments',
 click($('[data-form-cancel]'));
 await wait();
 
+console.log('\n— Batch cooking : création d’une session et affectation de toutes les gamelles (DnD simulé via store.update)');
+store.update((s) => {
+  const sess = store.newBatchSession('Session test');
+  sess.mealIds = s.meals.map((m) => m.id);
+  s.batch.sessions = [sess];
+});
+await wait();
+
 click($('[data-view="batch"]'));
 check('composants de batch listés', $$('[data-prep]').length > 0);
 check('« à préparer en batch » affiché en cartes (P4, retour utilisateur : plus le tableau à 7 colonnes)',
@@ -1490,7 +1498,7 @@ check('toutes les mesures restent présentes sur chaque carte, dont « Cuit obte
 // un composant consommé DIRECTEMENT dans au moins une gamelle (hors recette,
 // qui n'expose jamais le détail de ses ingrédients internes dans les
 // gamelles) : nécessaire pour tester la suggestion de répartition du surplus.
-const sessForPrep = derive.buildBatchPlan(store.getState(), store.foodsById(), store.recipesById(), store.preparationsById())[0];
+const sessForPrep = derive.buildBatchPlan(store.getState(), store.foodsById(), store.recipesById(), store.preparationsById()).sessions[0];
 const directComponent = sessForPrep.components.find((c) =>
   sessForPrep.gamelles.some((g) => Object.values(g.persons).some((list) => list.some((e) => e.food?.id === c.food.id)))
 );
@@ -2456,6 +2464,11 @@ store.update((s) => {
   s.recipes.push(r3);
   const meal = s.meals.find((m) => m.dayIndex === 0 && m.mealType === 'dinner');
   meal.items.push({ ...store.newRecipeMealItem(r3.id, 500), qty: { thomas: 500, julie: 0 } });
+  // le reset de cycle (P4, ci-dessus) a vidé s.batch.sessions : on recrée une
+  // session couvrant toutes les gamelles pour les tests batch qui suivent.
+  const sess = store.newBatchSession('Session test 2');
+  sess.mealIds = s.meals.map((m) => m.id);
+  s.batch.sessions = [sess];
 });
 await wait();
 click($('[data-view="batch"]'));
@@ -2488,6 +2501,57 @@ const skyrLi = $$('li').find((li) => li.querySelector('ul') && /Skyr Flocons Tes
 check('« Skyr Flocons Test » apparaît avec son détail d’ingrédients, assemblée le jour même (jamais marquée batchAllowed)', !!skyrLi);
 check('ingrédient mis à l’échelle affiché (4 portions × 330 g = 1,32 kg de Steak haché, pas la recette seule)',
   !!skyrLi && /1,32\s*kg.*Steak haché|Steak haché.*1,32\s*kg/.test(skyrLi.textContent.replace(/\s+/g, ' ')));
+
+console.log('\n— Batch cooking : vrai glisser-déposer entre le pool « Gamelles à préparer » et les sessions');
+// Demande explicite de l'utilisateur : « un vrai DnD entre gamelles à
+// préparer, et session de batch » — remplace l'ancien découpage automatique
+// par maxDays. Mêmes événements génériques que planning.js (dragStart/
+// dragOver/drop ci-dessus) : batch.js ne lit jamais dataTransfer.getData()
+// non plus (la charge voyage dans dragMealId, variable de module).
+const dndSessId = store.getState().batch.sessions[0].id;
+// Choisie avec du contenu réellement batchable (mealHasBatchable) : sinon,
+// une fois sortie de sa session vers le pool, elle disparaîtrait purement et
+// simplement (le pool ne liste que les gamelles ayant quelque chose à
+// préparer, cf. unassignedGamelles dans derive.js) — piégeant la gamelle.
+const dndFoodsById = store.foodsById();
+const dndRecipesById = store.recipesById();
+const dndMealId = store.getState().batch.sessions[0].mealIds.find((id) => {
+  const meal = store.getState().meals.find((m) => m.id === id);
+  return meal && derive.mealHasBatchable(meal, dndFoodsById, dndRecipesById);
+});
+check('une gamelle batchable est disponible pour le test de glisser-déposer', !!dndMealId);
+const chipFor = (mealId) => $$('[data-gamelle-id]').find((el) => el.dataset.gamelleId === mealId);
+const zoneOf = (mealId) => chipFor(mealId)?.closest('[data-drop]')?.dataset.drop;
+check('la gamelle est au départ affectée à sa session', zoneOf(dndMealId) === dndSessId);
+
+// session -> pool
+dragTo(chipFor(dndMealId), $('[data-drop="pool"]'));
+await wait();
+check('glisser-déposer réel (session -> pool) : la gamelle quitte la session', zoneOf(dndMealId) === 'pool');
+check('store à jour : plus aucune session ne référence cette gamelle',
+  !store.getState().batch.sessions.some((s) => s.mealIds.includes(dndMealId)));
+
+// pool -> nouvelle session
+click($('[data-new-session]'));
+await wait();
+const newSessId = store.getState().batch.sessions.find((s) => s.id !== dndSessId).id;
+dragTo(chipFor(dndMealId), $(`[data-drop="${newSessId}"]`));
+await wait();
+check('glisser-déposer réel (pool -> session) : la gamelle rejoint la nouvelle session', zoneOf(dndMealId) === newSessId);
+
+// session -> session (directement, sans repasser par le pool)
+dragTo(chipFor(dndMealId), $(`[data-drop="${dndSessId}"]`));
+await wait();
+check('glisser-déposer réel (session -> session) : la gamelle change directement de session', zoneOf(dndMealId) === dndSessId);
+check('une seule session référence la gamelle à la fin (jamais de doublon)',
+  store.getState().batch.sessions.filter((s) => s.mealIds.includes(dndMealId)).length === 1);
+
+// nettoyage : la session vide créée pour ce test est supprimée, pour ne pas
+// perturber les sections suivantes (qui comptent sur une seule session).
+click($$('[data-delete-session]').find((b) => b.dataset.deleteSession === newSessId));
+await wait();
+check('session vide supprimée sans perturber la session restante ni sa gamelle',
+  store.getState().batch.sessions.length === 1 && store.getState().batch.sessions[0].mealIds.includes(dndMealId));
 
 console.log('\n— Chantier P0 : suppression d’un aliment référencé dans une recette (composition live)');
 click($('[data-view="foods"]'));

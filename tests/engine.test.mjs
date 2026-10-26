@@ -954,36 +954,50 @@ test('Cru / cuit — conversions et macros', () => {
 
 const mkMeal = (day, type, items) => ({ id: `m${day}${type}`, dayIndex: day, mealType: type, name: '', sameComposition: true, items });
 
+// Sessions MANUELLES fixes (id '0' et '1', comme l'ancien index de session —
+// les clés `${sessionId}:${foodId}` historiques des tests ci-dessous restent
+// donc valables telles quelles) mirant l'ancien découpage automatique par
+// `maxDays` (jours 1-3 / jour 4) : préserve les scénarios/assertions
+// existants tout en passant par l'affectation manuelle (retour utilisateur —
+// remplace `maxDays`, cf. store.js::newBatchSession()).
 function batchState(overrides = {}, cookedOverrides = {}) {
+  const meals = [
+    mkMeal(0, 'lunch', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 }), item(F('Riz basmati'), 0, { thomas: 90, julie: 70 })]),
+    mkMeal(0, 'dinner', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 }), item(F('Haricots verts'), 200)]),
+    mkMeal(1, 'lunch', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 }), item(F('Riz basmati'), 0, { thomas: 90, julie: 70 })]),
+    mkMeal(1, 'dinner', [item(F('Cabillaud'), 0, { thomas: 200, julie: 150 })]),
+    mkMeal(2, 'lunch', [item(F('Œuf entier'), 0, { thomas: 120, julie: 60 })]),
+    mkMeal(2, 'dinner', [item(F('Wrap'), 0, { thomas: 124, julie: 62 }), item(F('Blanc de poulet'), 0, { thomas: 130, julie: 100 })]),
+    mkMeal(3, 'lunch', [item(F('Riz basmati'), 0, { thomas: 90, julie: 70 })]),
+    mkMeal(3, 'dinner', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 })]),
+  ];
   return {
     foods,
     settings: {
       cycle: { startWeekday: 1, duration: 4 },
-      batch: { enabled: true, maxDays: 3 },
+      batch: { enabled: true },
       budget: 100,
       tolerance: 0.05,
       targets: { thomas: { lunch: LUNCH.thomas, dinner: LUNCH.thomas }, julie: { lunch: LUNCH.julie, dinner: LUNCH.julie } },
     },
-    batch: { overrides, cookedOverrides },
+    batch: {
+      overrides, cookedOverrides,
+      sessions: [
+        { id: '0', label: 'Session 1', mealIds: meals.filter((m) => m.dayIndex <= 2).map((m) => m.id) },
+        { id: '1', label: 'Session 2', mealIds: meals.filter((m) => m.dayIndex === 3).map((m) => m.id) },
+      ],
+    },
     shopping: { purchased: {} },
-    meals: [
-      mkMeal(0, 'lunch', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 }), item(F('Riz basmati'), 0, { thomas: 90, julie: 70 })]),
-      mkMeal(0, 'dinner', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 }), item(F('Haricots verts'), 200)]),
-      mkMeal(1, 'lunch', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 }), item(F('Riz basmati'), 0, { thomas: 90, julie: 70 })]),
-      mkMeal(1, 'dinner', [item(F('Cabillaud'), 0, { thomas: 200, julie: 150 })]),
-      mkMeal(2, 'lunch', [item(F('Œuf entier'), 0, { thomas: 120, julie: 60 })]),
-      mkMeal(2, 'dinner', [item(F('Wrap'), 0, { thomas: 124, julie: 62 }), item(F('Blanc de poulet'), 0, { thomas: 130, julie: 100 })]),
-      mkMeal(3, 'lunch', [item(F('Riz basmati'), 0, { thomas: 90, julie: 70 })]),
-      mkMeal(3, 'dinner', [item(F('Blanc de poulet'), 0, { thomas: 180, julie: 130 })]),
-    ],
+    meals,
   };
 }
 
 test('Batch — agrégation par session et trois catégories', () => {
   const s = batchState();
-  const plan = buildBatchPlan(s, byId);
-  check('deux sessions pour 4 jours et 3 jours de conservation', plan.length === 2,
-    plan.map((p) => `J${p.startDay + 1}-${p.endDay + 1}`).join(' / '));
+  const planObj = buildBatchPlan(s, byId);
+  const plan = planObj.sessions;
+  check('deux sessions (affectées à la main, jours 1-3 / jour 4)', plan.length === 2,
+    plan.map((p) => p.mealCount).join(' / '));
 
   const s1 = plan[0];
   const poulet = s1.components.find((c) => c.food.name.includes('Blanc de poulet'));
@@ -1010,18 +1024,21 @@ test('Batch — agrégation par session et trois catégories', () => {
   check('catégorie "assemblage" pour le skyr', batchCategory(F('Skyr')) === 'assemble');
   check('catégorie "assemblage" pour le pain croustillant', batchCategory(F('Pain croustillant')) === 'assemble');
 
-  const cookNames = s1.cookSameDay.map((x) => x.food.name.toLowerCase());
-  const assembleNames = s1.assembleSameDay.map((x) => x.food.name.toLowerCase());
+  // cookSameDay/assembleSameDay sont désormais globaux (indépendants des
+  // sessions, cf. derive.js) : un élément non-batchable est toujours cuisiné
+  // le jour même, quelle que soit l'organisation du batch.
+  const cookNames = planObj.cookSameDay.map((x) => x.food.name.toLowerCase());
+  const assembleNames = planObj.assembleSameDay.map((x) => x.food.name.toLowerCase());
   check('cabillaud dans "à cuire le jour même"', cookNames.some((n) => n.includes('cabillaud')));
   check('œufs dans "à cuire le jour même"', cookNames.some((n) => n.includes('œuf')));
   check('wrap dans "à assembler le jour même"', assembleNames.some((n) => n.includes('wrap')));
   check('aucun aliment batchable dans les deux autres catégories',
     ![...cookNames, ...assembleNames].some((n) => n.includes('poulet') || n.includes('riz')));
   check('cabillaud rattaché au bon jour',
-    s1.cookSameDay.find((x) => x.food.name.toLowerCase().includes('cabillaud')).dayIndex === 1);
+    planObj.cookSameDay.find((x) => x.food.name.toLowerCase().includes('cabillaud')).dayIndex === 1);
 
   const s2 = plan[1];
-  check('session 2 = jour 4 uniquement', s2.startDay === 3 && s2.endDay === 3);
+  check('session 2 = jour 4 uniquement (affectation manuelle)', s2.mealCount === 2, `${s2.mealCount}`);
   const poulet2 = s2.components.find((c) => c.food.name.includes('Blanc de poulet'));
   check('poulet session 2 séparé de la session 1', poulet2.requiredRaw === 310, `${poulet2.requiredRaw} g`);
 
@@ -1029,7 +1046,7 @@ test('Batch — agrégation par session et trois catégories', () => {
   const key = `0:${F('Blanc de poulet').id}`;
   const s3 = batchState({ [key]: 1500 });
   const mealsBefore = JSON.stringify(s3.meals);
-  const plan3 = buildBatchPlan(s3, byId);
+  const plan3 = buildBatchPlan(s3, byId).sessions;
   const p3 = plan3[0].components.find((c) => c.food.name.includes('Blanc de poulet'));
   check('quantité préparée manuelle prise en compte', p3.preparedRaw === 1500);
   check('besoin inchangé par la modification', p3.requiredRaw === 1160);
@@ -1040,7 +1057,7 @@ test('Batch — agrégation par session et trois catégories', () => {
 
 test('Batch — plan opératoire : méthode, rendement, gamelles', () => {
   const s = batchState();
-  const sess = buildBatchPlan(s, byId)[0];
+  const sess = buildBatchPlan(s, byId).sessions[0];
   const poulet = sess.components.find((c) => c.food.name.includes('Blanc de poulet'));
   info(`poulet : ${poulet.method} ${poulet.temperature} °C ${poulet.duration} min, rendement ${poulet.yieldPct} %`);
   check('méthode de cuisson reprise de la fiche aliment', poulet.method === 'Four');
@@ -1079,20 +1096,20 @@ test('Batch — mesure "cuit obtenu" face au rendement enregistré', () => {
 
   // 1. aucune mesure saisie : rien n'est inventé
   const sNone = batchState();
-  const cNone = buildBatchPlan(sNone, byId)[0].components.find((c) => c.food.id === poulet.id);
+  const cNone = buildBatchPlan(sNone, byId).sessions[0].components.find((c) => c.food.id === poulet.id);
   check('pas de mesure : measuredCooked/measuredYieldPct null', cNone.measuredCooked === null && cNone.measuredYieldPct === null);
   check('pas de mesure : aucune alerte', cNone.yieldDeviationSignificant === false);
 
   // 2. mesure proche du rendement enregistré (75 % vs 70 % — écart ~7 %, sous le seuil de 15 %)
   const sClose = batchState({ [key]: 1000 }, { [key]: 750 });
-  const cClose = buildBatchPlan(sClose, byId)[0].components.find((c) => c.food.id === poulet.id);
+  const cClose = buildBatchPlan(sClose, byId).sessions[0].components.find((c) => c.food.id === poulet.id);
   check('rendement mesuré calculé (750/1000 = 75 %)', cClose.measuredYieldPct === 75);
   check('écart faible : aucune alerte', cClose.yieldDeviationSignificant === false);
   check('coefficient mesuré exposé (0,75)', Math.abs(cClose.measuredCookedFactor - 0.75) < 0.001);
 
   // 3. mesure très éloignée du rendement enregistré (50 % vs 70 % — écart ~29 %, au-delà du seuil)
   const sFar = batchState({ [key]: 1000 }, { [key]: 500 });
-  const cFar = buildBatchPlan(sFar, byId)[0].components.find((c) => c.food.id === poulet.id);
+  const cFar = buildBatchPlan(sFar, byId).sessions[0].components.find((c) => c.food.id === poulet.id);
   check('rendement mesuré calculé (500/1000 = 50 %)', cFar.measuredYieldPct === 50);
   check('écart important : alerte déclenchée', cFar.yieldDeviationSignificant === true);
   check('coefficient mesuré exposé (0,5)', Math.abs(cFar.measuredCookedFactor - 0.5) < 0.001);
@@ -1103,7 +1120,7 @@ test('Batch — mesure "cuit obtenu" face au rendement enregistré', () => {
   // qui ferait apparaître une alerte fantôme sur un cas parfaitement couvert.
   const theoreticalCooked = 1000 * poulet.cookedFactor; // 700 g
   const sExact = batchState({ [key]: 1000 }, { [key]: theoreticalCooked });
-  const cExact = buildBatchPlan(sExact, byId)[0].components.find((c) => c.food.id === poulet.id);
+  const cExact = buildBatchPlan(sExact, byId).sessions[0].components.find((c) => c.food.id === poulet.id);
   check('écart exact : measuredYieldPct = yieldPct', cExact.measuredYieldPct === cExact.yieldPct);
   check('écart exact : yieldDeviationGrams = 0', cExact.yieldDeviationGrams === 0);
   check('écart exact : aucune alerte', cExact.yieldDeviationSignificant === false);
@@ -1119,7 +1136,7 @@ test('Batch — mesure "cuit obtenu" face au rendement enregistré', () => {
   // doit jamais produire NaN/Infinity ni inventer une mesure à partir d'un
   // cookedOverride devenu sans objet (clé dont le "je prépare" a été remis à 0).
   const sZeroRaw = batchState({ [key]: 0 }, { [key]: 100 });
-  const cZeroRaw = buildBatchPlan(sZeroRaw, byId)[0].components.find((c) => c.food.id === poulet.id);
+  const cZeroRaw = buildBatchPlan(sZeroRaw, byId).sessions[0].components.find((c) => c.food.id === poulet.id);
   check('quantité crue nulle : aucune mesure prise en compte (jamais de division par zéro)',
     cZeroRaw.measuredCooked === null && cZeroRaw.measuredYieldPct === null &&
     cZeroRaw.measuredCookedFactor === null && cZeroRaw.yieldDeviationGrams === null);
@@ -1145,7 +1162,7 @@ test('Batch — suggestion de répartition du surplus entre les gamelles (affich
   // préparé 1500 g crus = 1050 g cuits théoriques → surplus de 238 g cuits.
   const s = batchState({ [key]: 1500 });
   const planBefore = JSON.stringify(s.meals);
-  const sess = buildBatchPlan(s, byId)[0];
+  const sess = buildBatchPlan(s, byId).sessions[0];
   check('planning jamais modifié par le calcul du plan', JSON.stringify(s.meals) === planBefore);
 
   const pouletEntries = [];
@@ -1172,14 +1189,14 @@ test('Batch — suggestion de répartition du surplus entre les gamelles (affich
 
   // un déficit (préparé < besoin) ne réduit jamais une gamelle
   const sDeficit = batchState({ [key]: 500 }); // < 1160 g requis
-  const sessDeficit = buildBatchPlan(sDeficit, byId)[0];
+  const sessDeficit = buildBatchPlan(sDeficit, byId).sessions[0];
   const deficitEntries = [];
   for (const g of sessDeficit.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === poulet.id) deficitEntries.push(e);
   check('déficit : aucune réduction silencieuse d’une gamelle', deficitEntries.every((e) => e.bonus === undefined && e.adjustedGrams === undefined));
 
   // la mesure réelle ("cuit obtenu") prime sur l'estimation théorique pour le surplus proposé
   const sMeasured = batchState({ [key]: 1500 }, { [key]: 1300 }); // mesuré 1300 g cuits (> 1050 g théoriques)
-  const sessMeasured = buildBatchPlan(sMeasured, byId)[0];
+  const sessMeasured = buildBatchPlan(sMeasured, byId).sessions[0];
   const measuredEntries = [];
   for (const g of sessMeasured.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === poulet.id) measuredEntries.push(e);
   const measuredTotalBonus = measuredEntries.reduce((sum, e) => sum + (e.bonus || 0), 0);
@@ -1208,6 +1225,41 @@ test('Batch — "cuit obtenu" : round-trip stateToTables()/tablesToState() (sync
   check('colonne absente -> aucune clé cookedOverrides inventée', Object.keys(legacyState.batch.cookedOverrides).length === 0);
 });
 
+/*
+ * Sessions de batch (retour utilisateur — remplace maxDays) : id STRING
+ * (store.js::newBatchSession()), jamais un index numérique — un bug réel a
+ * été introduit lors de la migration (preparation_session: Number(session)
+ * dans stateToTables()) qui transformait silencieusement tout id non
+ * numérique en NaN, corrompant la ligne synchronisée. Round-trip complet
+ * avec un vrai id de session (préfixe lettré, jamais purement numérique)
+ * pour verrouiller la correction.
+ */
+test('Batch — sessions : round-trip stateToTables()/tablesToState() avec un id de session non numérique', () => {
+  const s = defaultState();
+  const meal = { id: 'm1', dayIndex: 0, mealType: 'lunch', name: '', sameComposition: true, items: [] };
+  s.meals = [meal];
+  s.batch.sessions = [{ id: 'bsess_x7q2', label: 'Dimanche matin', mealIds: [meal.id] }];
+  s.batch.overrides = { 'bsess_x7q2:f1': 500 };
+  s.batch.cookedOverrides = { 'bsess_x7q2:f1': 360 };
+
+  const tables = stateToTables(s);
+  const settingsRow = tables.settings.find((r) => r.id === 'main');
+  check('batch_sessions transmis dans la ligne settings (colonne jamais omise)',
+    JSON.stringify(settingsRow.batch_sessions) === JSON.stringify(s.batch.sessions));
+
+  const row = tables.batch_items.find((r) => r.id === 'batch:bsess_x7q2:f1');
+  check('preparation_session transmis en texte, jamais NaN (régression réelle corrigée)',
+    row.preparation_session === 'bsess_x7q2', `${row.preparation_session}`);
+
+  const back = tablesToState(tables);
+  check('round-trip : sessions identiques (après purge par migrate(), repas toujours présent)',
+    JSON.stringify(back.batch.sessions) === JSON.stringify(s.batch.sessions));
+  check('round-trip : overrides retrouvés sous la clé d’origine (pas "NaN:f1")',
+    back.batch.overrides['bsess_x7q2:f1'] === 500);
+  check('round-trip : cookedOverrides retrouvés sous la clé d’origine',
+    back.batch.cookedOverrides['bsess_x7q2:f1'] === 360);
+});
+
 test('Fiche aliment — paramètres de cuisson personnalisés repris dans le plan', () => {
   const dino = {
     id: 'f_dino', name: 'Cuisse de dinosaure', category: 'proteine', brand: '',
@@ -1222,7 +1274,7 @@ test('Fiche aliment — paramètres de cuisson personnalisés repris dans le pla
   const s = batchState();
   s.foods = [...s.foods, dino];
   s.meals[0].items = [item(dino, 0, { thomas: 200, julie: 150 })];
-  const sess = buildBatchPlan(s, local)[0];
+  const sess = buildBatchPlan(s, local).sessions[0];
   const c = sess.components.find((x) => x.food.id === 'f_dino');
   check('aliment personnalisé présent dans le batch', !!c);
   check('méthode personnalisée', c.method === 'Four' && c.temperature === 200 && c.duration === 35);
@@ -1493,52 +1545,25 @@ test('Classement batch — "nécessite cuisson" est une propriété explicite', 
   const cru = { ...cas2, id: 'f_cru_assemble', name: 'Cru à assembler' };
   st.foods = [...st.foods, cru];
   st.meals[0].items = [item(cru, 0, { thomas: 100, julie: 80 })];
-  const sess = buildBatchPlan(st, { ...byId, f_cru_assemble: cru })[0];
-  check('un aliment cru sans cuisson va bien dans "à assembler"',
-    sess.assembleSameDay.some((x) => x.food.id === 'f_cru_assemble') &&
-    !sess.cookSameDay.some((x) => x.food.id === 'f_cru_assemble'));
+  const plan = buildBatchPlan(st, { ...byId, f_cru_assemble: cru });
+  const sess = plan.sessions[0];
+  check('un aliment cru sans cuisson va bien dans "à assembler" (global, indépendant des sessions)',
+    plan.assembleSameDay.some((x) => x.food.id === 'f_cru_assemble') &&
+    !plan.cookSameDay.some((x) => x.food.id === 'f_cru_assemble'));
   check('il n’est pas converti en poids cuit dans les gamelles',
     sess.gamelles[0].persons.thomas.find((e) => e.food?.id === 'f_cru_assemble').cooked === false);
 });
 
-test('Conservation après préparation — alerte sans rien modifier', () => {
-  const poulet = { ...F('Blanc de poulet'), id: 'f_court', name: 'Poulet test', shelfLifeDays: 2 };
-  const st = batchState();
-  st.settings.batch.maxDays = 3; // session de 3 jours
-  st.foods = [...st.foods, poulet];
-  st.meals[0].items = [item(poulet, 0, { thomas: 180, julie: 130 })];
-  const local = { ...byId, f_court: poulet };
-
-  const mealsBefore = JSON.stringify(st.meals);
-  const sess = buildBatchPlan(st, local)[0];
-  const comp = sess.components.find((c) => c.food.id === 'f_court');
-  info(`session de ${sess.coveredDays} j, conservation ${comp.shelfLifeDays} j`);
-  check('durée de conservation remontée dans le plan', comp.shelfLifeDays === 2);
-  check('durée couverte par la session calculée', comp.coveredDays === 3);
-  check('conservation insuffisante détectée', comp.shelfLifeShort === true);
-  check('alerte explicite', sess.conservationAlerts.length === 1 && /se conserve 2 jour/.test(sess.conservationAlerts[0].message));
-  check('la préparation n’est pas supprimée', !!comp && comp.requiredRaw > 0);
-  check('le planning n’est pas modifié', JSON.stringify(st.meals) === mealsBefore);
-
-  // durée suffisante
-  const ok = { ...poulet, shelfLifeDays: 4 };
-  const sess2 = buildBatchPlan({ ...st, foods: [...st.foods, ok] }, { ...local, f_court: ok })[0];
-  check('durée suffisante : aucune alerte', sess2.conservationAlerts.length === 0);
-  check('composant toujours présent', sess2.components.some((c) => c.food.id === 'f_court'));
-
-  // durée non renseignée : aucune invention
-  const unknown = { ...poulet, shelfLifeDays: null };
-  const sess3 = buildBatchPlan({ ...st, foods: [...st.foods, unknown] }, { ...local, f_court: unknown })[0];
-  const comp3 = sess3.components.find((c) => c.food.id === 'f_court');
-  check('durée inconnue : valeur null conservée', comp3.shelfLifeDays === null);
-  check('durée inconnue : aucune alerte inventée', sess3.conservationAlerts.length === 0);
-
-  // sessions plus courtes : le problème disparaît sans toucher au planning
-  const shortSession = { ...st, settings: { ...st.settings, batch: { ...st.settings.batch, maxDays: 2 } } };
-  check('session de 2 jours : conservation de 2 j suffisante',
-    buildBatchPlan(shortSession, local)[0].conservationAlerts.length === 0);
-  check('classification batch inchangée par la conservation', batchCategory(poulet) === 'batch');
-});
+/*
+ * La durée de conservation (`shelfLifeDays`) reste affichée à titre informatif
+ * sur un composant (cf. componentsBlock/batch.js), mais ne déclenche plus
+ * aucune alerte ni scission automatique : les sessions sont désormais
+ * affectées à la main par l'utilisateur (retour utilisateur — il ne remplit
+ * d'ailleurs presque jamais ce champ), il n'y a donc plus de "durée de
+ * session" à lui comparer. L'ancien test "Conservation après préparation"
+ * couvrait exactement ce mécanisme (coveredDays/shelfLifeShort/
+ * conservationAlerts/maxDays) — supprimé avec la fonctionnalité, pas adapté.
+ */
 
 test('Courses — les aliments sans prix sont nommés', () => {
   const sansPrix = { ...F('Riz basmati'), id: 'f_sans_prix', name: 'Riz complet test', price: null, packageWeight: null };
@@ -1662,19 +1687,20 @@ test('objectifs (targets) : un état sauvegardé incomplet par personne récupè
 
 test('Ingrédients libres — visibles mais hors calculs', () => {
   const items = [item(F('Pâtes complètes'), 100), item(F('Skyr'), 150), freeItem('Curry', 'au goût')];
+  const freeMeal = mkMeal(0, 'lunch', items);
   const s = {
     foods,
-    settings: { cycle: { startWeekday: 0, duration: 1 }, batch: { enabled: true, maxDays: 3 }, budget: 100, tolerance: 0.05, targets: { thomas: {}, julie: {} } },
-    batch: { overrides: {} },
+    settings: { cycle: { startWeekday: 0, duration: 1 }, batch: { enabled: true }, budget: 100, tolerance: 0.05, targets: { thomas: {}, julie: {} } },
+    batch: { overrides: {}, sessions: [{ id: '0', label: 'S', mealIds: [freeMeal.id] }] },
     shopping: { purchased: {} },
-    meals: [mkMeal(0, 'lunch', items)],
+    meals: [freeMeal],
   };
   const m = mealMacros(items, byId, 'thomas');
   const expected = macrosFor(F('Pâtes complètes'), 100, 'cru').kcal + macrosFor(F('Skyr'), 150, 'pret').kcal;
   check('curry présent dans le repas', items.some((it) => it.free?.name === 'Curry'));
   check('quantité libre conservée', items[2].free.quantity === 'au goût');
   check('curry hors macros', Math.abs(m.kcal - expected) < 0.001, `${m.kcal.toFixed(0)} kcal`);
-  check('curry hors batch', !buildBatchPlan(s, byId)[0].components.some((c) => /curry/i.test(c.food.name)));
+  check('curry hors batch', !buildBatchPlan(s, byId).sessions[0].components.some((c) => /curry/i.test(c.food.name)));
   check('curry hors courses / budget', !buildShoppingList(s, byId).lines.some((l) => /curry/i.test(l.food.name)));
   const adjusted = JSON.parse(JSON.stringify(items));
   autoAdjust(adjusted, byId, LUNCH);
@@ -2316,19 +2342,24 @@ test('Déploiement — buildBatchPlan() : les gamelles/plan opératoire ne plant
   ] };
   const st = {
     meals: [meal1, meal2], breakfasts: [], snacks: [],
-    shopping: { purchased: {} }, batch: { overrides: {} },
-    settings: { budget: 100, cycle: { startWeekday: 1, duration: 1 }, batch: { enabled: true, maxDays: 3 } },
+    shopping: { purchased: {} },
+    // aucun des deux repas n'est batchable (recette non batchAllowed,
+    // préparation toujours "prête") : on les affecte quand même à une
+    // session manuellement pour exercer le détail des gamelles ci-dessous
+    // (rien n'empêche une session de contenir un repas non batchable).
+    batch: { overrides: {}, sessions: [{ id: '0', label: 'S', mealIds: ['m1', 'm2'] }] },
+    settings: { budget: 100, cycle: { startWeekday: 1, duration: 1 }, batch: { enabled: true } },
   };
   let plan;
   check('aucune exception levée (ancien bug : crash sur it.free null)', (() => {
     try { plan = buildBatchPlan(st, byId, recipesById, preparationsById); return true; }
     catch (e) { info(e.message); return false; }
   })());
-  const sess = plan[0];
-  check('la recette (molle) apparaît dans assembleSameDay avec son nom',
-    sess.assembleSameDay.some((r) => r.food.name === 'Chili con carne' && r.grams === 300));
+  const sess = plan.sessions[0];
+  check('la recette (molle) apparaît dans assembleSameDay avec son nom (global, indépendant des sessions)',
+    plan.assembleSameDay.some((r) => r.food.name === 'Chili con carne' && r.grams === 300));
   check('la préparation apparaît dans assembleSameDay avec son label',
-    sess.assembleSameDay.some((r) => r.food.name === preparation.label && r.grams === 250));
+    plan.assembleSameDay.some((r) => r.food.name === preparation.label && r.grams === 250));
   const gamelleThomas1 = sess.gamelles.find((g) => g.mealId === 'm1').persons.thomas;
   check('la gamelle du midi affiche la recette comme UN SEUL élément (jamais dépliée en bœuf)',
     gamelleThomas1.length === 1 && gamelleThomas1[0].name === 'Chili con carne' && gamelleThomas1[0].grams === 300);
@@ -2345,11 +2376,18 @@ test('Déploiement — buildBatchPlan() : les gamelles/plan opératoire ne plant
  * appelés par aucune vue de batch cooking. Correction : nouvelle section
  * `recipesToPrepare` par session, construite avec ces mêmes fonctions.
  */
+// Une session unique ('0', comme l'ancien index de session — les clés
+// `${sessionId}:...` historiques restent valables) couvrant TOUS les repas
+// passés : équivalent, pour ces tests, de l'ancien maxDays >= duration (une
+// seule session automatique) — sessions désormais affectées à la main
+// (retour utilisateur, remplace maxDays). `overrides.batch`, s'il est fourni,
+// remplace entièrement cette session par défaut (même sémantique de spread
+// qu'avant pour les autres clés).
 const batchTestState = (meals, overrides = {}) => ({
   meals, breakfasts: [], snacks: [], preparations: [],
-  batch: { overrides: {} },
+  batch: { overrides: {}, cookedOverrides: {}, sessions: [{ id: '0', label: 'Session 1', mealIds: meals.map((m) => m.id) }] },
   shopping: { purchased: {} },
-  settings: { budget: 100, cycle: { startWeekday: 1, duration: 4 }, batch: { enabled: true, maxDays: 4 } },
+  settings: { budget: 100, cycle: { startWeekday: 1, duration: 4 }, batch: { enabled: true } },
   ...overrides,
 });
 
@@ -2363,7 +2401,7 @@ test('P0.2.1 — une recette batchAllowed apparaît dans "à préparer en batch"
   const recipesById = { [recipe.id]: recipe };
   const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
   const plan = buildBatchPlan(batchTestState([mkMeal(0, 'lunch', [it])]), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   check('la recette apparaît dans recipesToPrepare', !!r);
   check('sa méthode de cuisson (propre à la recette) est reprise', r.method === 'mijoteuse');
 });
@@ -2378,7 +2416,7 @@ test('P0.2.2 — quantité/ingrédients correctement calculés (net du disponibl
   const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
   const st = batchTestState([mkMeal(0, 'lunch', [it])]);
   const plan = buildBatchPlan(st, byId, recipesById, {});
-  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   check('quantité de recette correcte (500 g demandés)', r.requiredRaw === 500);
   const shopping = buildShoppingList(st, byId, recipesById, {});
   check('cohérent avec la liste de courses : bœuf = 600 × 500/1000 = 300 g',
@@ -2396,7 +2434,7 @@ test('P0.2.3 — plusieurs utilisations de la même recette sont agrégées', ()
   const it2 = { ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 300, julie: 0 } };
   const plan = buildBatchPlan(batchTestState([mkMeal(0, 'lunch', [it1]), mkMeal(1, 'dinner', [it2])]), byId, recipesById, {});
   check('une seule entrée agrégée (200 + 300 = 500 g)',
-    plan[0].recipesToPrepare.length === 1 && plan[0].recipesToPrepare[0].requiredRaw === 500);
+    plan.sessions[0].recipesToPrepare.length === 1 && plan.sessions[0].recipesToPrepare[0].requiredRaw === 500);
 });
 
 test('P0.2.4 — Thomas ET Julie sont pris en compte', () => {
@@ -2408,7 +2446,7 @@ test('P0.2.4 — Thomas ET Julie sont pris en compte', () => {
   const recipesById = { [recipe.id]: recipe };
   const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 300, julie: 200 } };
   const plan = buildBatchPlan(batchTestState([mkMeal(0, 'lunch', [it])]), byId, recipesById, {});
-  check('besoin = somme des deux personnes (300 + 200 = 500 g)', plan[0].recipesToPrepare[0].requiredRaw === 500);
+  check('besoin = somme des deux personnes (300 + 200 = 500 g)', plan.sessions[0].recipesToPrepare[0].requiredRaw === 500);
 });
 
 test('P0.2.5 — une recette déjà (partiellement) préparée n’est jamais recomptée', () => {
@@ -2422,7 +2460,7 @@ test('P0.2.5 — une recette déjà (partiellement) préparée n’est jamais re
   const it = { ...newRecipeMealItem(recipe.id, 1000), qty: { thomas: 1000, julie: 0 } };
   const st = batchTestState([mkMeal(0, 'lunch', [it])], { preparations: [prep] });
   const plan = buildBatchPlan(st, byId, recipesById, { [prep.id]: prep });
-  check('besoin net = 1000 − 400 déjà préparés = 600 g', plan[0].recipesToPrepare[0].requiredRaw === 600);
+  check('besoin net = 1000 − 400 déjà préparés = 600 g', plan.sessions[0].recipesToPrepare[0].requiredRaw === 600);
 });
 
 test('P0.2.6 — une recette non batchAllowed n’apparaît PAS dans "à préparer en batch" (reste "à assembler")', () => {
@@ -2434,9 +2472,9 @@ test('P0.2.6 — une recette non batchAllowed n’apparaît PAS dans "à prépar
   const recipesById = { [recipe.id]: recipe };
   const it = { ...newRecipeMealItem(recipe.id, 300), qty: { thomas: 300, julie: 0 } };
   const plan = buildBatchPlan(batchTestState([mkMeal(0, 'lunch', [it])]), byId, recipesById, {});
-  check('recipesToPrepare vide', plan[0].recipesToPrepare.length === 0);
-  check('toujours listée dans assembleSameDay (comportement pré-existant, inchangé)',
-    plan[0].assembleSameDay.some((r) => r.food.name === 'Riz simple'));
+  check('recipesToPrepare vide', plan.sessions[0].recipesToPrepare.length === 0);
+  check('toujours listée dans assembleSameDay (global, comportement pré-existant, inchangé)',
+    plan.assembleSameDay.some((r) => r.food.name === 'Riz simple'));
 });
 
 /*
@@ -2464,7 +2502,7 @@ test('P0.2.7 — un aliment utilisé À LA FOIS directement ET via une recette (
   const planSameMeal = buildBatchPlan(
     batchTestState([mkMeal(0, 'lunch', [itDirect, itRecipe])]), byId, recipesById, {}
   );
-  const cSame = planSameMeal[0].components.find((c) => c.food.id === boeuf.id);
+  const cSame = planSameMeal.sessions[0].components.find((c) => c.food.id === boeuf.id);
   check('présent (même repas) : la viande hachée n’a pas disparu', !!cSame);
   check('quantité agrégée = 300 (direct) + 500 (recette) = 800 g', cSame?.requiredRaw === 800, `${cSame?.requiredRaw}`);
 
@@ -2472,13 +2510,13 @@ test('P0.2.7 — un aliment utilisé À LA FOIS directement ET via une recette (
   const planTwoMeals = buildBatchPlan(
     batchTestState([mkMeal(0, 'lunch', [itDirect]), mkMeal(1, 'dinner', [itRecipe])]), byId, recipesById, {}
   );
-  const cTwo = planTwoMeals[0].components.find((c) => c.food.id === boeuf.id);
+  const cTwo = planTwoMeals.sessions[0].components.find((c) => c.food.id === boeuf.id);
   check('présent (deux repas, même session) : la viande hachée n’a pas disparu', !!cTwo);
   check('quantité agrégée identique (300 + 500 = 800 g)', cTwo?.requiredRaw === 800, `${cTwo?.requiredRaw}`);
 
   // la recette elle-même reste également listée à part (deux vues complémentaires)
   check('la recette apparaît aussi dans recipesToPrepare (complémentaire, pas redondant)',
-    planTwoMeals[0].recipesToPrepare.some((r) => r.recipe.id === recipe.id));
+    planTwoMeals.sessions[0].recipesToPrepare.some((r) => r.recipe.id === recipe.id));
 });
 
 /*
@@ -2514,12 +2552,12 @@ test('P0.2.8 — ingrédient de recette dans un état non convertible : sous-com
     batchTestState([mkMeal(0, 'lunch', [itDirect]), mkMeal(1, 'dinner', [itRecipe])]), byId, recipesById, {}
   );
 
-  const c = plan[0].components.find((x) => x.food.id === boeuf.id);
+  const c = plan.sessions[0].components.find((x) => x.food.id === boeuf.id);
   check('le composant reste présent (usage direct toujours compté)', !!c);
   check('mais la part venant de la recette (état "prêt" non convertible) est exclue — 294 g, pas 294+528',
     c?.requiredRaw === 294, `${c?.requiredRaw}`);
 
-  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   const ing = r.ingredients.find((i) => i.food.id === boeuf.id);
   check('l’ingrédient est bien affiché à l’état "prêt" tel que saisi dans la recette (jamais corrigé silencieusement)',
     ing.state === 'pret');
@@ -2542,7 +2580,7 @@ test('écran batch — détail des ingrédients d’une recette à préparer, à
   const recipesById = { [recipe.id]: recipe };
   const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
   const plan = buildBatchPlan(batchTestState([mkMeal(0, 'lunch', [it])]), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   check('deux ingrédients détaillés', r.ingredients.length === 2);
   const boeufLine = r.ingredients.find((i) => i.food.id === boeuf.id);
   const haricotsLine = r.ingredients.find((i) => i.food.id === haricots.id);
@@ -2560,10 +2598,11 @@ test('écran batch — le détail des ingrédients suit la quantité réellement
   recipe.batchAllowed = true;
   const recipesById = { [recipe.id]: recipe };
   const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
+  const meal = mkMeal(0, 'lunch', [it]);
   const key = `0:recipe:${recipe.id}`;
-  const st = batchTestState([mkMeal(0, 'lunch', [it])], { batch: { overrides: { [key]: 800 } } });
+  const st = batchTestState([meal], { batch: { overrides: { [key]: 800 }, sessions: [{ id: '0', label: 'S', mealIds: [meal.id] }] } });
   const plan = buildBatchPlan(st, byId, recipesById, {});
-  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   check('preparedRaw reprend la saisie manuelle (800 g), pas le besoin net (500 g)', r.preparedRaw === 800);
   check('ingrédient mis à l’échelle sur 800 g préparés (1000 × 800/1000 = 800 g)', Math.abs(r.ingredients[0].qty - 800) < 0.01);
 });
@@ -2580,7 +2619,7 @@ test('écran batch — répartition vers les gamelles de la session (le "global"
   const mealLunch = mkMeal(0, 'lunch', [itLunch]);
   const mealDinner = mkMeal(1, 'dinner', [itDinner]);
   const plan = buildBatchPlan(batchTestState([mealLunch, mealDinner]), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   check('deux gamelles destinataires identifiées', r.destinations.length === 2);
   const lunchDest = r.destinations.find((d) => d.mealId === mealLunch.id);
   const dinnerDest = r.destinations.find((d) => d.mealId === mealDinner.id);
@@ -2600,96 +2639,18 @@ test('écran batch — une recette non référencée dans une gamelle de la sess
   const mealWithIt = mkMeal(0, 'lunch', [it]);
   const mealWithout = mkMeal(1, 'dinner', []);
   const plan = buildBatchPlan(batchTestState([mealWithIt, mealWithout]), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
+  const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   check('une seule destination (le repas qui référence réellement la recette)', r.destinations.length === 1);
   check('ce n’est pas le repas vide', r.destinations[0].mealId === mealWithIt.id);
 });
 
-/* ============================================== P0.3 — CONSERVATION / SOUS-PRÉPARATIONS (v1.5.1) */
-
-test('P0.3.1 — recette conservable pendant toute la session : pas de scission', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000;
-  recipe.batchAllowed = true;
-  recipe.shelfLifeDays = 5; // ≥ durée de la session (4 jours)
-  const recipesById = { [recipe.id]: recipe };
-  const it = { ...newRecipeMealItem(recipe.id, 500), qty: { thomas: 500, julie: 0 } };
-  const plan = buildBatchPlan(batchTestState([mkMeal(0, 'lunch', [it])]), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('shelfLifeShort = false', r.shelfLifeShort === false);
-  check('aucune sous-préparation', r.subBatches === null);
-  check('aucune alerte de conservation', plan[0].conservationAlerts.length === 0);
-});
-
-test('P0.3.2 — conservation expirant avant la fin de la période : nouvelle préparation détectée', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000;
-  recipe.batchAllowed = true;
-  recipe.shelfLifeDays = 2; // < durée de la session (4 jours)
-  const recipesById = { [recipe.id]: recipe };
-  const items = [0, 1, 2, 3].map((day) => ({ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }));
-  const meals = items.map((it, day) => mkMeal(day, 'lunch', [it]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('shelfLifeShort = true', r.shelfLifeShort === true);
-  check('2 sous-préparations (0-1 et 2-3, conservation 2 jours sur session de 4)',
-    r.subBatches.length === 2, JSON.stringify(r.subBatches.map((b) => `${b.startDay}-${b.endDay}`)));
-  check('alerte de conservation levée', plan[0].conservationAlerts.some((a) => a.recipe?.id === recipe.id));
-});
-
-test('P0.3.3 — quantités agrégées correctement pour chaque session de préparation', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000;
-  recipe.batchAllowed = true;
-  recipe.shelfLifeDays = 2;
-  const recipesById = { [recipe.id]: recipe };
-  const items = [0, 1, 2, 3].map((day) => ({ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 100 } }));
-  const meals = items.map((it, day) => mkMeal(day, 'lunch', [it]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const [b0, b1] = plan[0].recipesToPrepare[0].subBatches;
-  check('1ère sous-préparation (jours 0-1) : 2 jours × 200 g/jour = 400 g', b0.requiredRaw === 400);
-  check('2e sous-préparation (jours 2-3) : 2 jours × 200 g/jour = 400 g', b1.requiredRaw === 400);
-  check('somme des sous-préparations = besoin total de la session (400+400=800)',
-    b0.requiredRaw + b1.requiredRaw === 800);
-});
-
-test('P0.3.4 — plusieurs recettes avec des durées de conservation différentes, dans la même session', () => {
-  const boeuf = F('Steak haché'), poulet = F('Blanc de poulet');
-  const r1 = newRecipe('Chili', 'weight');
-  r1.items = [newRecipeItem(boeuf.id, 1000, 'cru')]; r1.baseGrams = 1000; r1.batchAllowed = true; r1.shelfLifeDays = 2;
-  const r2 = newRecipe('Poulet rôti', 'weight');
-  r2.items = [newRecipeItem(poulet.id, 1000, 'cru')]; r2.baseGrams = 1000; r2.batchAllowed = true; r2.shelfLifeDays = 4;
-  const recipesById = { [r1.id]: r1, [r2.id]: r2 };
-  const meals = [0, 1, 2, 3].map((day) => mkMeal(day, 'lunch', [
-    { ...newRecipeMealItem(r1.id, 100), qty: { thomas: 100, julie: 0 } },
-    { ...newRecipeMealItem(r2.id, 100), qty: { thomas: 100, julie: 0 } },
-  ]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const chili = plan[0].recipesToPrepare.find((r) => r.recipe.id === r1.id);
-  const roti = plan[0].recipesToPrepare.find((r) => r.recipe.id === r2.id);
-  check('Chili (2 j) scindé en 2 sous-préparations', chili.subBatches?.length === 2);
-  check('Poulet rôti (4 j = durée de session) : aucune scission', roti.subBatches === null);
-});
-
-test('P0.3.5 — aliment simple (hors recette) : même logique de scission par conservation', () => {
-  const boeuf = { ...F('Steak haché'), batchAllowed: true, shelfLifeDays: 2 };
-  const byId2 = { ...byId, [boeuf.id]: boeuf };
-  const meals = [0, 1, 2, 3].map((day) => mkMeal(day, 'lunch', [
-    { id: `it${day}`, foodId: boeuf.id, recipeId: null, preparationId: null, free: null, state: 'cru',
-      qty: { thomas: 100, julie: 0 }, locked: { thomas: false, julie: false } },
-  ]));
-  const plan = buildBatchPlan(batchTestState(meals), byId2, {}, {});
-  const c = plan[0].components.find((c) => c.food.id === boeuf.id);
-  check('composant aliment scindé en 2 sous-préparations (comme une recette)', c.subBatches?.length === 2);
-  check('quantités correctes (2 jours × 100 g = 200 g chacune)',
-    c.subBatches.every((b) => b.requiredRaw === 200));
-});
+/*
+ * Ancien bloc P0.3 (« conservation / sous-préparations », v1.5.1) : testait
+ * la scission automatique d'une session par `shelfLifeDays` vs durée de
+ * session — supprimé avec la fonctionnalité (sessions désormais manuelles,
+ * retour utilisateur ; `shelfLifeDays` redevient une donnée purement
+ * informative, cf. commentaire au-dessus de « Classement batch »).
+ */
 
 /* ================================================================ PRÉPARATIONS (ÉTAPE 5) */
 
@@ -3376,136 +3337,12 @@ test('P2.1.5 — valeurs par défaut lorsque les 7 champs sont absents (recette 
     r.cookingTemp === null && r.cookingTime === null && r.prepTime === null);
 });
 
-/* ============================================== P2.2 — BATCH COOKING : ALGORITHME GLOUTON ANCRÉ SUR LA CONSOMMATION RÉELLE (v1.5.3) */
-
-test('P2.2.1 — shelfLifeDays = 1 : une préparation par jour de consommation', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 1;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [0, 1, 2].map((day) => mkMeal(day, 'lunch',
-    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('3 sous-préparations (une par jour de consommation)', r.subBatches.length === 3,
-    JSON.stringify(r.subBatches.map((b) => `${b.startDay}-${b.endDay}`)));
-  check('chaque sous-préparation ne couvre qu’un seul jour', r.subBatches.every((b) => b.startDay === b.endDay));
-});
-
-test('P2.2.2 — shelfLifeDays = 2, consommation J1+J2 : UNE SEULE préparation (correction de la sur-recommandation)', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Poulet curry', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [1, 2].map((day) => mkMeal(day, 'lunch',
-    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('UNE SEULE sous-préparation (J1, couvre J1 et J2 — grille fixe corrigée)',
-    r.subBatches.length === 1, JSON.stringify(r.subBatches));
-  check('préparation datée J1 (premier jour de consommation, pas J0)', r.subBatches[0].startDay === 1);
-  check('couvre bien J1 et J2', JSON.stringify(r.subBatches[0].coversDays) === JSON.stringify([1, 2]));
-  check('quantité = 200 g (2 jours × 100 g), pas 100 g comme le ferait une scission inutile',
-    r.subBatches[0].requiredRaw === 200);
-});
-
-test('P2.2.3 — shelfLifeDays = 2, consommation J1+J3 : deux préparations (l’écart dépasse la conservation)', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [1, 3].map((day) => mkMeal(day, 'lunch',
-    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('2 sous-préparations (J1 et J3, écart de conservation dépassé)',
-    r.subBatches.length === 2, JSON.stringify(r.subBatches.map((b) => `${b.startDay}-${b.endDay}`)));
-  check('1ère préparation à J1', r.subBatches[0].startDay === 1);
-  check('2e préparation à J3 (pas J2, car aucune consommation ce jour-là)', r.subBatches[1].startDay === 3);
-});
-
-test('P2.2.4 — shelfLifeDays = 4 : toutes les consommations dans la fenêtre → une seule préparation', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 4;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [1, 2, 3, 4].map((day) => mkMeal(day, 'lunch',
-    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
-  const st = batchTestState(meals);
-  st.settings.cycle.duration = 6; st.settings.batch.maxDays = 6;
-  const plan = buildBatchPlan(st, byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('une seule sous-préparation malgré 4 jours de consommation distincts',
-    r.subBatches.length === 1, JSON.stringify(r.subBatches));
-  check('quantité = 400 g (4 × 100 g)', r.subBatches[0].requiredRaw === 400);
-});
-
-test('P2.2.5 — shelfLifeDays NULL : comportement de secours (couvre toute la session, aucune scission)', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = null;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [0, 1, 3].map((day) => mkMeal(day, 'lunch',
-    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('shelfLifeShort = false (conservation inconnue → jamais signalée comme insuffisante)', r.shelfLifeShort === false);
-  check('aucune scission (subBatches === null)', r.subBatches === null);
-});
-
-test('P2.2.6 — exemple du brief : consommation J0+J1+J3, conservation 2 jours', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Poulet curry', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [0, 1, 3].map((day) => mkMeal(day, 'lunch',
-    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('2 sous-préparations', r.subBatches.length === 2, JSON.stringify(r.subBatches));
-  check('préparation J0 couvrant J0 et J1',
-    r.subBatches[0].startDay === 0 && JSON.stringify(r.subBatches[0].coversDays) === JSON.stringify([0, 1]));
-  check('nouvelle préparation J3 (pas J2, aucune consommation ce jour-là)', r.subBatches[1].startDay === 3);
-  check('quantités : 200 g (J0+J1) puis 100 g (J3)',
-    r.subBatches[0].requiredRaw === 200 && r.subBatches[1].requiredRaw === 100);
-});
-
-test('P2.2.7 — recette consommée plusieurs fois le même jour : agrégée avant la scission', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 2;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [
-    mkMeal(1, 'lunch', [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]),
-    mkMeal(1, 'dinner', [{ ...newRecipeMealItem(recipe.id, 50), qty: { thomas: 50, julie: 0 } }]),
-  ];
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('une seule sous-préparation (un seul jour de consommation, malgré 2 repas)', r.subBatches.length === 1);
-  check('quantité agrégée des deux repas du même jour (100 + 50 = 150 g)', r.subBatches[0].requiredRaw === 150);
-});
-
-test('P2.2.8 — recette consommée plusieurs fois DANS sa durée de conservation : aucune préparation supplémentaire inutile', () => {
-  const boeuf = F('Steak haché');
-  const recipe = newRecipe('Chili', 'weight');
-  recipe.items = [newRecipeItem(boeuf.id, 1000, 'cru')];
-  recipe.baseGrams = 1000; recipe.batchAllowed = true; recipe.shelfLifeDays = 3;
-  const recipesById = { [recipe.id]: recipe };
-  const meals = [0, 1, 2].map((day) => mkMeal(day, 'lunch',
-    [{ ...newRecipeMealItem(recipe.id, 100), qty: { thomas: 100, julie: 0 } }]));
-  const plan = buildBatchPlan(batchTestState(meals), byId, recipesById, {});
-  const r = plan[0].recipesToPrepare[0];
-  check('une seule préparation malgré 3 consommations (toutes dans la fenêtre de 3 jours)',
-    r.subBatches.length === 1, JSON.stringify(r.subBatches));
-  check('quantité agrégée des 3 jours (300 g)', r.subBatches[0].requiredRaw === 300);
-});
+/*
+ * Ancien bloc P2.2 (« algorithme glouton ancré sur la consommation réelle »,
+ * v1.5.3) : testait la scission automatique d'une recette/aliment en
+ * sous-préparations datées selon `shelfLifeDays` — supprimé avec la
+ * fonctionnalité (sessions manuelles, cf. note au-dessus de P0.3 plus haut).
+ */
 
 /* ============================================== P2.4 — AUTO-NOMMAGE DES REPAS (v1.5.3) */
 

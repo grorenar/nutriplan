@@ -354,7 +354,6 @@ export function stateToTables(s) {
   const settings = {
     id: 'main',
     budget: s.settings.budget,
-    batch_duration: s.settings.batch.maxDays,
     batch_enabled: s.settings.batch.enabled,
     cycle_start_weekday: s.settings.cycle.startWeekday,
     cycle_duration: s.settings.cycle.duration,
@@ -367,6 +366,11 @@ export function stateToTables(s) {
     // commentaire juste en dessous, jsonb_populate_record n'applique pas les
     // DEFAULT), jamais omise même pour une liste vide.
     dismissed_duplicates: s.dismissedDuplicates || [],
+    // Sessions de batch (retour utilisateur — remplace l'ancien réglage
+    // `maxDays`/`batch_duration`, désormais entièrement retiré) : mêmes
+    // raisons/mêmes garanties que dismissed_duplicates ci-dessus (colonne
+    // NOT NULL, jamais omise, même liste vide).
+    batch_sessions: s.batch.sessions || [],
     // jsonb_populate_record n'applique pas les DEFAULT : toute colonne NOT NULL
     // doit être fournie explicitement par le client.
     updated_at: new Date().toISOString(),
@@ -417,12 +421,13 @@ export function stateToTables(s) {
     purchased: !!purchased,
   }));
 
-  // clé = `${session}:${foodId}` historiquement, mais aussi désormais
-  // `${session}:${jourDébut}-${jourFin}:${foodId}` ou `…:recipe:${recipeId}`
-  // (sous-préparations liées à la conservation, P0.3) : ne découper QUE sur
-  // le premier ':' — un split(':') naïf tronquait silencieusement tout ce
-  // qui suit un deuxième ':' (bug réel, corrigé avant qu'aucune donnée ne
-  // soit perdue en synchronisation).
+  // clé = `${sessionId}:${foodId}` ou `${sessionId}:recipe:${recipeId}` — ne
+  // découper QUE sur le premier ':' — un split(':') naïf tronquait
+  // silencieusement tout ce qui suit un deuxième ':' (bug réel, corrigé
+  // avant qu'aucune donnée ne soit perdue en synchronisation). `sessionId`
+  // est désormais l'id STRING d'une session créée à la main (store.js::
+  // newBatchSession()), jamais un index numérique — preparation_session est
+  // donc stocké tel quel, texte (cf. schema.sql), plus jamais Number()-cast.
   // cookedOverrides (quantité cuite obtenue, mesure ponctuelle — voir
   // batch.js) partage exactement les mêmes clés que overrides : l'écran
   // n'écrit jamais l'une sans l'autre, donc une ligne par clé suffit.
@@ -433,7 +438,7 @@ export function stateToTables(s) {
     const cookedQuantity = s.batch.cookedOverrides?.[key];
     return {
       id: `batch:${key}`,
-      preparation_session: Number(session),
+      preparation_session: session,
       food_id: foodId,
       preparation_quantity: grams,
       cooked_quantity: cookedQuantity ?? null,
@@ -482,11 +487,14 @@ export function tablesToState(t) {
   const cfg = t.settings?.[0];
   if (cfg) {
     s.settings.budget = Number(cfg.budget);
-    s.settings.batch = { enabled: cfg.batch_enabled, maxDays: Number(cfg.batch_duration) };
+    s.settings.batch = { enabled: cfg.batch_enabled };
     s.settings.cycle = { startWeekday: Number(cfg.cycle_start_weekday), duration: Number(cfg.cycle_duration) };
     s.settings.tolerance = Number(cfg.tolerance) || 0.05;
     s.settings.autoAdjust = cfg.auto_adjust !== false;
     s.dismissedDuplicates = Array.isArray(cfg.dismissed_duplicates) ? cfg.dismissed_duplicates : [];
+    // pruné contre les repas du cycle par migrate() (store.js), appelé par
+    // replaceState() juste après — s.meals n'est pas encore peuplé ici.
+    s.batch.sessions = Array.isArray(cfg.batch_sessions) ? cfg.batch_sessions : [];
   }
   for (const r of t.targets || []) {
     s.settings.targets[r.person] = s.settings.targets[r.person] || {};

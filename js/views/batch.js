@@ -1,16 +1,30 @@
 /**
  * Écran BATCH COOKING — plan opératoire déduit du planning.
- * Trois catégories : à préparer en batch, à cuire le jour même, à assembler le jour même.
- * Cet écran ne modifie jamais le planning.
+ * Les sessions de batch sont créées et peuplées à la main par l'utilisateur
+ * (glisser-déposer des gamelles depuis le pool, ou d'une session à l'autre) —
+ * remplace l'ancien découpage automatique par durée de conservation
+ * (`maxDays`), jugé peu lisible au quotidien (retour utilisateur). Les
+ * éléments non-batchables (« à cuire »/« à assembler le jour même ») restent
+ * une vue globale, indépendante des sessions. Cet écran ne modifie jamais le
+ * planning.
  */
 
-import { getState, update, foodsById, recipesById, preparationsById } from '../core/store.js';
+import { getState, update, foodsById, recipesById, preparationsById, newBatchSession } from '../core/store.js';
 import { buildBatchPlan, BATCH_CATEGORY_LABEL, YIELD_DEVIATION_THRESHOLD_PCT } from '../core/derive.js';
 import { dayName, esc, grams, num, toast } from '../core/util.js';
 import { MEAL_TYPES, PERSONS, PERSON_LABEL, conversionInfo } from '../core/nutrition.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 let pendingConfirm = null; // { title, message, onConfirm } — ajustement du rendement enregistré d'un aliment
+
+// État du glisser-déposer de gamelles — module-level, comme planning.js
+// (mêmes contraintes DnD réelles : `dragstart` cible toujours le plus proche
+// ancêtre `draggable`, jamais un sous-élément précis ; un geste de drag natif
+// peut remettre `window.scrollY` à 0 AVANT même que `drop` ne s'exécute,
+// capturé ici au `mousedown`, restauré après chaque render() qui suit un
+// dépôt). Voir js/views/planning.js pour le même motif, déjà éprouvé.
+let dragMealId = null;
+let dragStartScrollY = null;
 
 export function render(root) {
   const s = getState();
@@ -22,120 +36,130 @@ export function render(root) {
   const plan = buildBatchPlan(s, byId, recipesById(), preparationsById());
   const startWeekday = s.settings.cycle.startWeekday;
 
-  const totalGamelles = plan.reduce((n, sess) => n + sess.gamelles.filter((g) => PERSONS.some((p) => g.persons[p].length)).length, 0);
-  const totalComponents = plan.reduce((n, sess) => n + sess.components.length + (sess.recipesToPrepare?.length || 0), 0);
+  const totalGamelles = plan.sessions.reduce((n, sess) => n + sess.mealIds.length, 0);
+  const totalComponents = plan.sessions.reduce((n, sess) => n + sess.components.length + sess.recipesToPrepare.length, 0);
 
   root.innerHTML = `
     <div class="stat-grid" style="margin-bottom:16px">
       <div class="stat-card">
         <div class="stat-card__top"><span class="stat-card__icon">🗓️</span><span class="stat-card__label">Sessions</span></div>
-        <span class="stat-card__value">${plan.length}</span>
+        <span class="stat-card__value">${plan.sessions.length}</span>
       </div>
       <div class="stat-card">
-        <div class="stat-card__top"><span class="stat-card__icon">🍱</span><span class="stat-card__label">Gamelles couvertes</span></div>
+        <div class="stat-card__top"><span class="stat-card__icon">🍱</span><span class="stat-card__label">Gamelles réparties</span></div>
         <span class="stat-card__value">${totalGamelles}</span>
       </div>
       <div class="stat-card">
         <div class="stat-card__top"><span class="stat-card__icon">🧺</span><span class="stat-card__label">Composants à préparer</span></div>
         <span class="stat-card__value">${totalComponents}</span>
       </div>
-      <div class="stat-card stat-card--accent">
-        <div class="stat-card__top"><span class="stat-card__icon">📦</span><span class="stat-card__label">Conservation</span></div>
-        <span class="stat-card__value">${s.settings.batch.maxDays}<small> jours / session</small></span>
+      <div class="stat-card ${plan.unassignedGamelles.length ? 'stat-card--warn' : 'stat-card--accent'}">
+        <div class="stat-card__top"><span class="stat-card__icon">📥</span><span class="stat-card__label">À répartir</span></div>
+        <span class="stat-card__value">${plan.unassignedGamelles.length}</span>
       </div>
     </div>
-    ${plan.map((sess) => sessionCard(sess, startWeekday)).join('')}
+
+    <div class="card">
+      <div class="card__head">
+        <h2>📥 Gamelles à préparer</h2>
+        <p>Glisse une gamelle dans une session ci-dessous pour décider quand elle sera préparée.</p>
+      </div>
+      ${gamelleZone('pool', plan.unassignedGamelles, startWeekday, 'Toutes les gamelles batchables sont déjà réparties dans une session.')}
+    </div>
+
+    <div class="row" style="margin:16px 0 10px">
+      <h2 style="margin:0">🗓️ Sessions de batch</h2>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn--sm btn--primary" data-new-session>+ Nouvelle session</button>
+    </div>
+    ${
+      plan.sessions.length
+        ? plan.sessions.map((sess) => sessionCard(sess, startWeekday)).join('')
+        : `<div class="empty">Aucune session créée. Commence par « + Nouvelle session », puis glisse-y des gamelles.</div>`
+    }
+
+    ${sameDayBlock('cook', plan.cookSameDay, startWeekday)}
+    ${sameDayBlock('assemble', plan.assembleSameDay, startWeekday)}
     ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
   `;
   wire(root);
 }
 
-/**
- * En-tête d'étape numéroté (parcours réel préparation → cuisson → assemblage
- * → résultat, cf. design system) — purement visuel, aucun effet sur le
- * contenu ni l'ordre des blocs, qui reste celui déjà calculé par
- * buildBatchPlan() (derive.js).
- */
-const stepHead = (n, title, icon) =>
-  `<div class="step-head"><span class="step-head__num">${n}</span><h3><span aria-hidden="true">${icon}</span> ${esc(title)}</h3></div>`;
-
 const slot = (startWeekday, dayIndex, mealType) =>
   `${dayName(startWeekday, dayIndex).toLowerCase()} ${mealType === 'lunch' ? 'midi' : 'soir'}`;
 
+/** Une gamelle glissable — même pastille visuelle dans le pool et dans une session. */
+function gamelleChip(g, startWeekday) {
+  return `<div class="gamelle-chip" draggable="true" data-gamelle-id="${esc(g.mealId)}">
+    <span class="gamelle-chip__slot">${esc(slot(startWeekday, g.dayIndex, g.mealType))}</span>
+    ${g.name ? `<span class="gamelle-chip__name">${esc(g.name)}</span>` : ''}
+  </div>`;
+}
+
+/** Zone de dépôt (le pool, ou l'intérieur d'une session) — `dropId` = 'pool' ou l'id de la session. */
+function gamelleZone(dropId, gamellesLight, startWeekday, emptyText) {
+  return `<div class="gamelle-zone" data-drop="${esc(dropId)}">
+    ${gamellesLight.length ? gamellesLight.map((g) => gamelleChip(g, startWeekday)).join('') : `<p class="muted" style="margin:0">${esc(emptyText)}</p>`}
+  </div>`;
+}
+
 function sessionCard(sess, startWeekday) {
-  const range = sess.startDay === sess.endDay ? `jour ${sess.startDay + 1}` : `jours ${sess.startDay + 1} à ${sess.endDay + 1}`;
-  const days = `${dayName(startWeekday, sess.startDay)} → ${dayName(startWeekday, sess.endDay)}`;
-
-  const covered = sess.gamelles.length
-    ? `<p>Préparer les gamelles de : ${sess.gamelles
-        .map((g) => `<strong>${esc(slot(startWeekday, g.dayIndex, g.mealType))}</strong>`)
-        .join(', ')}.</p>`
-    : '<p class="muted">Aucun repas planifié sur cette session.</p>';
-
+  const gamellesLight = sess.gamelles.map((g) => ({ mealId: g.mealId, dayIndex: g.dayIndex, mealType: g.mealType, name: g.name }));
   return `<div class="card">
     <div class="card__head">
-      <h2>Session ${sess.index + 1}</h2>
-      <span class="tag">${esc(range)} · ${esc(days)}</span>
+      <input type="text" class="session-card__label" data-session-label="${esc(sess.id)}" value="${esc(sess.label)}" placeholder="Session sans nom" aria-label="Nom de la session">
+      <span class="spacer"></span>
+      <button type="button" class="btn btn--sm btn--ghost" data-delete-session="${esc(sess.id)}">Supprimer la session</button>
     </div>
-    ${covered}
-    ${conservationBlock(sess)}
-    ${componentsBlock(sess, startWeekday)}
+    ${gamelleZone(sess.id, gamellesLight, startWeekday, 'Glisse des gamelles ici depuis le pool ci-dessus.')}
+    ${componentsBlock(sess)}
     ${recipesToPrepareBlock(sess, startWeekday)}
-    ${sameDayBlock('cook', sess.cookSameDay, startWeekday)}
-    ${sameDayBlock('assemble', sess.assembleSameDay, startWeekday)}
-    ${gamellesBlock(sess, startWeekday)}
+    ${gamellesDetailBlock(sess, startWeekday)}
   </div>`;
 }
-
-/** Alerte : la conservation d'un composant ne couvre pas la durée de la session. */
-function conservationBlock(sess) {
-  if (!sess.conservationAlerts?.length) return '';
-  return `<div class="card" style="border-color:#eebeb9;background:var(--off-bg);margin-bottom:12px">
-    <strong>⚠️ Conservation insuffisante</strong>
-    <ul style="margin:6px 0 0;padding-left:18px">
-      ${sess.conservationAlerts.map((a) => `<li>${esc(a.message)}</li>`).join('')}
-    </ul>
-    <small>Pour résoudre : scinde la session, réduis la durée de conservation dans les paramètres, ou cuisine ces composants plus tard.</small>
-  </div>`;
-}
-
-/* ---------------------------------------------------- A — à préparer en batch */
 
 /**
- * Conservation plus courte que la session (P0.3/P2.2) : au lieu d'une simple
- * alerte, le calendrier concret de reprise — une ligne par sous-préparation,
- * ancrée sur les jours de consommation réels et sa propre saisie "je prépare"
- * (clé distincte de la ligne principale, cf. `computeSubBatches()` /
- * derive.js). La première préparation est neutre (☐) ; toute préparation
- * supplémentaire après la première porte un ⚠️ (P2.3) pour signaler qu'elle
- * s'ajoute à celle déjà prévue en début de session.
+ * Détail des gamelles DE CETTE SESSION, personne par personne — y compris la
+ * suggestion de répartition du surplus (bonus/adjustedGrams, calculée dans
+ * buildSessionPlan()/derive.js) : c'est le SEUL endroit où elle est visible,
+ * donc jamais supprimée même si elle fait doublon visuel avec les chips de
+ * gamelles ci-dessus (celles-ci ne montrent qu'un nom de créneau, pas le
+ * contenu).
  */
-function subBatchRows(subBatches, startWeekday) {
-  if (!subBatches?.length) return '';
-  return `<table style="margin-top:6px">
-    <thead><tr><th>Préparation</th><th class="nums">Besoin</th><th>Je prépare</th></tr></thead>
-    <tbody>
-      ${subBatches
-        .map((b, i) => {
-          const marker = i === 0 ? '☐' : '⚠️';
-          const label = i === 0 ? 'Préparation' : 'Nouvelle préparation nécessaire';
-          const prepDayName = dayName(startWeekday, b.startDay);
-          const coversText = (b.coversDays?.length ? b.coversDays : [b.startDay, b.endDay])
-            .map((d) => dayName(startWeekday, d)).join(', ');
-          return `<tr>
-            <td>
-              ${marker} <strong>${esc(prepDayName)}</strong> — ${esc(label)}
-              <div class="tag muted">couvre ${esc(coversText)}</div>
-            </td>
-            <td class="nums">${grams(b.requiredRaw)}</td>
-            <td><input type="number" step="10" min="0" value="${num(b.preparedRaw, 0).replace(',', '.')}"
-                   data-prep="${b.key}" style="width:104px" aria-label="Quantité préparée"> g</td>
-          </tr>`;
-        })
+function gamellesDetailBlock(sess, startWeekday) {
+  const filled = sess.gamelles.filter((g) => PERSONS.some((p) => g.persons[p].length));
+  if (!filled.length) return '';
+  return `<h3 style="margin-top:14px">📦 Détail des gamelles de cette session</h3>
+    <div class="grid grid--2">
+      ${filled
+        .map(
+          (g) => `<div class="meal-card">
+          <div class="meal-card__type">${esc(MEAL_TYPES[g.mealType])} — ${esc(slot(startWeekday, g.dayIndex, g.mealType))}</div>
+          <div class="meal-card__name">${esc(g.name || 'Sans nom')}</div>
+          ${PERSONS.map(
+            (p) => `<div class="person-band person-band--${p}" style="margin-bottom:6px">
+              <div class="person-name person-name--${p}">${PERSON_LABEL[p]}</div>
+              <ul style="margin:2px 0 0;padding-left:16px">
+                ${g.persons[p]
+                  .map((e) =>
+                    e.free
+                      ? `<li>${esc(e.name)} — ${esc(e.quantity || 'au goût')}</li>`
+                      : `<li>${grams(e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${e.bonus > 0 ? `<span class="tag">+${grams(e.bonus)} (surplus à servir)</span>` : ''}</li>`
+                  )
+                  .join('') || '<li class="muted">rien</li>'}
+              </ul>
+            </div>`
+          ).join('')}
+        </div>`
+        )
         .join('')}
-    </tbody>
-  </table>`;
+    </div>`;
 }
+
+const shortCat = (category) =>
+  ({ batch: 'batch', cook: 'cuisson du jour', assemble: 'assemblage', free: 'libre' }[category] || '');
+
+/* ---------------------------------------------------- à préparer en batch */
 
 /**
  * Mesure ponctuelle "cuit obtenu" face au rendement théorique de la fiche
@@ -186,10 +210,8 @@ function cookedObtainedCell(c) {
  * seule la présentation change — d'une ligne de tableau dense à une carte
  * avec une bande de mesures compactes, label au-dessus de la valeur.
  */
-function componentsBlock(sess, startWeekday) {
-  if (!sess.components.length) {
-    return `${stepHead(1, BATCH_CATEGORY_LABEL.batch, '🧺')}<p class="muted">Aucun composant batchable sur cette session.</p>`;
-  }
+function componentsBlock(sess) {
+  if (!sess.components.length) return '';
   const cards = sess.components
     .map((c) => {
       const surplus = c.preparedRaw - c.requiredRaw;
@@ -207,14 +229,9 @@ function componentsBlock(sess, startWeekday) {
           <div class="batch-item__tags">
             ${method ? `<span class="tag">${method}</span>` : '<span class="tag muted">aucune consigne de cuisson définie dans la fiche aliment</span>'}
             ${c.note ? `<span class="tag">${esc(c.note)}</span>` : ''}
-            ${
-              c.shelfLifeDays !== null
-                ? `<span class="tag${c.shelfLifeShort ? ' sync-error' : ''}">conservation ${num(c.shelfLifeDays, 0)} j / ${num(c.coveredDays, 0)} j couverts</span>`
-                : ''
-            }
+            ${c.shelfLifeDays !== null ? `<span class="tag">conservation ${num(c.shelfLifeDays, 0)} j</span>` : ''}
           </div>
         </div>
-        ${subBatchRows(c.subBatches, startWeekday)}
         <div class="batch-item__metrics">
           <div class="batch-item__metric">
             <span class="batch-item__metric-label">À sortir</span>
@@ -248,11 +265,11 @@ function componentsBlock(sess, startWeekday) {
     })
     .join('');
 
-  return `${stepHead(1, BATCH_CATEGORY_LABEL.batch, '🧺')}
+  return `<h3 style="margin-top:14px">🧺 ${esc(BATCH_CATEGORY_LABEL.batch)}</h3>
     <div class="batch-item-list">${cards}</div>`;
 }
 
-/* ---------------------------------------------- A' — recettes à préparer en batch (P0.2) */
+/* ---------------------------------------------- recettes à préparer en batch */
 
 function recipesToPrepareBlock(sess, startWeekday) {
   if (!sess.recipesToPrepare?.length) return '';
@@ -274,13 +291,8 @@ function recipesToPrepareBlock(sess, startWeekday) {
             data-create-prep="${esc(c.recipe.id)}" data-create-prep-grams="${c.preparedRaw}">Créer une préparation</button>
           ${method ? `<div class="tag">${method}</div>` : '<div class="tag muted">aucune consigne de cuisson définie dans la fiche recette</div>'}
           ${c.note ? `<div class="tag">${esc(c.note)}</div>` : ''}
-          ${
-            c.shelfLifeDays !== null
-              ? `<div class="tag${c.shelfLifeShort ? ' sync-error' : ''}">conservation ${num(c.shelfLifeDays, 0)} j / ${num(c.coveredDays, 0)} j couverts</div>`
-              : ''
-          }
+          ${c.shelfLifeDays !== null ? `<div class="tag">conservation ${num(c.shelfLifeDays, 0)} j</div>` : ''}
           ${ingredientsDetail(c)}
-          ${subBatchRows(c.subBatches, startWeekday)}
           ${destinationsDetail(c, startWeekday)}
         </td>
         <td class="nums">${grams(c.requiredRaw)}</td>
@@ -291,7 +303,7 @@ function recipesToPrepareBlock(sess, startWeekday) {
     })
     .join('');
 
-  return `<h3>Recettes à préparer en batch</h3>
+  return `<h3 style="margin-top:14px">Recettes à préparer en batch</h3>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Recette et méthode</th><th>Quantité nette nécessaire</th><th>Je prépare</th><th>Surplus</th></tr></thead>
@@ -301,12 +313,11 @@ function recipesToPrepareBlock(sess, startWeekday) {
 }
 
 /**
- * Étape 1 du « global » : ce qu'il y a DANS la recette, distinctement, à
- * l'échelle de ce qui va être réellement préparé (c.preparedRaw) — pour
- * savoir quoi sortir/peser avant de cuisiner, sans aller rouvrir la fiche
- * recette. Toujours visible (jamais repliée derrière un <details> qu'on
- * manque facilement) : c'est le cœur de ce bloc, pas un détail secondaire.
- * Lecture seule, aucune donnée n'est modifiée ici.
+ * Ce qu'il y a DANS la recette, distinctement, à l'échelle de ce qui va être
+ * réellement préparé (c.preparedRaw) — pour savoir quoi sortir/peser avant
+ * de cuisiner, sans aller rouvrir la fiche recette. Toujours visible (jamais
+ * repliée derrière un <details> qu'on manque facilement). Lecture seule,
+ * aucune donnée n'est modifiée ici.
  */
 function ingredientsDetail(c) {
   if (!c.ingredients?.length) return '';
@@ -339,11 +350,9 @@ function ingredientLine(ing) {
 }
 
 /**
- * Étape 2 du « global » : une fois la recette préparée EN TOTALITÉ pour la
- * session, vers quelles gamelles ce total se répartit — un bloc distinct
- * sous la recette totale (ligne par gamelle, pas un seul tag illisible),
- * sans dupliquer le calcul de « Détail des gamelles » plus bas ni jamais
- * écrire dans le planning (lecture seule, dérivée des repas de la session).
+ * Une fois la recette préparée EN TOTALITÉ pour la session, vers quelles
+ * gamelles ce total se répartit — lecture seule, dérivée des repas de la
+ * session, n'écrit jamais dans le planning.
  */
 function destinationsDetail(c, startWeekday) {
   if (!c.destinations?.length) return '';
@@ -357,20 +366,25 @@ function destinationsDetail(c, startWeekday) {
   </div>`;
 }
 
-/* ------------------------------------- B et C — le jour même */
+/* ------------------------------------- à cuire / à assembler le jour même (global) */
 
-const SAME_DAY_STEP = { cook: { n: 2, icon: '🔥' }, assemble: { n: 3, icon: '🍱' } };
+const SAME_DAY_ICON = { cook: '🔥', assemble: '🍱' };
 
 function sameDayBlock(kind, rows, startWeekday) {
   const label = BATCH_CATEGORY_LABEL[kind];
-  const step = SAME_DAY_STEP[kind];
-  if (!rows.length) return `${stepHead(step.n, label, step.icon)}<p class="muted">Rien dans cette catégorie sur cette session.</p>`;
+  if (!rows.length) {
+    return `<div class="card" style="margin-top:14px">
+      <div class="card__head"><h2>${SAME_DAY_ICON[kind]} ${esc(label)}</h2></div>
+      <p class="muted">Rien dans cette catégorie pour l’instant.</p>
+    </div>`;
+  }
   const byMeal = {};
   for (const r of rows) {
     const key = `${r.dayIndex}:${r.mealType}`;
     (byMeal[key] ||= { dayIndex: r.dayIndex, mealType: r.mealType, items: [] }).items.push(r);
   }
-  return `${stepHead(step.n, label, step.icon)}
+  return `<div class="card" style="margin-top:14px">
+    <div class="card__head"><h2>${SAME_DAY_ICON[kind]} ${esc(label)}</h2></div>
     ${Object.values(byMeal)
       .sort((a, b) => a.dayIndex - b.dayIndex || (a.mealType === 'lunch' ? -1 : 1))
       .map(
@@ -381,7 +395,8 @@ function sameDayBlock(kind, rows, startWeekday) {
           </ul>
         </div>`
       )
-      .join('')}`;
+      .join('')}
+  </div>`;
 }
 
 /**
@@ -403,42 +418,91 @@ function sameDayItem(r) {
   </li>`;
 }
 
-/* ------------------------------------- détail des gamelles */
+/* ------------------------------------------------------------------ */
+/* Glisser-déposer des gamelles (pool <-> sessions)                    */
+/* ------------------------------------------------------------------ */
 
-function gamellesBlock(sess, startWeekday) {
-  const filled = sess.gamelles.filter((g) => PERSONS.some((p) => g.persons[p].length));
-  if (!filled.length) return '';
-  return `${stepHead(4, 'Détail des gamelles', '📦')}
-    <div class="grid grid--2">
-      ${filled
-        .map(
-          (g) => `<div class="meal-card">
-          <div class="meal-card__type">${esc(MEAL_TYPES[g.mealType])} — ${esc(slot(startWeekday, g.dayIndex, g.mealType))}</div>
-          <div class="meal-card__name">${esc(g.name || 'Sans nom')}</div>
-          ${PERSONS.map(
-            (p) => `<div class="person-band person-band--${p}" style="margin-bottom:6px">
-              <div class="person-name person-name--${p}">${PERSON_LABEL[p]}</div>
-              <ul style="margin:2px 0 0;padding-left:16px">
-                ${g.persons[p]
-                  .map((e) =>
-                    e.free
-                      ? `<li>${esc(e.name)} — ${esc(e.quantity || 'au goût')}</li>`
-                      : `<li>${grams(e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${e.bonus > 0 ? `<span class="tag">+${grams(e.bonus)} (surplus à servir)</span>` : ''}</li>`
-                  )
-                  .join('') || '<li class="muted">rien</li>'}
-              </ul>
-            </div>`
-          ).join('')}
-        </div>`
-        )
-        .join('')}
-    </div>`;
+function wireDragAndDrop(root) {
+  root.querySelectorAll('[data-gamelle-id]').forEach((chip) => {
+    // Capturé au mousedown : un geste de drag natif peut remettre
+    // window.scrollY à 0 avant même que `drop` ne s'exécute (constaté sur
+    // Chrome réel, cf. planning.js) — trop tard pour le capturer dans `drop`.
+    chip.addEventListener('mousedown', () => { dragStartScrollY = window.scrollY; });
+    chip.addEventListener('dragstart', (e) => {
+      dragMealId = chip.dataset.gamelleId;
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', dragMealId);
+      }
+    });
+    chip.addEventListener('dragend', () => { dragMealId = null; });
+  });
+
+  root.querySelectorAll('[data-drop]').forEach((zone) => {
+    zone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      zone.classList.add('is-drop-target');
+    });
+    zone.addEventListener('dragleave', () => zone.classList.remove('is-drop-target'));
+    zone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      zone.classList.remove('is-drop-target');
+      const mealId = dragMealId || e.dataTransfer?.getData('text/plain');
+      dragMealId = null;
+      if (!mealId) return;
+      assignGamelle(root, mealId, zone.dataset.drop);
+    });
+  });
 }
 
-const shortCat = (category) =>
-  ({ batch: 'batch', cook: 'cuisson du jour', assemble: 'assemblage', free: 'libre' }[category] || '');
+function assignGamelle(root, mealId, targetId) {
+  const savedScrollY = dragStartScrollY;
+  update((s) => {
+    for (const sess of s.batch.sessions) sess.mealIds = sess.mealIds.filter((id) => id !== mealId);
+    if (targetId !== 'pool') {
+      const sess = s.batch.sessions.find((x) => x.id === targetId);
+      if (sess && !sess.mealIds.includes(mealId)) sess.mealIds.push(mealId);
+    }
+  });
+  render(root);
+  // le render() ci-dessus tente déjà de restaurer le scroll (voir app.js/
+  // planning.js) mais ne suffit pas seul après un drag natif (le saut a déjà
+  // eu lieu avant ce point) : on réapplique explicitement la valeur capturée
+  // au mousedown.
+  if (savedScrollY != null) window.scrollTo(0, savedScrollY);
+}
 
 function wire(root) {
+  wireDragAndDrop(root);
+
+  root.querySelector('[data-new-session]')?.addEventListener('click', () => {
+    update((s) => {
+      s.batch.sessions.push(newBatchSession(`Session ${s.batch.sessions.length + 1}`));
+    });
+    render(root);
+  });
+
+  root.querySelectorAll('[data-session-label]').forEach((input) =>
+    input.addEventListener('change', (e) => {
+      const id = e.target.dataset.sessionLabel;
+      const value = e.target.value.trim();
+      update((s) => {
+        const sess = s.batch.sessions.find((x) => x.id === id);
+        if (sess) sess.label = value;
+      });
+    })
+  );
+
+  root.querySelectorAll('[data-delete-session]').forEach((btn) =>
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.deleteSession;
+      update((s) => { s.batch.sessions = s.batch.sessions.filter((x) => x.id !== id); });
+      toast('Session supprimée — ses gamelles reviennent dans le pool');
+      render(root);
+    })
+  );
+
   // Lien Batch -> Préparations (lecture seule ici : ce bouton ne crée RIEN
   // par lui-même — il ouvre juste l'écran Préparations avec le formulaire
   // prérempli ; la création reste une action explicite de l'utilisateur sur

@@ -415,6 +415,33 @@ alter table settings add column if not exists dismissed_duplicates jsonb not nul
 -- absente tant que l'utilisateur n'a rien mesuré, jamais déduite.
 alter table batch_items add column if not exists cooked_quantity numeric;
 
+-- Sessions de batch (retour utilisateur) : remplace l'ancien réglage global
+-- `batch_duration`/maxDays (découpage automatique du cycle par durée de
+-- conservation, jugé peu lisible au quotidien) par des sessions que
+-- l'utilisateur crée et peuple lui-même (glisser-déposer de gamelles, cf.
+-- store.js::newBatchSession()) — un simple tableau [{id, label, mealIds}],
+-- même mécanisme que dismissed_duplicates ci-dessus (colonne NOT NULL avec
+-- DEFAULT, pour qu'une ligne déjà écrite par un ancien client reste valide).
+alter table settings add column if not exists batch_sessions jsonb not null default '[]'::jsonb;
+
+-- `batch_duration` n'a plus aucun sens (les sessions ne sont plus découpées
+-- par durée) : conservée telle quelle plutôt que supprimée, pour ne jamais
+-- faire échouer une lecture venant d'une ligne/vue encore en cache. Son
+-- NOT NULL, lui, DOIT être retiré : nutriplan_replace_all() construit
+-- chaque ligne via jsonb_populate_record(null::settings, ...), qui remplit
+-- à NULL (jamais le DEFAULT de la colonne) toute clé absente du JSON — or le
+-- client à jour ne l'envoie plus du tout (stateToTables()/sync.js), donc
+-- CHAQUE push échouerait sur cette contrainte sans ce retrait (régression
+-- réelle détectée lors du passage de la suite de tests sync.test.mjs).
+alter table settings alter column batch_duration drop not null;
+
+-- `preparation_session` référençait un INDEX NUMÉRIQUE de session
+-- (0, 1, 2…, dérivé de maxDays) ; les sessions sont désormais créées à la
+-- main avec un id STRING (store.js::newBatchSession()) — la colonne doit
+-- pouvoir stocker ce texte. `using preparation_session::text` convertit les
+-- lignes déjà existantes (anciens index numériques) sans les perdre.
+alter table batch_items alter column preparation_session type text using preparation_session::text;
+
 -- PostgreSQL ne propose pas "add constraint if not exists" : on supprime puis
 -- recrée (comme les policies RLS plus bas), pour que le script reste rejouable.
 do $$

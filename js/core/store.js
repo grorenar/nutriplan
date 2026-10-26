@@ -43,7 +43,7 @@ export function defaultState() {
       tolerance: 0.05,
       cycle: { startWeekday: 1, duration: 4 }, // 0 = Lundi
       budget: 100,
-      batch: { enabled: true, maxDays: 3 },
+      batch: { enabled: true },
       autoAdjust: true,
     },
     meals: [], // repas du cycle en cours (déjeuners / dîners uniquement)
@@ -51,12 +51,17 @@ export function defaultState() {
     snacks: [], // catalogue unique : 16 h et soir ne sont que des affectations
     shopping: { purchased: {} }, // foodId -> bool
     batch: {
-      overrides: {}, // `${session}:${foodId}` -> grammes crus préparés
+      overrides: {}, // `${sessionId}:${foodId}` -> grammes crus préparés
       // Mesure ponctuelle "cuit obtenu" pour cette séance — jamais appliquée
       // automatiquement au rendement enregistré de l'aliment (food.cookedFactor,
       // global, utilisé par tous les calculs nutritionnels) : seule une action
       // explicite de l'utilisateur (voir js/views/batch.js) le fait.
-      cookedOverrides: {}, // `${session}:${foodId}` -> grammes cuits obtenus
+      cookedOverrides: {}, // `${sessionId}:${foodId}` -> grammes cuits obtenus
+      // Sessions de batch (retour utilisateur — remplace l'ancien découpage
+      // automatique par `maxDays`, jugé peu lisible au quotidien) : l'utilisateur
+      // les crée lui-même et y glisse les gamelles à préparer ensemble, sans
+      // aucune règle de conservation/jours implicite. Voir newBatchSession().
+      sessions: [],
     },
     // Groupes de « doublons possibles » explicitement écartés par
     // l'utilisateur (« pas un doublon ») — liste de clés stables
@@ -198,6 +203,33 @@ export const newPreparation = (recipe, preparedQuantity, label = '') => ({
   lastResetAt: null, // P1 : fenêtre de comptage des pertes, avancée par resetCycle()
 });
 
+/**
+ * Une session de batch (retour utilisateur) : un conteneur nommé auquel
+ * l'utilisateur affecte lui-même des gamelles (repas) par glisser-déposer,
+ * sans aucune règle de jours/conservation implicite — remplace l'ancien
+ * découpage automatique du cycle par `maxDays`. `mealIds` référence les
+ * `meal.id` du cycle ; une gamelle non affectée à une session n'apparaît
+ * dans aucune (cf. `normalizeBatchSessions()`, qui purge les références à
+ * des repas supprimés depuis).
+ */
+export const newBatchSession = (label = '') => ({
+  id: uid('bsess'),
+  label,
+  mealIds: [],
+});
+
+/**
+ * Purge les sessions d'un repas supprimé depuis (cycle réinitialisé, durée
+ * raccourcie…) : une référence orpheline dans `mealIds` serait invisible
+ * nulle part (aucune gamelle derrière) sans jamais planter — silencieusement
+ * nettoyée ici à chaque chargement/migration plutôt que laissée traîner.
+ */
+export function normalizeBatchSessions(sessions, meals) {
+  const mealIds = new Set((meals || []).map((m) => m.id));
+  return (Array.isArray(sessions) ? sessions : [])
+    .map((s) => ({ id: s.id || uid('bsess'), label: s.label || '', mealIds: (s.mealIds || []).filter((id) => mealIds.has(id)) }));
+}
+
 /** Un enregistrement de perte (« Jeter les restes », P1) : toujours en GRAMMES, jamais effacé. */
 export const newPreparationLoss = (qty) => ({
   id: uid('loss'),
@@ -268,7 +300,7 @@ function migrate(s) {
   merged.settings.cycle = { ...base.settings.cycle, ...(s.settings?.cycle || {}) };
   merged.settings.batch = { ...base.settings.batch, ...(s.settings?.batch || {}) };
   merged.shopping = { purchased: {}, ...(s.shopping || {}) };
-  merged.batch = { overrides: {}, cookedOverrides: {}, ...(s.batch || {}) };
+  merged.batch = { overrides: {}, cookedOverrides: {}, sessions: [], ...(s.batch || {}) };
   merged.dismissedDuplicates = Array.isArray(merged.dismissedDuplicates) ? merged.dismissedDuplicates : [];
   merged.meta = { ...base.meta, ...(s.meta || {}) };
   // une synchronisation en cours ne survit jamais à un rechargement de page
@@ -280,6 +312,7 @@ function migrate(s) {
   merged.recipes = (Array.isArray(merged.recipes) ? merged.recipes : []).map(normalizeRecipe);
   merged.preparations = (Array.isArray(merged.preparations) ? merged.preparations : []).map(normalizePreparation);
   merged.meals = (Array.isArray(merged.meals) ? merged.meals : []).map(normalizeMeal);
+  merged.batch.sessions = normalizeBatchSessions(merged.batch.sessions, merged.meals);
   merged.breakfasts = (merged.breakfasts || []).map(normalizeBreakfast);
   // fusion des deux anciens catalogues de collations en un seul
   merged.snacks = [
@@ -608,6 +641,9 @@ export function ensureCycleMeals(s = getState()) {
     }
   }
   s.meals.sort((a, b) => a.dayIndex - b.dayIndex || (a.mealType === 'lunch' ? -1 : 1));
+  // une durée de cycle raccourcie peut supprimer des repas déjà affectés à
+  // une session de batch — purge immédiate plutôt que d'attendre un rechargement.
+  if (s.batch) s.batch.sessions = normalizeBatchSessions(s.batch.sessions, s.meals);
   return s;
 }
 
@@ -673,7 +709,10 @@ export function resetCycle() {
     }
     s.meals = [];
     s.shopping = { purchased: {} };
-    s.batch = { overrides: {}, cookedOverrides: {} };
+    // les sessions référencent des `meal.id` qui n'existent plus après la
+    // réinitialisation du planning : repartir de zéro plutôt que de garder
+    // des sessions vides sans label retrouvable.
+    s.batch = { overrides: {}, cookedOverrides: {}, sessions: [] };
     // les catalogues sont conservés : seuls leurs compteurs d'utilisation repartent à zéro
     for (const o of s.breakfasts) o.uses = emptyBreakfastUses();
     for (const o of s.snacks) o.uses = emptySnackUses();

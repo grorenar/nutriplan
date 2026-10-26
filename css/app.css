@@ -433,6 +433,26 @@ tbody tr:hover td { background: var(--surface-alt); }
 .batch-item__metric--ok .batch-item__metric-value { color: var(--brand-700); }
 .batch-item__metric--input input { width: 100%; max-width: 110px; }
 
+/* Sessions de batch (retour utilisateur) : glisser-déposer de gamelles entre
+   un pool (non affectées) et des sessions créées à la main — remplace
+   l'ancien découpage automatique par durée de conservation. */
+.gamelle-zone {
+  display: flex; flex-wrap: wrap; gap: 8px; min-height: 48px; padding: 10px;
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-sunken);
+}
+.gamelle-zone.is-drop-target { border-color: var(--brand-500); border-style: solid; background: var(--brand-50); }
+.gamelle-chip {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-strong); background: #fff;
+  border-radius: var(--radius-pill); padding: 6px 12px; font-size: var(--fs-xs); font-weight: 600; cursor: grab;
+}
+.gamelle-chip:active { cursor: grabbing; }
+.gamelle-chip__slot { color: var(--ink-soft); }
+.session-card__label {
+  border: 1px solid transparent; background: transparent; font: inherit; font-weight: 700; font-size: var(--fs-lg);
+  padding: 4px 6px; border-radius: var(--radius-xs); min-width: 160px; flex: 1 1 auto;
+}
+.session-card__label:hover, .session-card__label:focus { border-color: var(--line-strong); background: #fff; }
+
 /* barre de progression (ex. budget consommé) */
 .progress { height: 9px; border-radius: var(--radius-pill); background: var(--surface-sunken); overflow: hidden; }
 .progress__bar { height: 100%; background: var(--brand-500); border-radius: var(--radius-pill); transition: width .2s ease; }

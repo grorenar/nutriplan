@@ -525,18 +525,6 @@ export function coverageReport(state) {
 /* Batch cooking                                                       */
 /* ------------------------------------------------------------------ */
 
-/** Découpe le cycle en sessions de batch (règle de conservation). */
-export function batchSessions(settings) {
-  const duration = settings.cycle.duration;
-  const span = Math.max(1, settings.batch.maxDays);
-  const sessions = [];
-  for (let start = 0; start < duration; start += span) {
-    const end = Math.min(duration, start + span) - 1;
-    sessions.push({ index: sessions.length, startDay: start, endDay: end });
-  }
-  return sessions;
-}
-
 /**
  * L'aliment demande-t-il une cuisson ?
  * C'est une propriété EXPLICITE de la fiche aliment (requiresCooking) : elle
@@ -607,352 +595,300 @@ function servedGrams(food, qty, itemState) {
 }
 
 /**
- * Regroupe les jours de consommation réels (`consumptionDays`, triés, sans
- * doublon) en lots glouton ancrés sur la conservation (P2.2) : chaque lot
- * démarre au premier jour non couvert, et couvre tous les jours de
- * consommation suivants jusqu'à `prepDay + shelfLifeDays - 1` inclus.
- * `shelfLifeDays === 0` → une préparation par jour de consommation (aucune
- * conservation). Remplace l'ancienne grille fixe (`splitDayRange`, ancrée sur
- * le début de session plutôt que sur la consommation réelle), qui pouvait
- * recommander des préparations inutiles.
+ * Un repas est-il concerné par le batch cooking ? C'est-à-dire : contient-il
+ * au moins un élément qui devrait être préparé à l'avance plutôt que cuisiné/
+ * assemblé le jour même (aliment batchAllowed utilisé directement, OU recette
+ * batchAllowed référencée directement, sans préparation) ? Seuls ces repas
+ * apparaissent dans le pool « Gamelles à répartir » / les sessions — un repas
+ * sans rien de batchable n'a besoin d'aucune affectation : son contenu est
+ * toujours entièrement couvert par cookSameDay/assembleSameDay (globaux).
  */
-function groupConsumptionDays(consumptionDays, shelfLifeDays) {
-  if (shelfLifeDays === 0) return consumptionDays.map((day) => ({ startDay: day, endDay: day, days: [day] }));
-  const groups = [];
-  let i = 0;
-  while (i < consumptionDays.length) {
-    const prepDay = consumptionDays[i];
-    const limitDay = prepDay + shelfLifeDays - 1;
-    let j = i;
-    while (j + 1 < consumptionDays.length && consumptionDays[j + 1] <= limitDay) j += 1;
-    groups.push({ startDay: prepDay, endDay: consumptionDays[j], days: consumptionDays.slice(i, j + 1) });
-    i = j + 1;
+export function mealHasBatchable(meal, foodsById, recipesById) {
+  for (const it of meal.items || []) {
+    if (it.foodId) {
+      if (batchCategory(foodsById[it.foodId]) === 'batch') return true;
+    } else if (it.recipeId && !it.preparationId) {
+      if (recipesById[it.recipeId]?.batchAllowed) return true;
+    }
   }
-  return groups;
+  return false;
 }
 
 /**
- * Sous-préparations d'un composant (aliment OU recette) dont la conservation
- * (`shelfLifeDays`) est plus courte que la session (P0.3/P2.2) : au lieu
- * d'une simple alerte, la session est effectivement scindée en préparations
- * distinctes, chacune avec son propre besoin (recalculé via `computeRaw`,
- * restreint aux repas concernés — même mécanisme d'agrégation que le reste,
- * aucune nouvelle formule). Les tranches sont ancrées sur les jours de
- * consommation RÉELS (P2.2), pas sur une grille fixe démarrant en début de
- * session : une recette consommée deux fois dans sa durée de conservation ne
- * déclenche jamais plus d'une préparation pour ces deux consommations.
- * Besoin BRUT par tranche (comme les composants aliments, qui n'ont jamais
- * eu de notion de stock déjà disponible) : la soustraction du disponible
- * existant (recettes uniquement, cf. `recipeAvailableFromPreparations`) reste
- * au niveau de la session entière, pas répartie entre tranches — on ignore SI
- * le stock existant a été consommé plutôt en début ou en fin de session,
- * information que le modèle actuel ne représente pas.
+ * Composants (aliments) et recettes à préparer en batch pour UNE session
+ * (ses gamelles assignées, `meals`), plus leur détail de gamelles et la
+ * suggestion de répartition du surplus — factorisé hors de buildBatchPlan()
+ * pour être appelé une fois par session utilisateur.
  */
-function computeSubBatches(shelfLifeDays, coveredDays, sessionIndex, startDay, endDay, keyPart, meals, computeRaw, overrides) {
-  // shelfLifeDays === null (non renseigné) : Number(null) vaut 0, donc FINI — sans
-  // l'exclusion explicite ci-dessous, une conservation inconnue serait traitée
-  // comme une conservation de 0 jour (scission quotidienne) au lieu du
-  // comportement de secours attendu (couvre toute la session, cf. P2.2).
-  if (shelfLifeDays === null || shelfLifeDays === undefined) return null;
-  if (!(Number.isFinite(Number(shelfLifeDays)) && Number(shelfLifeDays) < coveredDays)) return null;
-  const shelfLife = Math.max(0, Math.floor(Number(shelfLifeDays)));
-  const consumptionDays = [...new Set(
-    meals.filter((m) => computeRaw([m]) > 0).map((m) => m.dayIndex)
-  )].sort((a, b) => a - b);
-  if (!consumptionDays.length) return [];
-  return groupConsumptionDays(consumptionDays, shelfLife).map((g) => {
-    const chunkMeals = meals.filter((m) => g.days.includes(m.dayIndex));
-    const requiredRaw = computeRaw(chunkMeals);
-    const key = `${sessionIndex}:${g.startDay}-${g.endDay}:${keyPart}`;
-    const preparedRaw = overrides[key] ?? requiredRaw;
-    return { key, startDay: g.startDay, endDay: g.endDay, requiredRaw, preparedRaw, coversDays: g.days };
-  });
+function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparationsById) {
+  const needs = aggregateNeeds(meals, foodsById, recipesById, preparationsById);
+
+  // ---- A. aliments à préparer en batch
+  const components = [];
+  for (const entry of Object.values(needs)) {
+    const { food, refGrams } = entry;
+    if (batchCategory(food) !== 'batch') continue;
+    const cooked = needsCooking(food) && food.referenceState === 'cru'
+      ? convertGrams(food, refGrams, 'cru', 'cuit')
+      : refGrams;
+    const key = `${sess.id}:${food.id}`;
+    const prepared = state.batch.overrides[key];
+    const preparedRaw = prepared ?? refGrams;
+    // Mesure ponctuelle "cuit obtenu" (session courante uniquement, jamais
+    // reportée sur food.cookedFactor sans action explicite — cf. batch.js) :
+    // ne s'applique qu'aux aliments effectivement cuits depuis le cru.
+    const measurable = needsCooking(food) && food.referenceState === 'cru' && preparedRaw > 0;
+    const measuredCooked = measurable ? (state.batch.cookedOverrides?.[key] ?? null) : null;
+    const yieldPct = Math.round((Number(food.cookedFactor) || 1) * 100);
+    const preparedCooked = needsCooking(food) && food.referenceState === 'cru'
+      ? convertGrams(food, preparedRaw, 'cru', 'cuit')
+      : preparedRaw;
+    const measuredYieldPct = measuredCooked != null ? Math.round((measuredCooked / preparedRaw) * 100) : null;
+    const yieldDeviationPct = measuredYieldPct != null && yieldPct > 0
+      ? Math.round((Math.abs(measuredYieldPct - yieldPct) / yieldPct) * 100)
+      : null;
+    // écart en grammes (cuit obtenu vs cuit théorique attendu pour CE
+    // preparedRaw) — exigé à côté de l'écart en %, cf. plan d'amélioration §I.3.
+    const yieldDeviationGrams = measuredCooked != null ? measuredCooked - preparedCooked : null;
+    components.push({
+      key,
+      food,
+      requiredRaw: refGrams,
+      requiredCooked: cooked,
+      preparedRaw,
+      preparedCooked,
+      yieldPct,
+      measuredCooked,
+      measuredYieldPct,
+      yieldDeviationGrams,
+      measuredCookedFactor: measuredCooked != null ? measuredCooked / preparedRaw : null,
+      yieldDeviationSignificant: yieldDeviationPct != null && yieldDeviationPct >= YIELD_DEVIATION_THRESHOLD_PCT,
+      method: food.cookingMethod || '',
+      temperature: food.cookingTemp ?? null,
+      duration: food.cookingTime ?? null,
+      prepTime: food.prepTime ?? null,
+      equipment: food.equipment || '',
+      note: preparationNote(food),
+      summary: cookingSummary(food),
+      needsCooking: needsCooking(food),
+      // durée de conservation renseignée dans la fiche aliment (null = inconnue)
+      // — purement informatif désormais : les sessions étant choisies à la
+      // main (retour utilisateur), il n'y a plus de "durée de session" à lui
+      // comparer, donc plus de scission/alerte automatique.
+      shelfLifeDays: food.shelfLifeDays ?? null,
+    });
+  }
+  components.sort((a, b) => b.requiredRaw - a.requiredRaw);
+
+  // ---- A'. recettes à préparer en batch (P0.2 — chemin réel, plus un simple
+  // affichage : une recette référencée directement (recipeId, sans
+  // préparation — "molle", pas encore cuisinée) et marquée batchAllowed sur
+  // SA PROPRE fiche devient ici un composant à part entière, au lieu de
+  // disparaître (déployée en ingrédients bruts) ou d'être traitée comme
+  // "déjà assemblée" plus bas. Net du disponible déjà préparé pour cette
+  // recette — réutilise recipeAvailableFromPreparations() telle quelle,
+  // donc une recette déjà (ou partiellement) préparée n'est jamais recomptée.
+  const recipeIdsHere = new Set();
+  for (const meal of meals) {
+    for (const it of meal.items) if (it.recipeId && !it.preparationId) recipeIdsHere.add(it.recipeId);
+  }
+  const recipesToPrepare = [...recipeIdsHere]
+    .map((recipeId) => recipesById[recipeId])
+    .filter((r) => r && r.batchAllowed)
+    .map((recipe) => {
+      const neededSession = recipeNeededFrom(meals, recipe.id);
+      const available = recipeAvailableFromPreparations(state, recipe.id);
+      const requiredRaw = Math.max(0, neededSession - available);
+      const key = `${sess.id}:recipe:${recipe.id}`;
+      const prepared = state.batch.overrides[key];
+      const preparedRaw = prepared ?? requiredRaw;
+
+      const ingredients = recipeIngredientsScaledTo(recipe, preparedRaw, foodsById);
+
+      // Vers quelles gamelles de CETTE session ce besoin est réparti (lecture
+      // seule — cet écran ne modifie jamais le planning) : une recette
+      // référencée directement (recipeId, sans préparation) dans un repas.
+      const destinations = meals
+        .map((meal) => {
+          const qty = meal.items
+            .filter((it) => it.recipeId === recipe.id && !it.preparationId)
+            .reduce((sum, it) => sum + PERSONS.reduce((s2, p) => s2 + (it.qty?.[p] || 0), 0), 0);
+          return qty > 0 ? { mealId: meal.id, dayIndex: meal.dayIndex, mealType: meal.mealType, name: meal.name || '', qty } : null;
+        })
+        .filter(Boolean);
+
+      return {
+        key,
+        recipe,
+        requiredRaw,
+        preparedRaw,
+        ingredients,
+        destinations,
+        method: recipe.cookingMethod || '',
+        temperature: recipe.cookingTemp ?? null,
+        duration: recipe.cookingTime ?? null,
+        prepTime: recipe.prepTime ?? null,
+        equipment: recipe.equipment || '',
+        note: recipe.instructions ? String(recipe.instructions) : null,
+        shelfLifeDays: recipe.shelfLifeDays ?? null,
+      };
+    })
+    .filter((c) => c.requiredRaw > 0 || c.preparedRaw > 0);
+  recipesToPrepare.sort((a, b) => b.requiredRaw - a.requiredRaw);
+
+  // ---- gamelles de cette session : ce qu'il faut répartir, personne par personne
+  const gamelles = meals.map((meal) => ({
+    mealId: meal.id,
+    dayIndex: meal.dayIndex,
+    mealType: meal.mealType,
+    name: meal.name || '',
+    persons: Object.fromEntries(
+      PERSONS.map((person) => [
+        person,
+        meal.items
+          .map((it) => {
+            if (it.recipeId || it.preparationId) {
+              const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipesById[it.recipeId]?.name;
+              const qty = it.qty?.[person] || 0;
+              if (!label || !qty) return null;
+              return { free: false, food: null, name: label, category: 'assemble', grams: qty, cooked: false };
+            }
+            if (!it.foodId) {
+              return it.free ? { free: true, name: it.free.name, quantity: it.free.quantity, category: 'free' } : null;
+            }
+            const food = foodsById[it.foodId];
+            const qty = it.qty?.[person] || 0;
+            if (!food || !qty) return null;
+            return {
+              free: false,
+              food,
+              name: food.name,
+              category: batchCategory(food),
+              grams: servedGrams(food, qty, it.state),
+              cooked: needsCooking(food) && food.referenceState === 'cru',
+            };
+          })
+          .filter(Boolean),
+      ])
+    ),
+  }));
+
+  // ---- suggestion d'affichage : répartir le surplus de batch (« Je prépare »
+  // > besoin, ou rendement mesuré meilleur qu'attendu) entre les gamelles de
+  // la session qui consomment ce composant, au prorata de leur part déjà
+  // prévue. NE MODIFIE JAMAIS `meal.items` (cf. en-tête de fichier) : ajoute
+  // seulement `bonus`/`adjustedGrams` sur les entrées de `gamelles`
+  // fraîchement construites ci-dessus, à titre de suggestion de service.
+  // Mesure réelle (measuredCooked) prioritaire sur l'estimation théorique
+  // (preparedCooked) — si tu as pesé plus que prévu, la suggestion en tient
+  // compte. Un déficit (surplus négatif) n'est jamais répercuté ici : les
+  // gamelles gardent leur quantité planifiée, seul un VRAI surplus est
+  // proposé en plus (jamais une réduction silencieuse d'une portion).
+  for (const c of components) {
+    const available = c.measuredCooked ?? c.preparedCooked;
+    const surplus = available - c.requiredCooked;
+    if (!(surplus > 0.5) || !(c.requiredCooked > 0)) continue;
+    const entries = [];
+    for (const g of gamelles) {
+      for (const person of PERSONS) {
+        for (const e of g.persons[person]) {
+          if (!e.free && e.category === 'batch' && e.food?.id === c.food.id) entries.push(e);
+        }
+      }
+    }
+    if (!entries.length) continue;
+    let assigned = 0;
+    entries.forEach((e, i) => {
+      const isLast = i === entries.length - 1;
+      const bonus = isLast ? Math.max(0, surplus - assigned) : Math.round(surplus * (e.grams / c.requiredCooked));
+      assigned += bonus;
+      e.bonus = bonus;
+      e.adjustedGrams = e.grams + bonus;
+    });
+  }
+
+  return {
+    id: sess.id, label: sess.label, mealIds: sess.mealIds,
+    components, recipesToPrepare, gamelles, mealCount: meals.length,
+  };
 }
 
 /**
- * Plan de batch cooking : composants aliments ET recettes agrégés par
- * session, plan opératoire de préparation, et détail des gamelles à remplir.
- * Cette fonction ne modifie jamais le planning : elle le lit.
+ * Plan de batch cooking : une session par entrée de `state.batch.sessions`
+ * (créées et peuplées à la main par l'utilisateur, cf. store.js::
+ * newBatchSession()) — plus le pool des gamelles pas encore affectées, et
+ * deux listes globales (à cuire / à assembler le jour même), qui ne dépendent
+ * d'aucune session puisqu'un élément non-batchable est toujours cuisiné le
+ * jour même, quelle que soit l'organisation du batch. Cette fonction ne
+ * modifie jamais le planning : elle le lit.
  */
 export function buildBatchPlan(state, foodsById, recipesById = {}, preparationsById = {}) {
-  const sessions = batchSessions(state.settings);
-  return sessions.map((s) => {
-    // nombre de jours que la préparation de cette session doit couvrir
-    const coveredDays = s.endDay - s.startDay + 1;
-    const meals = state.meals.filter((m) => m.dayIndex >= s.startDay && m.dayIndex <= s.endDay);
-    const needs = aggregateNeeds(meals, foodsById, recipesById, preparationsById);
+  const sessions = (state.batch.sessions || []).map((sess) => {
+    const meals = state.meals.filter((m) => (sess.mealIds || []).includes(m.id));
+    return buildSessionPlan(sess, meals, state, foodsById, recipesById, preparationsById);
+  });
 
-    // ---- A. aliments à préparer en batch
-    const components = [];
-    for (const entry of Object.values(needs)) {
-      const { food, refGrams } = entry;
-      if (batchCategory(food) !== 'batch') continue;
-      const cooked = needsCooking(food) && food.referenceState === 'cru'
-        ? convertGrams(food, refGrams, 'cru', 'cuit')
-        : refGrams;
-      const key = `${s.index}:${food.id}`;
-      const prepared = state.batch.overrides[key];
-      const preparedRaw = prepared ?? refGrams;
-      // Mesure ponctuelle "cuit obtenu" (session courante uniquement, jamais
-      // reportée sur food.cookedFactor sans action explicite — cf. batch.js) :
-      // ne s'applique qu'aux aliments effectivement cuits depuis le cru.
-      const measurable = needsCooking(food) && food.referenceState === 'cru' && preparedRaw > 0;
-      const measuredCooked = measurable ? (state.batch.cookedOverrides?.[key] ?? null) : null;
-      const yieldPct = Math.round((Number(food.cookedFactor) || 1) * 100);
-      const preparedCooked = needsCooking(food) && food.referenceState === 'cru'
-        ? convertGrams(food, preparedRaw, 'cru', 'cuit')
-        : preparedRaw;
-      const measuredYieldPct = measuredCooked != null ? Math.round((measuredCooked / preparedRaw) * 100) : null;
-      const yieldDeviationPct = measuredYieldPct != null && yieldPct > 0
-        ? Math.round((Math.abs(measuredYieldPct - yieldPct) / yieldPct) * 100)
-        : null;
-      // écart en grammes (cuit obtenu vs cuit théorique attendu pour CE
-      // preparedRaw) — exigé à côté de l'écart en %, cf. plan d'amélioration §I.3.
-      const yieldDeviationGrams = measuredCooked != null ? measuredCooked - preparedCooked : null;
-      components.push({
-        key,
-        food,
-        requiredRaw: refGrams,
-        requiredCooked: cooked,
-        preparedRaw,
-        preparedCooked,
-        yieldPct,
-        measuredCooked,
-        measuredYieldPct,
-        yieldDeviationGrams,
-        measuredCookedFactor: measuredCooked != null ? measuredCooked / preparedRaw : null,
-        yieldDeviationSignificant: yieldDeviationPct != null && yieldDeviationPct >= YIELD_DEVIATION_THRESHOLD_PCT,
-        method: food.cookingMethod || '',
-        temperature: food.cookingTemp ?? null,
-        duration: food.cookingTime ?? null,
-        prepTime: food.prepTime ?? null,
-        equipment: food.equipment || '',
-        note: preparationNote(food),
-        summary: cookingSummary(food),
-        needsCooking: needsCooking(food),
-        // durée de conservation renseignée dans la fiche aliment (null = inconnue)
-        shelfLifeDays: food.shelfLifeDays ?? null,
-        coveredDays,
-        shelfLifeShort:
-          Number.isFinite(Number(food.shelfLifeDays)) && food.shelfLifeDays !== null
-            ? Number(food.shelfLifeDays) < coveredDays
-            : false,
-        subBatches: computeSubBatches(
-          food.shelfLifeDays, coveredDays, s.index, s.startDay, s.endDay, food.id, meals,
-          (chunkMeals) => aggregateNeeds(chunkMeals, foodsById, recipesById, preparationsById)[food.id]?.refGrams || 0,
-          state.batch.overrides
-        ),
-      });
-    }
-    components.sort((a, b) => b.requiredRaw - a.requiredRaw);
+  const assignedMealIds = new Set((state.batch.sessions || []).flatMap((s) => s.mealIds || []));
+  const unassignedGamelles = state.meals
+    .filter((m) => !assignedMealIds.has(m.id) && mealHasBatchable(m, foodsById, recipesById))
+    .map((m) => ({ mealId: m.id, dayIndex: m.dayIndex, mealType: m.mealType, name: m.name || '' }));
 
-    // ---- A'. recettes à préparer en batch (P0.2 — chemin réel, plus un simple
-    // affichage : une recette référencée directement (recipeId, sans
-    // préparation — "molle", pas encore cuisinée) et marquée batchAllowed sur
-    // SA PROPRE fiche devient ici un composant à part entière, au lieu de
-    // disparaître (déployée en ingrédients bruts) ou d'être traitée comme
-    // "déjà assemblée" plus bas. Net du disponible déjà préparé pour cette
-    // recette — réutilise recipeAvailableFromPreparations() telle quelle,
-    // donc une recette déjà (ou partiellement) préparée n'est jamais recomptée.
-    const recipeIdsHere = new Set();
-    for (const meal of meals) {
-      for (const it of meal.items) if (it.recipeId && !it.preparationId) recipeIdsHere.add(it.recipeId);
-    }
-    const recipesToPrepare = [...recipeIdsHere]
-      .map((recipeId) => recipesById[recipeId])
-      .filter((r) => r && r.batchAllowed)
-      .map((recipe) => {
-        const neededSession = recipeNeededFrom(meals, recipe.id);
-        const available = recipeAvailableFromPreparations(state, recipe.id);
-        const requiredRaw = Math.max(0, neededSession - available);
-        const key = `${s.index}:recipe:${recipe.id}`;
-        const prepared = state.batch.overrides[key];
-        const preparedRaw = prepared ?? requiredRaw;
-
-        const ingredients = recipeIngredientsScaledTo(recipe, preparedRaw, foodsById);
-
-        // Vers quelles gamelles de CETTE session ce besoin est réparti (lecture
-        // seule — cet écran ne modifie jamais le planning) : une recette
-        // référencée directement (recipeId, sans préparation) dans un repas.
-        const destinations = meals
-          .map((meal) => {
-            const qty = meal.items
-              .filter((it) => it.recipeId === recipe.id && !it.preparationId)
-              .reduce((sum, it) => sum + PERSONS.reduce((s2, p) => s2 + (it.qty?.[p] || 0), 0), 0);
-            return qty > 0 ? { mealId: meal.id, dayIndex: meal.dayIndex, mealType: meal.mealType, name: meal.name || '', qty } : null;
-          })
-          .filter(Boolean);
-
-        return {
-          key,
-          recipe,
-          requiredRaw,
-          preparedRaw,
-          ingredients,
-          destinations,
-          method: recipe.cookingMethod || '',
-          temperature: recipe.cookingTemp ?? null,
-          duration: recipe.cookingTime ?? null,
-          prepTime: recipe.prepTime ?? null,
-          equipment: recipe.equipment || '',
-          note: recipe.instructions ? String(recipe.instructions) : null,
-          shelfLifeDays: recipe.shelfLifeDays ?? null,
-          coveredDays,
-          shelfLifeShort:
-            Number.isFinite(Number(recipe.shelfLifeDays)) && recipe.shelfLifeDays !== null
-              ? Number(recipe.shelfLifeDays) < coveredDays
-              : false,
-          subBatches: computeSubBatches(
-            recipe.shelfLifeDays, coveredDays, s.index, s.startDay, s.endDay, `recipe:${recipe.id}`, meals,
-            (chunkMeals) => recipeNeededFrom(chunkMeals, recipe.id), state.batch.overrides
-          ),
-        };
-      })
-      .filter((c) => c.requiredRaw > 0 || c.preparedRaw > 0);
-    recipesToPrepare.sort((a, b) => b.requiredRaw - a.requiredRaw);
-
-    // ---- B et C : par repas concerné (une recette/préparation n'est jamais
-    // dépliée ici — contrairement à aggregateNeeds/buildShoppingList — une
-    // gamelle affiche "Chili con carne 300 g", jamais ses ingrédients séparés ;
-    // elle est déjà considérée "prête à assembler", comme un plat déjà cuit).
-    // Une recette désormais listée dans `recipesToPrepare` (ci-dessus) reste
-    // AUSSI ici : ce sont deux vues complémentaires (ce qu'il faut cuisiner
-    // vs. dans quelle gamelle ça atterrit), jamais une redondance de calcul —
-    // ni l'une ni l'autre ne déplient les ingrédients.
-    const cookSameDay = [];
-    const assembleSameDay = [];
-    for (const meal of meals) {
-      for (const it of meal.items) {
-        if (it.recipeId || it.preparationId) {
-          const total = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
-          if (!total) continue;
-          // une préparation est un stock déjà réellement cuisiné à l'avance —
-          // "prête à assembler" au sens propre, rien à détailler ici. Une
-          // recette référencée directement (sans préparation, "molle") ne
-          // l'est pas forcément : elle peut n'être qu'un assemblage
-          // d'ingrédients bruts (ex. yaourt + flocons + fruit) qu'il faut
-          // peser un par un — même détail que « recettes à préparer en batch ».
-          const recipe = it.recipeId ? recipesById[it.recipeId] : null;
-          const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipe?.name;
-          if (!label) continue;
-          assembleSameDay.push({
-            food: { name: label }, dayIndex: meal.dayIndex, mealType: meal.mealType,
-            grams: total, summary: null, note: null,
-            ingredients: recipe ? recipeIngredientsScaledTo(recipe, total, foodsById) : null,
-          });
-          continue;
-        }
-        const food = it.foodId && foodsById[it.foodId];
-        if (!food) continue;
-        const cat = batchCategory(food);
-        if (cat === 'batch') continue;
+  // ---- globales, indépendantes des sessions : un élément non-batchable est
+  // toujours cuisiné/assemblé le jour même, qu'il soit dans une gamelle
+  // affectée à une session ou encore dans le pool (une recette/préparation
+  // n'est jamais dépliée ici — contrairement à aggregateNeeds/
+  // buildShoppingList — une gamelle affiche "Chili con carne 300 g", jamais
+  // ses ingrédients séparés ; elle est déjà considérée "prête à assembler",
+  // comme un plat déjà cuit).
+  const cookSameDay = [];
+  const assembleSameDay = [];
+  for (const meal of state.meals) {
+    for (const it of meal.items) {
+      if (it.recipeId || it.preparationId) {
         const total = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
         if (!total) continue;
-        const row = {
-          food,
-          dayIndex: meal.dayIndex,
-          mealType: meal.mealType,
-          grams: toReferenceGrams(food, total, it.state || food.referenceState) ?? total,
-          summary: cookingSummary(food),
-          note: preparationNote(food),
-        };
-        (cat === 'cook' ? cookSameDay : assembleSameDay).push(row);
+        // une préparation est un stock déjà réellement cuisiné à l'avance —
+        // "prête à assembler" au sens propre, rien à détailler ici. Une
+        // recette référencée directement (sans préparation, "molle") ne
+        // l'est pas forcément : elle peut n'être qu'un assemblage
+        // d'ingrédients bruts (ex. yaourt + flocons + fruit) qu'il faut
+        // peser un par un — même détail que « recettes à préparer en batch ».
+        // Une recette batchAllowed référencée directement (sans préparation)
+        // n'apparaît jamais ici : elle est représentée par sa gamelle, dans
+        // le pool "à répartir" (pas encore affectée) ou dans une session
+        // (affectée) — cf. mealHasBatchable()/unassignedGamelles ci-dessous.
+        const recipe = it.recipeId ? recipesById[it.recipeId] : null;
+        if (recipe?.batchAllowed) continue;
+        const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipe?.name;
+        if (!label) continue;
+        assembleSameDay.push({
+          food: { name: label }, dayIndex: meal.dayIndex, mealType: meal.mealType,
+          grams: total, summary: null, note: null,
+          ingredients: recipe ? recipeIngredientsScaledTo(recipe, total, foodsById) : null,
+        });
+        continue;
       }
+      const food = it.foodId && foodsById[it.foodId];
+      if (!food) continue;
+      const cat = batchCategory(food);
+      // batchable, affecté ou non : représenté par sa gamelle (pool ou
+      // session), jamais ici — même logique que la branche recette ci-dessus.
+      if (cat === 'batch') continue;
+      const total = PERSONS.reduce((sum, p) => sum + (it.qty?.[p] || 0), 0);
+      if (!total) continue;
+      const row = {
+        food,
+        dayIndex: meal.dayIndex,
+        mealType: meal.mealType,
+        grams: toReferenceGrams(food, total, it.state || food.referenceState) ?? total,
+        summary: cookingSummary(food),
+        note: preparationNote(food),
+      };
+      (cat === 'cook' ? cookSameDay : assembleSameDay).push(row);
     }
+  }
 
-    // ---- gamelles : ce qu'il faut répartir, personne par personne
-    const gamelles = meals.map((meal) => ({
-      mealId: meal.id,
-      dayIndex: meal.dayIndex,
-      mealType: meal.mealType,
-      name: meal.name || '',
-      persons: Object.fromEntries(
-        PERSONS.map((person) => [
-          person,
-          meal.items
-            .map((it) => {
-              if (it.recipeId || it.preparationId) {
-                const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipesById[it.recipeId]?.name;
-                const qty = it.qty?.[person] || 0;
-                if (!label || !qty) return null;
-                return { free: false, food: null, name: label, category: 'assemble', grams: qty, cooked: false };
-              }
-              if (!it.foodId) {
-                return it.free ? { free: true, name: it.free.name, quantity: it.free.quantity, category: 'free' } : null;
-              }
-              const food = foodsById[it.foodId];
-              const qty = it.qty?.[person] || 0;
-              if (!food || !qty) return null;
-              return {
-                free: false,
-                food,
-                name: food.name,
-                category: batchCategory(food),
-                grams: servedGrams(food, qty, it.state),
-                cooked: needsCooking(food) && food.referenceState === 'cru',
-              };
-            })
-            .filter(Boolean),
-        ])
-      ),
-    }));
-
-    // ---- suggestion d'affichage : répartir le surplus de batch (« Je prépare »
-    // > besoin, ou rendement mesuré meilleur qu'attendu) entre les gamelles de
-    // la session qui consomment ce composant, au prorata de leur part déjà
-    // prévue. NE MODIFIE JAMAIS `meal.items` (cf. en-tête de fichier) : ajoute
-    // seulement `bonus`/`adjustedGrams` sur les entrées de `gamelles`
-    // fraîchement construites ci-dessus, à titre de suggestion de service.
-    // Mesure réelle (measuredCooked) prioritaire sur l'estimation théorique
-    // (preparedCooked) — si tu as pesé plus que prévu, la suggestion en tient
-    // compte. Un déficit (surplus négatif) n'est jamais répercuté ici : les
-    // gamelles gardent leur quantité planifiée, seul un VRAI surplus est
-    // proposé en plus (jamais une réduction silencieuse d'une portion).
-    for (const c of components) {
-      const available = c.measuredCooked ?? c.preparedCooked;
-      const surplus = available - c.requiredCooked;
-      if (!(surplus > 0.5) || !(c.requiredCooked > 0)) continue;
-      const entries = [];
-      for (const g of gamelles) {
-        for (const person of PERSONS) {
-          for (const e of g.persons[person]) {
-            if (!e.free && e.category === 'batch' && e.food?.id === c.food.id) entries.push(e);
-          }
-        }
-      }
-      if (!entries.length) continue;
-      let assigned = 0;
-      entries.forEach((e, i) => {
-        const isLast = i === entries.length - 1;
-        const bonus = isLast ? Math.max(0, surplus - assigned) : Math.round(surplus * (e.grams / c.requiredCooked));
-        assigned += bonus;
-        e.bonus = bonus;
-        e.adjustedGrams = e.grams + bonus;
-      });
-    }
-
-    // alertes : composant (aliment ou recette) dont la conservation ne couvre
-    // pas la session. `subBatches` (calculé ci-dessus) donne déjà le calendrier
-    // concret de reprise ; l'alerte reste un résumé visible en tête de session.
-    // Purement informatif : rien n'est supprimé, le planning n'est pas modifié.
-    const conservationAlerts = [...components, ...recipesToPrepare]
-      .filter((c) => c.shelfLifeShort)
-      .map((c) => ({
-        food: c.food,
-        recipe: c.recipe,
-        shelfLifeDays: Number(c.shelfLifeDays),
-        coveredDays,
-        subBatchCount: c.subBatches?.length ?? null,
-        message:
-          `${c.food ? c.food.name : c.recipe.name} se conserve ${c.shelfLifeDays} jour(s) après préparation, ` +
-          `mais cette session couvre ${coveredDays} jour(s) : ${c.subBatches?.length ?? 0} préparations nécessaires.`,
-      }));
-
-    return {
-      ...s, coveredDays, components, recipesToPrepare, cookSameDay, assembleSameDay, gamelles,
-      conservationAlerts, mealCount: meals.length,
-    };
-  });
+  return { sessions, unassignedGamelles, cookSameDay, assembleSameDay };
 }
 
 /* ------------------------------------------------------------------ */

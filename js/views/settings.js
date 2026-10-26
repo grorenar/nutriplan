@@ -78,11 +78,9 @@ export async function render(root) {
       </div>
 
       <div class="card">
-        <div class="card__head"><h2>🍲 Batch cooking</h2><p>Active les sessions de préparation groupée et leur durée de conservation.</p></div>
+        <div class="card__head"><h2>🍲 Batch cooking</h2><p>Active l'écran de préparation groupée, où tu organises toi-même tes sessions.</p></div>
         <div class="row">
           <label class="check"><input type="checkbox" data-batch-enabled ${s.settings.batch.enabled ? 'checked' : ''}> Activer le batch cooking</label>
-          <label class="field" style="max-width:220px">Conservation maximale (jours)
-            <input type="number" min="1" max="7" data-batch-days value="${s.settings.batch.maxDays}"></label>
         </div>
       </div>
     </div>
@@ -298,11 +296,6 @@ function wire(root) {
   root.querySelector('[data-batch-enabled]')?.addEventListener('change', (e) => {
     const v = e.target.checked;
     update((s) => { s.settings.batch.enabled = v; });
-  });
-
-  root.querySelector('[data-batch-days]')?.addEventListener('change', (e) => {
-    const v = Math.min(7, Math.max(1, Number(e.target.value) || 3));
-    update((s) => { s.settings.batch.maxDays = v; });
   });
 
   root.querySelector('[data-autoadjust]')?.addEventListener('change', (e) => {
