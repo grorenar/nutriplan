@@ -2584,10 +2584,19 @@ test('écran batch — détail des ingrédients d’une recette à préparer, à
   check('deux ingrédients détaillés', r.ingredients.length === 2);
   const boeufLine = r.ingredients.find((i) => i.food.id === boeuf.id);
   const haricotsLine = r.ingredients.find((i) => i.food.id === haricots.id);
-  check('bœuf mis à l’échelle : 600 × 500/1000 = 300 g (préparedRaw par défaut = requiredRaw)',
-    Math.abs(boeufLine.qty - 300) < 0.01);
-  check('haricots mis à l’échelle : 400 × 500/1000 = 200 g', Math.abs(haricotsLine.qty - 200) < 0.01);
-  check('état de référence de l’ingrédient conservé (cru/égoutté)', boeufLine.state === 'cru' && haricotsLine.state === 'egoutte');
+  // Retour utilisateur : un poids CRU à peser pour composer une assiette ne
+  // sert à rien une fois l'ingrédient cuit — qty est donc le poids RÉELLEMENT
+  // servi (post-cuisson pour le bœuf, cookedFactor 0.75 : 300 × 0,75 = 225 g),
+  // jamais le poids cru saisi dans la recette. Les haricots (égouttés,
+  // aucune conversion cru/cuit définie) restent inchangés.
+  check('bœuf mis à l’échelle PUIS converti post-cuisson : 600 × 500/1000 = 300 g crus × 0,75 = 225 g cuits',
+    Math.abs(boeufLine.qty - 225) < 0.01, `${boeufLine.qty}`);
+  check('haricots mis à l’échelle : 400 × 500/1000 = 200 g (pas de conversion cru/cuit définie, inchangé)',
+    Math.abs(haricotsLine.qty - 200) < 0.01);
+  check('état SAISI dans la recette conservé pour la vérification de convertibilité (cru/égoutté), inchangé par l’affichage post-cuisson',
+    boeufLine.state === 'cru' && haricotsLine.state === 'egoutte');
+  check('état AFFICHÉ (labelState) reflète la conversion : "cuit" pour le bœuf, état saisi pour les haricots (pas de cuisson)',
+    boeufLine.labelState === 'cuit' && haricotsLine.labelState === 'egoutte');
 });
 
 test('écran batch — le détail des ingrédients suit la quantité réellement SAISIE (preparedRaw), pas seulement le besoin net', () => {
@@ -2604,7 +2613,8 @@ test('écran batch — le détail des ingrédients suit la quantité réellement
   const plan = buildBatchPlan(st, byId, recipesById, {});
   const r = plan.sessions[0].recipesToPrepare.find((x) => x.recipe.id === recipe.id);
   check('preparedRaw reprend la saisie manuelle (800 g), pas le besoin net (500 g)', r.preparedRaw === 800);
-  check('ingrédient mis à l’échelle sur 800 g préparés (1000 × 800/1000 = 800 g)', Math.abs(r.ingredients[0].qty - 800) < 0.01);
+  check('ingrédient mis à l’échelle sur 800 g préparés PUIS converti post-cuisson (1000 × 800/1000 = 800 g crus × 0,75 = 600 g cuits)',
+    Math.abs(r.ingredients[0].qty - 600) < 0.01, `${r.ingredients[0].qty}`);
 });
 
 test('écran batch — répartition vers les gamelles de la session (le "global" : total préparé -> distribué)', () => {

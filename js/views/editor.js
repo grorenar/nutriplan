@@ -16,7 +16,7 @@ import {
   conversionInfo, stateLabel, recipeAsVirtualFood, preparationAsVirtualFood, resolveItemFood,
   resolveZeroWasteAllocation, preparedGramsOf, portionGramsOf,
 } from '../core/nutrition.js';
-import { esc, num, toast, uid } from '../core/util.js';
+import { esc, grams, num, toast, uid } from '../core/util.js';
 import { analyzeMealVolume } from '../core/meal-volume.js';
 import { preparationAvailable, zeroWasteSlotsFor } from '../core/derive.js';
 import { normalizeBarcode } from '../core/off.js';
@@ -373,6 +373,28 @@ export function unitHint(food, qty) {
   if (food.unitEntry) return `= ${num(qty, 0)} g`;
   const txt = isWholeUnitFood(food) ? Math.round(u) : num(u, 1);
   return `≈ ${txt} ${esc(unitLabel(food, u))}`;
+}
+
+/**
+ * Quantité prête à afficher pour un aliment, en LECTURE SEULE — en unités si
+ * `food.unitEntry` est coché sur sa fiche (même convention partout : "Saisir
+ * les quantités en unités plutôt qu'en grammes" coché pour un ingrédient doit
+ * s'y référer de la même façon partout où cette quantité est montrée, pas
+ * seulement dans l'éditeur de repas/l'écran Recettes — retour utilisateur),
+ * en grammes sinon. Jamais utilisée pour un champ ÉDITABLE (ceux-ci gardent
+ * leur propre bascule grammes/unités, cf. data-unit-toggle plus haut).
+ */
+export function formatFoodQty(food, qty) {
+  if (isUnitFood(food) && food.unitEntry) {
+    // Le pluriel doit s'accorder avec le nombre RÉELLEMENT affiché (arrondi),
+    // jamais avec le compte brut avant arrondi — sans quoi un cas comme
+    // 1,96 unité (affiché "2") s'accordait au singulier ("2 steak" plutôt que
+    // "2 steaks"), contradiction visible à l'écran (retour utilisateur).
+    const whole = isWholeUnitFood(food);
+    const shown = whole ? Math.round(toUnits(food, qty)) : toUnits(food, qty);
+    return `${num(shown, whole ? 0 : 1)} ${esc(unitLabel(food, shown))}`;
+  }
+  return grams(qty);
 }
 
 /**

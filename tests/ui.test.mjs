@@ -2499,16 +2499,26 @@ click($('[data-view="batch"]'));
 await wait();
 const skyrLi = $$('li').find((li) => li.querySelector('ul') && /Skyr Flocons Test/.test(li.textContent));
 check('« Skyr Flocons Test » apparaît avec son détail d’ingrédients, assemblée le jour même (jamais marquée batchAllowed)', !!skyrLi);
-check('ingrédient mis à l’échelle affiché (4 portions × 330 g = 1,32 kg de Steak haché, pas la recette seule)',
-  !!skyrLi && /1,32\s*kg.*Steak haché|Steak haché.*1,32\s*kg/.test(skyrLi.textContent.replace(/\s+/g, ' ')));
+// Retour utilisateur : un poids CRU à peser une fois l'ingrédient cuit ne
+// sert à rien — l'ingrédient (Steak haché, cookedFactor 0,75) doit afficher
+// son poids RÉELLEMENT servi (4 portions × 330 g = 1 320 g crus × 0,75 =
+// 990 g cuits), jamais les 1,32 kg crus de la recette ; et JAMAIS en unités
+// (bien que « Saisir en unités » soit coché pour cet aliment) puisqu'un poids
+// déjà cuit ne se recompte pas proprement en pièces crues — seule la ligne
+// "À sortir" du composant, jamais calculée ici, le ferait correctement.
+const skyrIngredientLi = skyrLi?.querySelector('ul li');
+check('ingrédient mis à l’échelle PUIS converti post-cuisson (990 g, pas 1,32 kg crus)',
+  !!skyrIngredientLi && /^990 g Steak haché/.test(skyrIngredientLi.textContent.trim()), skyrIngredientLi?.textContent.trim());
+check('état affiché "(cuit)", jamais "(cru)" tel que saisi dans la recette', /\(cuit\)/.test(skyrIngredientLi?.textContent || ''));
 
 console.log('\n— Écran batch : même détail d’ingrédients dans « Détail des gamelles de cette session » (retour utilisateur : certains repas se composent assiette par assiette, directement dans le tupp, pas via une préparation globale ensuite répartie)');
 const gamellesDetailHeading = $$('h3').find((h) => /Détail des gamelles de cette session/.test(h.textContent));
 check('bloc « Détail des gamelles de cette session » présent', !!gamellesDetailHeading);
 const skyrGamelleLi = $$('.meal-card li').find((li) => li.querySelector('ul') && /Skyr Flocons Test/.test(li.textContent));
 check('« Skyr Flocons Test » apparaît aussi dans le détail des gamelles, pas seulement dans « à assembler le jour même »', !!skyrGamelleLi);
-check('ingrédient mis à l’échelle à la portion réelle de CETTE gamelle (1,32 kg pour Thomas), pas la recette seule',
-  !!skyrGamelleLi && /1,32\s*kg.*Steak haché|Steak haché.*1,32\s*kg/.test(skyrGamelleLi.textContent.replace(/\s+/g, ' ')));
+const skyrGamelleIngredientLi = skyrGamelleLi?.querySelector('ul li');
+check('ingrédient mis à l’échelle à la portion réelle de CETTE gamelle PUIS converti post-cuisson (990 g pour Thomas), pas 1,32 kg crus',
+  !!skyrGamelleIngredientLi && /^990 g Steak haché/.test(skyrGamelleIngredientLi.textContent.trim()), skyrGamelleIngredientLi?.textContent.trim());
 
 console.log('\n— Batch cooking : vrai glisser-déposer entre le pool « Gamelles à préparer » et les sessions, dans la popup dédiée');
 // Demande explicite de l'utilisateur : « un vrai DnD entre gamelles à

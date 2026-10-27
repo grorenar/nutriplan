@@ -14,6 +14,7 @@ import { buildBatchPlan, BATCH_CATEGORY_LABEL, YIELD_DEVIATION_THRESHOLD_PCT } f
 import { dayName, esc, grams, num, toast } from '../core/util.js';
 import { MEAL_TYPES, PERSONS, PERSON_LABEL, conversionInfo } from '../core/nutrition.js';
 import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
+import { formatFoodQty } from './editor.js';
 
 let pendingConfirm = null; // { title, message, onConfirm } — ajustement du rendement enregistré d'un aliment
 
@@ -221,7 +222,7 @@ function gamellesDetailBlock(sess, startWeekday) {
                   .map((e) =>
                     e.free
                       ? `<li>${esc(e.name)} — ${esc(e.quantity || 'au goût')}</li>`
-                      : `<li>${grams(e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${e.bonus > 0 ? `<span class="tag">+${grams(e.bonus)} (surplus à servir)</span>` : ''}
+                      : `<li>${gamelleQty(e, e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${e.bonus > 0 ? `<span class="tag">+${gamelleQty(e, e.bonus)} (surplus à servir)</span>` : ''}
                           ${e.ingredients?.length ? `<ul style="margin:2px 0 0;padding-left:16px">${e.ingredients.map(ingredientLine).join('')}</ul>` : ''}
                         </li>`
                   )
@@ -237,6 +238,15 @@ function gamellesDetailBlock(sess, startWeekday) {
 
 const shortCat = (category) =>
   ({ batch: 'batch', cook: 'cuisson du jour', assemble: 'assemblage', free: 'libre' }[category] || '');
+
+/**
+ * Quantité d'une entrée de gamelle — en unités si l'aliment le demande,
+ * SAUF si `e.cooked` (poids déjà converti post-cuisson, cf. derive.js
+ * servedGrams()) : le nombre de pièces crues ne se déduit pas proprement
+ * d'un poids déjà cuit (rendement non homogène pièce par pièce), donc
+ * grammes seuls dans ce cas — même règle que ingredientLine() ci-dessous.
+ */
+const gamelleQty = (e, qty) => (e.cooked ? grams(qty) : formatFoodQty(e.food, qty));
 
 /* ---------------------------------------------------- à préparer en batch */
 
@@ -314,11 +324,15 @@ function componentsBlock(sess) {
         <div class="batch-item__metrics">
           <div class="batch-item__metric">
             <span class="batch-item__metric-label">À sortir</span>
-            <span class="batch-item__metric-value">${c.needsCooking ? `${grams(c.requiredRaw)} crus` : grams(c.requiredRaw)}</span>
+            <span class="batch-item__metric-value">${c.needsCooking ? `${formatFoodQty(c.food, c.requiredRaw)} crus` : formatFoodQty(c.food, c.requiredRaw)}</span>
             ${c.needsCooking ? `<span class="tag">rendement ${num(c.yieldPct, 0)} %</span>` : ''}
           </div>
           <div class="batch-item__metric">
             <span class="batch-item__metric-label">Cuit nécessaire</span>
+            <!-- Toujours en grammes, jamais en unités même si l'aliment est
+                 réglé en unités : le nombre de pièces CRUES ne se déduit pas
+                 proprement d'un poids déjà cuit (rendement non homogène pièce
+                 par pièce) — « À sortir » ci-dessus donne déjà ce compte. -->
             <span class="batch-item__metric-value">${grams(c.requiredCooked)}${c.needsCooking ? ' cuits' : ''}</span>
           </div>
           <div class="batch-item__metric batch-item__metric--input">
@@ -336,7 +350,7 @@ function componentsBlock(sess) {
           </div>
           <div class="batch-item__metric batch-item__metric--${surplus >= 0 ? 'ok' : 'warn'}">
             <span class="batch-item__metric-label">Surplus</span>
-            <span class="batch-item__metric-value">${surplus >= 0 ? `+ ${grams(surplus)}` : `manque ${grams(-surplus)}`}</span>
+            <span class="batch-item__metric-value">${surplus >= 0 ? `+ ${formatFoodQty(c.food, surplus)}` : `manque ${formatFoodQty(c.food, -surplus)}`}</span>
             <span class="tag">${num(coverage, 0)} %</span>
           </div>
         </div>
@@ -425,7 +439,14 @@ function ingredientLine(ing) {
   const warn = conv.needed && !conv.possible
     ? ` <span class="tag sync-error">⚠️ conversion impossible — non compté dans le besoin total, à corriger dans la recette ou la fiche aliment</span>`
     : '';
-  return `<li>${grams(ing.qty)} ${esc(ing.food.name)}${ing.state ? ` (${esc(ing.state)})` : ''}${warn}</li>`;
+  const labelState = ing.labelState ?? ing.state;
+  // Jamais en unités pour un poids déjà converti post-cuisson (labelState
+  // "cuit") : le nombre de pièces CRUES ne se déduit pas proprement d'un
+  // poids déjà cuit (rendement non homogène pièce par pièce) — seul un poids
+  // encore dans l'état saisi dans la recette (jamais cuit) peut s'afficher
+  // en unités, comme partout ailleurs dans l'application.
+  const qtyText = labelState === 'cuit' ? grams(ing.qty) : formatFoodQty(ing.food, ing.qty);
+  return `<li>${qtyText} ${esc(ing.food.name)}${labelState ? ` (${esc(labelState)})` : ''}${warn}</li>`;
 }
 
 /**
@@ -488,7 +509,7 @@ function sameDayBlock(kind, rows, startWeekday) {
  * détailler, elle est prête telle quelle.
  */
 function sameDayItem(r) {
-  const head = `${esc(r.food.name)} ${grams(r.grams)}${r.summary ? ` (${esc(r.summary)})` : ''}`;
+  const head = `${esc(r.food.name)} ${formatFoodQty(r.food, r.grams)}${r.summary ? ` (${esc(r.summary)})` : ''}`;
   if (!r.ingredients?.length) return `<li>${head}</li>`;
   return `<li>${head}
     <ul style="margin:2px 0 4px;padding-left:18px">

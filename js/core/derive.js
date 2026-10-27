@@ -557,12 +557,30 @@ export function batchCategory(food) {
  * édulcorant + fruit) n'est pas « déjà prête », contrairement à une
  * préparation réellement cuisinée à l'avance — elle a besoin du même détail,
  * que ce soit préparé en avance ou assemblé le jour même.
+ * `qty`/`labelState` : poids RÉELLEMENT servi (post-cuisson pour un
+ * ingrédient qui se cuit), jamais le poids cru saisi dans la recette — un
+ * poids cru à peser pour composer une assiette ne sert à rien une fois
+ * l'ingrédient cuit (retour utilisateur). `state` reste l'état SAISI dans la
+ * recette (ri.state, inchangé) : c'est lui, et lui seul, qui détermine si la
+ * conversion vers l'état de référence de la fiche aliment est possible
+ * (avertissement ci-dessous dans batch.js::ingredientLine) — ne jamais le
+ * remplacer par `labelState`, qui ne sert qu'à l'affichage.
  */
 export function recipeIngredientsScaledTo(recipe, targetGrams, foodsById) {
   const referenceBase = recipe.kind === 'portion' ? portionGramsOf(recipe) : (Number(recipe.baseGrams) || 0);
   const scale = referenceBase > 0 ? targetGrams / referenceBase : 0;
   return (recipe.items || [])
-    .map((ri) => ({ food: foodsById[ri.foodId], qty: (Number(ri.qty) || 0) * scale, state: ri.state }))
+    .map((ri) => {
+      const food = foodsById[ri.foodId];
+      const rawQty = (Number(ri.qty) || 0) * scale;
+      const cooks = food && needsCooking(food) && food.referenceState === 'cru';
+      return {
+        food,
+        qty: cooks ? servedGrams(food, rawQty, ri.state) : rawQty,
+        state: ri.state,
+        labelState: cooks ? 'cuit' : ri.state,
+      };
+    })
     .filter((ing) => ing.food);
 }
 
