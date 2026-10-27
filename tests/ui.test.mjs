@@ -2502,12 +2502,16 @@ check('« Skyr Flocons Test » apparaît avec son détail d’ingrédients, asse
 check('ingrédient mis à l’échelle affiché (4 portions × 330 g = 1,32 kg de Steak haché, pas la recette seule)',
   !!skyrLi && /1,32\s*kg.*Steak haché|Steak haché.*1,32\s*kg/.test(skyrLi.textContent.replace(/\s+/g, ' ')));
 
-console.log('\n— Batch cooking : vrai glisser-déposer entre le pool « Gamelles à préparer » et les sessions');
+console.log('\n— Batch cooking : vrai glisser-déposer entre le pool « Gamelles à préparer » et les sessions, dans la popup dédiée');
 // Demande explicite de l'utilisateur : « un vrai DnD entre gamelles à
-// préparer, et session de batch » — remplace l'ancien découpage automatique
-// par maxDays. Mêmes événements génériques que planning.js (dragStart/
-// dragOver/drop ci-dessus) : batch.js ne lit jamais dataTransfer.getData()
-// non plus (la charge voyage dans dragMealId, variable de module).
+// préparer, et session de batch », puis « il faut ouvrir l'interface DnD
+// dans une nouvelle pop up, que ça soit plus simple qu'actuellement à
+// sélectionner » — le glisser-déposer ne vit plus du tout sur la page
+// (chips/zones y sont désormais en lecture seule), seulement dans la popup
+// ouverte par [data-open-assign] (cf. batch.js::gamelleAssignModal). Mêmes
+// événements génériques que planning.js (dragStart/dragOver/drop ci-dessus) :
+// batch.js ne lit jamais dataTransfer.getData() non plus (la charge voyage
+// dans dragMealId, variable de module).
 const dndSessId = store.getState().batch.sessions[0].id;
 // Choisie avec du contenu réellement batchable (mealHasBatchable) : sinon,
 // une fois sortie de sa session vers le pool, elle disparaîtrait purement et
@@ -2520,31 +2524,55 @@ const dndMealId = store.getState().batch.sessions[0].mealIds.find((id) => {
   return meal && derive.mealHasBatchable(meal, dndFoodsById, dndRecipesById);
 });
 check('une gamelle batchable est disponible pour le test de glisser-déposer', !!dndMealId);
-const chipFor = (mealId) => $$('[data-gamelle-id]').find((el) => el.dataset.gamelleId === mealId);
+
+check('aucune popup de répartition ouverte par défaut', !$('[data-assign-backdrop]'));
+click($('[data-open-assign]'));
+await wait();
+check('popup de répartition ouverte par le bouton dédié', !!$('[data-assign-backdrop]'));
+// clic en dehors du panneau (sur le fond) : referme la popup, comme les
+// autres modales de l'application (mousedown ciblant directement le fond).
+mousedown($('[data-assign-backdrop]'));
+await wait();
+check('clic sur le fond : popup refermée', !$('[data-assign-backdrop]'));
+click($('[data-open-assign]'));
+await wait();
+check('popup rouverte pour la suite du test', !!$('[data-assign-backdrop]'));
+// Les chips/zones existent potentiellement DEUX fois pendant que la popup
+// est ouverte (copie statique sur la page + copie glissable dans la popup,
+// cf. batch.js) : toutes les requêtes ci-dessous sont donc scopées à la
+// popup elle-même, jamais globales.
+const modalRoot = () => $('[data-assign-backdrop]');
+const chipFor = (mealId) => [...modalRoot().querySelectorAll('[data-gamelle-id]')].find((el) => el.dataset.gamelleId === mealId);
 const zoneOf = (mealId) => chipFor(mealId)?.closest('[data-drop]')?.dataset.drop;
-check('la gamelle est au départ affectée à sa session', zoneOf(dndMealId) === dndSessId);
+check('la gamelle est au départ affectée à sa session (dans la popup)', zoneOf(dndMealId) === dndSessId);
+check('la copie de la gamelle restée sur la page n’est, elle, plus glissable',
+  !document.querySelector(`.card [data-gamelle-id="${dndMealId}"]`)?.hasAttribute('draggable'));
 
 // session -> pool
-dragTo(chipFor(dndMealId), $('[data-drop="pool"]'));
+dragTo(chipFor(dndMealId), modalRoot().querySelector('[data-drop="pool"]'));
 await wait();
 check('glisser-déposer réel (session -> pool) : la gamelle quitte la session', zoneOf(dndMealId) === 'pool');
 check('store à jour : plus aucune session ne référence cette gamelle',
   !store.getState().batch.sessions.some((s) => s.mealIds.includes(dndMealId)));
 
-// pool -> nouvelle session
-click($('[data-new-session]'));
+// pool -> nouvelle session (bouton « + Nouvelle session » DANS la popup, pas besoin de la fermer)
+click(modalRoot().querySelector('[data-new-session]'));
 await wait();
 const newSessId = store.getState().batch.sessions.find((s) => s.id !== dndSessId).id;
-dragTo(chipFor(dndMealId), $(`[data-drop="${newSessId}"]`));
+dragTo(chipFor(dndMealId), modalRoot().querySelector(`[data-drop="${newSessId}"]`));
 await wait();
 check('glisser-déposer réel (pool -> session) : la gamelle rejoint la nouvelle session', zoneOf(dndMealId) === newSessId);
 
 // session -> session (directement, sans repasser par le pool)
-dragTo(chipFor(dndMealId), $(`[data-drop="${dndSessId}"]`));
+dragTo(chipFor(dndMealId), modalRoot().querySelector(`[data-drop="${dndSessId}"]`));
 await wait();
 check('glisser-déposer réel (session -> session) : la gamelle change directement de session', zoneOf(dndMealId) === dndSessId);
 check('une seule session référence la gamelle à la fin (jamais de doublon)',
   store.getState().batch.sessions.filter((s) => s.mealIds.includes(dndMealId)).length === 1);
+
+click($('[data-assign-close]'));
+await wait();
+check('« Fermer » referme bien la popup', !$('[data-assign-backdrop]'));
 
 // nettoyage : la session vide créée pour ce test est supprimée, pour ne pas
 // perturber les sections suivantes (qui comptent sur une seule session).

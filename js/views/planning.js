@@ -154,12 +154,16 @@ export function render(root) {
   window.scrollTo(0, scrollY);
 
   // Recalcule la répartition par ligne au redimensionnement (jamais pour une
-  // autre vue : root n'a alors plus de .board, le re-rendu est un no-op sans
-  // effet visible — évité en vérifiant sa présence avant de relancer render()).
+  // autre vue : root n'a alors plus de .meal-slot, le re-rendu est un no-op
+  // sans effet visible — évité en vérifiant sa présence avant de relancer
+  // render()). Vérifie `.meal-slot`, EXCLUSIF à cette vue — jamais `.board`
+  // seul, qu'un autre écran peut très bien réutiliser pour sa propre mise en
+  // page en colonnes (régression réelle constatée avec la popup de
+  // répartition des gamelles de batch.js, qui écrasait son propre contenu).
   if (!resizeWired) {
     resizeWired = true;
     window.addEventListener('resize', debounce(() => {
-      if (root.isConnected && root.querySelector('.board')) render(root);
+      if (root.isConnected && root.querySelector('.meal-slot')) render(root);
     }, 200));
   }
 }

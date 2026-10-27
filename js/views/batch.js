@@ -17,6 +17,15 @@ import { actionConfirmModal, wireActionConfirm } from './confirm-action.js';
 
 let pendingConfirm = null; // { title, message, onConfirm } — ajustement du rendement enregistré d'un aliment
 
+// Retour utilisateur : le glisser-déposer directement sur la page (pool et
+// cartes de session mêlés à tout le reste — détail des composants, plan
+// opératoire…) était difficile à viser. Le DnD vit désormais UNIQUEMENT dans
+// une popup dédiée (gamelleAssignModal ci-dessous), ouverte par un bouton :
+// pool et sessions y sont affichés côte à côte, sans rien d'autre autour.
+// La page elle-même n'affiche plus que des listes en LECTURE SEULE (chips
+// sans `draggable`, zones sans `data-drop`).
+let assignOpen = false;
+
 // État du glisser-déposer de gamelles — module-level, comme planning.js
 // (mêmes contraintes DnD réelles : `dragstart` cible toujours le plus proche
 // ancêtre `draggable`, jamais un sous-élément précis ; un geste de drag natif
@@ -59,10 +68,15 @@ export function render(root) {
       </div>
     </div>
 
+    <div class="row" style="margin-bottom:16px">
+      <button type="button" class="btn btn--primary" data-open-assign>🧩 Répartir les gamelles</button>
+      ${plan.unassignedGamelles.length ? `<span class="tag stat-card--warn" style="margin-left:10px">${plan.unassignedGamelles.length} encore à répartir</span>` : ''}
+    </div>
+
     <div class="card">
       <div class="card__head">
         <h2>📥 Gamelles à préparer</h2>
-        <p>Glisse une gamelle dans une session ci-dessous pour décider quand elle sera préparée.</p>
+        <p>Utilise « Répartir les gamelles » ci-dessus pour décider quand chacune sera préparée.</p>
       </div>
       ${gamelleZone('pool', plan.unassignedGamelles, startWeekday, 'Toutes les gamelles batchables sont déjà réparties dans une session.')}
     </div>
@@ -75,11 +89,12 @@ export function render(root) {
     ${
       plan.sessions.length
         ? plan.sessions.map((sess) => sessionCard(sess, startWeekday)).join('')
-        : `<div class="empty">Aucune session créée. Commence par « + Nouvelle session », puis glisse-y des gamelles.</div>`
+        : `<div class="empty">Aucune session créée. Commence par « + Nouvelle session », puis « Répartir les gamelles ».</div>`
     }
 
     ${sameDayBlock('cook', plan.cookSameDay, startWeekday)}
     ${sameDayBlock('assemble', plan.assembleSameDay, startWeekday)}
+    ${assignOpen ? gamelleAssignModal(plan, startWeekday) : ''}
     ${pendingConfirm ? actionConfirmModal(pendingConfirm) : ''}
   `;
   wire(root);
@@ -88,18 +103,30 @@ export function render(root) {
 const slot = (startWeekday, dayIndex, mealType) =>
   `${dayName(startWeekday, dayIndex).toLowerCase()} ${mealType === 'lunch' ? 'midi' : 'soir'}`;
 
-/** Une gamelle glissable — même pastille visuelle dans le pool et dans une session. */
-function gamelleChip(g, startWeekday) {
-  return `<div class="gamelle-chip" draggable="true" data-gamelle-id="${esc(g.mealId)}">
+/**
+ * Une gamelle — pastille visuelle réutilisée partout (pool, session, popup
+ * de répartition). `draggable` : seule la popup de répartition (cf.
+ * gamelleAssignModal) la rend réellement DÉPLAÇABLE — ailleurs sur la page
+ * (pool, carte de session), elle reste un simple affichage en lecture seule
+ * (retour utilisateur : glisser-déposer directement sur la page jugé trop
+ * difficile à viser, mélangé au reste du contenu).
+ */
+function gamelleChip(g, startWeekday, draggable = false) {
+  return `<div class="gamelle-chip${draggable ? ' gamelle-chip--draggable' : ''}" ${draggable ? 'draggable="true"' : ''} data-gamelle-id="${esc(g.mealId)}">
     <span class="gamelle-chip__slot">${esc(slot(startWeekday, g.dayIndex, g.mealType))}</span>
     ${g.name ? `<span class="gamelle-chip__name">${esc(g.name)}</span>` : ''}
   </div>`;
 }
 
-/** Zone de dépôt (le pool, ou l'intérieur d'une session) — `dropId` = 'pool' ou l'id de la session. */
-function gamelleZone(dropId, gamellesLight, startWeekday, emptyText) {
-  return `<div class="gamelle-zone" data-drop="${esc(dropId)}">
-    ${gamellesLight.length ? gamellesLight.map((g) => gamelleChip(g, startWeekday)).join('') : `<p class="muted" style="margin:0">${esc(emptyText)}</p>`}
+/**
+ * Zone de dépôt (le pool, ou l'intérieur d'une session) — `dropId` = 'pool'
+ * ou l'id de la session. `interactive` : seule la popup de répartition pose
+ * `data-drop` (et des chips `draggable`) ; sur la page, c'est un affichage
+ * statique (cf. gamelleChip ci-dessus).
+ */
+function gamelleZone(dropId, gamellesLight, startWeekday, emptyText, interactive = false) {
+  return `<div class="gamelle-zone" ${interactive ? `data-drop="${esc(dropId)}"` : ''}>
+    ${gamellesLight.length ? gamellesLight.map((g) => gamelleChip(g, startWeekday, interactive)).join('') : `<p class="muted" style="margin:0">${esc(emptyText)}</p>`}
   </div>`;
 }
 
@@ -111,10 +138,60 @@ function sessionCard(sess, startWeekday) {
       <span class="spacer"></span>
       <button type="button" class="btn btn--sm btn--ghost" data-delete-session="${esc(sess.id)}">Supprimer la session</button>
     </div>
-    ${gamelleZone(sess.id, gamellesLight, startWeekday, 'Glisse des gamelles ici depuis le pool ci-dessus.')}
+    ${gamelleZone(sess.id, gamellesLight, startWeekday, 'Utilise « Répartir les gamelles » pour lui en affecter.')}
     ${componentsBlock(sess)}
     ${recipesToPrepareBlock(sess, startWeekday)}
     ${gamellesDetailBlock(sess, startWeekday)}
+  </div>`;
+}
+
+/**
+ * Popup dédiée au glisser-déposer (retour utilisateur) : pool et sessions
+ * côte à côte, SANS rien d'autre autour (pas de détail de composants, de
+ * plan opératoire…) — rien pour gêner le geste de glisser. Même motif de
+ * modale centrale que l'assistant de répartition des préparations
+ * (preparations.js::distributeWizard), en plus large pour accueillir
+ * plusieurs colonnes ; comme le tableau de jours du Planning, les colonnes
+ * RETOURNENT À LA LIGNE plutôt que de défiler horizontalement (retour
+ * utilisateur déjà appliqué là-bas).
+ */
+function gamelleAssignModal(plan, startWeekday) {
+  // Classes DÉDIÉES (gamelle-board / gamelle-col), jamais .board/.day-col :
+  // planning.js vérifie la présence de .meal-slot (pas .board) avant de se
+  // re-rendre au redimensionnement, mais garder des classes bien à nous
+  // évite toute collision de ce genre avec n'importe quelle autre vue future.
+  const column = (dropId, label, gamellesLight, emptyText) => `<div class="gamelle-col">
+    <div class="gamelle-col__head"><h2>${esc(label)}</h2></div>
+    ${gamelleZone(dropId, gamellesLight, startWeekday, emptyText, true)}
+  </div>`;
+
+  return `<div class="composer" data-assign-backdrop>
+    <div class="composer__dialog composer__dialog--wide">
+      <div class="composer__head">
+        <div class="row"><h3 style="flex:1">🧩 Répartir les gamelles</h3>
+        <button type="button" class="btn btn--sm btn--primary" data-new-session>+ Nouvelle session</button>
+        <button type="button" class="btn btn--ghost" data-assign-close>Fermer</button></div>
+        <small>Glisse une gamelle d'une colonne à l'autre pour décider dans quelle session (ou le pool) elle atterrit.</small>
+      </div>
+      <div class="composer__main" style="overflow:auto;padding:18px">
+        <div class="gamelle-board">
+          <div class="gamelle-board__row">
+            ${column('pool', '📥 Pool', plan.unassignedGamelles, 'Tout est réparti.')}
+            ${plan.sessions
+              .map((sess) =>
+                column(
+                  sess.id,
+                  sess.label || 'Session sans nom',
+                  sess.gamelles.map((g) => ({ mealId: g.mealId, dayIndex: g.dayIndex, mealType: g.mealType, name: g.name })),
+                  'Glisse une gamelle ici.'
+                )
+              )
+              .join('')}
+            ${!plan.sessions.length ? '<p class="muted">Aucune session créée pour l’instant — ferme cette popup et crée-en une avec « + Nouvelle session ».</p>' : ''}
+          </div>
+        </div>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -476,12 +553,33 @@ function assignGamelle(root, mealId, targetId) {
 function wire(root) {
   wireDragAndDrop(root);
 
-  root.querySelector('[data-new-session]')?.addEventListener('click', () => {
-    update((s) => {
-      s.batch.sessions.push(newBatchSession(`Session ${s.batch.sessions.length + 1}`));
-    });
+  root.querySelector('[data-open-assign]')?.addEventListener('click', () => {
+    assignOpen = true;
     render(root);
   });
+  root.querySelector('[data-assign-close]')?.addEventListener('click', () => {
+    assignOpen = false;
+    render(root);
+  });
+  root.querySelector('[data-assign-backdrop]')?.addEventListener('mousedown', (e) => {
+    if (e.target.dataset.assignBackdrop !== undefined) {
+      assignOpen = false;
+      render(root);
+    }
+  });
+
+  // querySelectorAll, pas querySelector : le bouton existe potentiellement
+  // deux fois à la fois (page principale + en-tête de la popup de
+  // répartition, qui reste dans le DOM par-dessus elle plutôt que de la
+  // remplacer — cf. gamelleAssignModal()).
+  root.querySelectorAll('[data-new-session]').forEach((btn) =>
+    btn.addEventListener('click', () => {
+      update((s) => {
+        s.batch.sessions.push(newBatchSession(`Session ${s.batch.sessions.length + 1}`));
+      });
+      render(root);
+    })
+  );
 
   root.querySelectorAll('[data-session-label]').forEach((input) =>
     input.addEventListener('change', (e) => {

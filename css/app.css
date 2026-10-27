@@ -443,9 +443,15 @@ tbody tr:hover td { background: var(--surface-alt); }
 .gamelle-zone.is-drop-target { border-color: var(--brand-500); border-style: solid; background: var(--brand-50); }
 .gamelle-chip {
   display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line-strong); background: #fff;
-  border-radius: var(--radius-pill); padding: 6px 12px; font-size: var(--fs-xs); font-weight: 600; cursor: grab;
+  border-radius: var(--radius-pill); padding: 6px 12px; font-size: var(--fs-xs); font-weight: 600;
 }
-.gamelle-chip:active { cursor: grabbing; }
+/* Déplaçable UNIQUEMENT dans la popup de répartition (gamelleAssignModal,
+   batch.js) — ailleurs sur la page, la même pastille reste un simple
+   affichage (curseur par défaut, pas de draggable) : retour utilisateur,
+   le glisser-déposer mêlé au reste du contenu de la page était trop
+   difficile à viser. */
+.gamelle-chip--draggable { cursor: grab; }
+.gamelle-chip--draggable:active { cursor: grabbing; }
 .gamelle-chip__slot { color: var(--ink-soft); }
 .session-card__label {
   border: 1px solid transparent; background: transparent; font: inherit; font-weight: 700; font-size: var(--fs-lg);
@@ -835,6 +841,15 @@ input.target-input { -moz-appearance: textfield; }
   border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); overflow: hidden;
   display: flex; flex-direction: column;
 }
+/* Popup de répartition des gamelles (batch.js::gamelleAssignModal) : plus
+   large pour accueillir le pool + une colonne par session côte à côte avant
+   de retourner à la ligne. Classes dédiées (jamais .board/.day-col du
+   Planning, cf. commentaire dans gamelleAssignModal()) : même motif visuel
+   (colonnes de largeur fixe qui reviennent à la ligne), mais un nom à nous. */
+.composer__dialog--wide { width: min(1400px, 100%); }
+.gamelle-board__row { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
+.gamelle-col { flex: 0 0 272px; width: 272px; display: flex; flex-direction: column; gap: 8px; }
+.gamelle-col__head h2 { font-size: var(--fs-md); margin: 0; }
 .composer__head { flex: none; background: var(--surface); border-bottom: 1px solid var(--line); padding: 16px 20px; }
 /* Bande compacte Thomas/Julie (editor.js::renderCompactSummary()) — deux
    colonnes, toujours visibles sans défiler, au-dessus de l'assiette ET de la
