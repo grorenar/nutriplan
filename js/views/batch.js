@@ -597,12 +597,12 @@ function wireDragAndDrop(root) {
       const mealId = dragMealId || e.dataTransfer?.getData('text/plain');
       dragMealId = null;
       if (!mealId) return;
-      assignGamelle(root, mealId, zone.dataset.drop);
+      assignGamelle(mealId, zone.dataset.drop);
     });
   });
 }
 
-function assignGamelle(root, mealId, targetId) {
+function assignGamelle(mealId, targetId) {
   const savedScrollY = dragStartScrollY;
   update((s) => {
     for (const sess of s.batch.sessions) sess.mealIds = sess.mealIds.filter((id) => id !== mealId);
@@ -611,11 +611,15 @@ function assignGamelle(root, mealId, targetId) {
       if (sess && !sess.mealIds.includes(mealId)) sess.mealIds.push(mealId);
     }
   });
-  render(root);
-  // le render() ci-dessus tente déjà de restaurer le scroll (voir app.js/
-  // planning.js) mais ne suffit pas seul après un drag natif (le saut a déjà
-  // eu lieu avant ce point) : on réapplique explicitement la valeur capturée
-  // au mousedown.
+  // update() notifie déjà l'abonnement global (app.js) qui re-rend l'écran
+  // entier avant même que cet appel ne retourne — rappeler render(root) ici
+  // provoquait un DEUXIÈME rendu complet, synchrone, pendant le traitement de
+  // l'événement `drop` natif. Le nœud glissé d'origine se faisait alors
+  // retirer du DOM deux fois de suite avant même que le navigateur n'ait fini
+  // son opération de glisser-déposer (qui ne conclut qu'après `drop`, avec
+  // `dragend`) — d'où le re-rendu fantôme constaté (l'aperçu natif du
+  // glisser-déposer restait visible un instant par-dessus l'écran déjà
+  // reconstruit). Un seul rendu, déjà déclenché par update() ci-dessus, suffit.
   if (savedScrollY != null) window.scrollTo(0, savedScrollY);
 }
 
