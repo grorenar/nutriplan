@@ -2614,16 +2614,18 @@ check('glisser-déposer réel (session -> session) : la gamelle change directeme
 check('une seule session référence la gamelle à la fin (jamais de doublon)',
   store.getState().batch.sessions.filter((s) => s.mealIds.includes(dndMealId)).length === 1);
 
-click($('[data-assign-close]'));
-await wait();
-check('« Fermer » referme bien la popup', !$('[data-assign-backdrop]'));
-
 // nettoyage : la session vide créée pour ce test est supprimée, pour ne pas
-// perturber les sections suivantes (qui comptent sur une seule session).
-click($$('[data-delete-session]').find((b) => b.dataset.deleteSession === newSessId));
+// perturber les sections suivantes (qui comptent sur une seule session) —
+// renommer/supprimer une session ne vivent plus que DANS cette popup (retour
+// utilisateur), donc toujours avant de la refermer.
+click([...modalRoot().querySelectorAll('[data-delete-session]')].find((b) => b.dataset.deleteSession === newSessId));
 await wait();
 check('session vide supprimée sans perturber la session restante ni sa gamelle',
   store.getState().batch.sessions.length === 1 && store.getState().batch.sessions[0].mealIds.includes(dndMealId));
+
+click($('[data-assign-close]'));
+await wait();
+check('« Fermer » referme bien la popup', !$('[data-assign-backdrop]'));
 
 console.log('\n— Chantier P0 : suppression d’un aliment référencé dans une recette (composition live)');
 click($('[data-view="foods"]'));

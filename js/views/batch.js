@@ -27,6 +27,15 @@ let pendingConfirm = null; // { title, message, onConfirm } — ajustement du re
 // sans `draggable`, zones sans `data-drop`).
 let assignOpen = false;
 
+// Sessions dont le détail (composants, recettes à préparer, détail des
+// gamelles) est déplié sur la page — retour utilisateur : pouvoir ne
+// développer QUE les sessions qui intéressent, sans devoir tout parcourir à
+// chaque fois. Vide par défaut (tout replié) ; persiste entre les re-rendus
+// déclenchés par d'autres actions (sinon un <details open> redeviendrait
+// fermé au moindre update() ailleurs sur l'écran, puisque render() refait
+// tout le DOM).
+let expandedSessions = new Set();
+
 // État du glisser-déposer de gamelles — module-level, comme planning.js
 // (mêmes contraintes DnD réelles : `dragstart` cible toujours le plus proche
 // ancêtre `draggable`, jamais un sous-élément précis ; un geste de drag natif
@@ -131,18 +140,29 @@ function gamelleZone(dropId, gamellesLight, startWeekday, emptyText, interactive
   </div>`;
 }
 
+/**
+ * Carte de session sur la page — LECTURE SEULE (retour utilisateur : renommer
+ * et supprimer une session se font désormais uniquement depuis la popup de
+ * répartition, cf. gamelleAssignModal() ci-dessous, pour ne pas dupliquer ces
+ * actions à deux endroits). Le détail (composants, recettes à préparer,
+ * détail des gamelles) est replié derrière un <details> — retour
+ * utilisateur : pouvoir ne développer que les sessions qui intéressent,
+ * plutôt que de tout afficher d'un coup pour chaque session.
+ */
 function sessionCard(sess, startWeekday) {
   const gamellesLight = sess.gamelles.map((g) => ({ mealId: g.mealId, dayIndex: g.dayIndex, mealType: g.mealType, name: g.name }));
+  const detailCount = sess.components.length + sess.recipesToPrepare.length;
   return `<div class="card">
     <div class="card__head">
-      <input type="text" class="session-card__label" data-session-label="${esc(sess.id)}" value="${esc(sess.label)}" placeholder="Session sans nom" aria-label="Nom de la session">
-      <span class="spacer"></span>
-      <button type="button" class="btn btn--sm btn--ghost" data-delete-session="${esc(sess.id)}">Supprimer la session</button>
+      <h2 style="margin:0">${esc(sess.label || 'Session sans nom')}</h2>
     </div>
     ${gamelleZone(sess.id, gamellesLight, startWeekday, 'Utilise « Répartir les gamelles » pour lui en affecter.')}
-    ${componentsBlock(sess)}
-    ${recipesToPrepareBlock(sess, startWeekday)}
-    ${gamellesDetailBlock(sess, startWeekday)}
+    <details class="session-card__details" data-session-toggle="${esc(sess.id)}" ${expandedSessions.has(sess.id) ? 'open' : ''}>
+      <summary>Détail de la préparation${detailCount ? ` (${detailCount})` : ''}</summary>
+      ${componentsBlock(sess)}
+      ${recipesToPrepareBlock(sess, startWeekday)}
+      ${gamellesDetailBlock(sess, startWeekday)}
+    </details>
   </div>`;
 }
 
@@ -161,9 +181,26 @@ function gamelleAssignModal(plan, startWeekday) {
   // planning.js vérifie la présence de .meal-slot (pas .board) avant de se
   // re-rendre au redimensionnement, mais garder des classes bien à nous
   // évite toute collision de ce genre avec n'importe quelle autre vue future.
-  const column = (dropId, label, gamellesLight, emptyText) => `<div class="gamelle-col">
-    <div class="gamelle-col__head"><h2>${esc(label)}</h2></div>
-    ${gamelleZone(dropId, gamellesLight, startWeekday, emptyText, true)}
+  const poolColumn = `<div class="gamelle-col">
+    <div class="gamelle-col__head"><h2>📥 Pool</h2></div>
+    ${gamelleZone('pool', plan.unassignedGamelles, startWeekday, 'Tout est réparti.', true)}
+  </div>`;
+
+  // Renommer et supprimer une session vivent ICI, jamais sur la page
+  // elle-même (retour utilisateur) : la popup est désormais le seul endroit
+  // de gestion des sessions, en plus du glisser-déposer.
+  const sessionColumn = (sess) => `<div class="gamelle-col">
+    <div class="gamelle-col__head">
+      <input type="text" class="session-card__label" data-session-label="${esc(sess.id)}" value="${esc(sess.label)}" placeholder="Session sans nom" aria-label="Nom de la session">
+    </div>
+    ${gamelleZone(
+      sess.id,
+      sess.gamelles.map((g) => ({ mealId: g.mealId, dayIndex: g.dayIndex, mealType: g.mealType, name: g.name })),
+      startWeekday,
+      'Glisse une gamelle ici.',
+      true
+    )}
+    <button type="button" class="btn btn--sm btn--ghost" data-delete-session="${esc(sess.id)}" style="margin-top:8px;width:100%">Supprimer la session</button>
   </div>`;
 
   return `<div class="composer" data-assign-backdrop>
@@ -172,23 +209,14 @@ function gamelleAssignModal(plan, startWeekday) {
         <div class="row"><h3 style="flex:1">🧩 Répartir les gamelles</h3>
         <button type="button" class="btn btn--sm btn--primary" data-new-session>+ Nouvelle session</button>
         <button type="button" class="btn btn--ghost" data-assign-close>Fermer</button></div>
-        <small>Glisse une gamelle d'une colonne à l'autre pour décider dans quelle session (ou le pool) elle atterrit.</small>
+        <small>Glisse une gamelle d'une colonne à l'autre pour décider dans quelle session (ou le pool) elle atterrit. Renomme ou supprime une session directement ici.</small>
       </div>
       <div class="composer__main" style="overflow:auto;padding:18px">
         <div class="gamelle-board">
           <div class="gamelle-board__row">
-            ${column('pool', '📥 Pool', plan.unassignedGamelles, 'Tout est réparti.')}
-            ${plan.sessions
-              .map((sess) =>
-                column(
-                  sess.id,
-                  sess.label || 'Session sans nom',
-                  sess.gamelles.map((g) => ({ mealId: g.mealId, dayIndex: g.dayIndex, mealType: g.mealType, name: g.name })),
-                  'Glisse une gamelle ici.'
-                )
-              )
-              .join('')}
-            ${!plan.sessions.length ? '<p class="muted">Aucune session créée pour l’instant — ferme cette popup et crée-en une avec « + Nouvelle session ».</p>' : ''}
+            ${poolColumn}
+            ${plan.sessions.map(sessionColumn).join('')}
+            ${!plan.sessions.length ? '<p class="muted">Aucune session créée pour l’instant — crée-en une avec « + Nouvelle session ».</p>' : ''}
           </div>
         </div>
       </div>
@@ -639,6 +667,14 @@ function wire(root) {
       update((s) => { s.batch.sessions = s.batch.sessions.filter((x) => x.id !== id); });
       toast('Session supprimée — ses gamelles reviennent dans le pool');
       render(root);
+    })
+  );
+
+  root.querySelectorAll('[data-session-toggle]').forEach((details) =>
+    details.addEventListener('toggle', (e) => {
+      const id = e.currentTarget.dataset.sessionToggle;
+      if (e.currentTarget.open) expandedSessions.add(id);
+      else expandedSessions.delete(id);
     })
   );
 

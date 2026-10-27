@@ -850,6 +850,9 @@ input.target-input { -moz-appearance: textfield; }
 .gamelle-board__row { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; }
 .gamelle-col { flex: 0 0 272px; width: 272px; display: flex; flex-direction: column; gap: 8px; }
 .gamelle-col__head h2 { font-size: var(--fs-md); margin: 0; }
+.gamelle-col__head .session-card__label { width: 100%; box-sizing: border-box; }
+.session-card__details { margin-top: 10px; }
+.session-card__details > summary { cursor: pointer; font-weight: 700; padding: 4px 0; }
 .composer__head { flex: none; background: var(--surface); border-bottom: 1px solid var(--line); padding: 16px 20px; }
 /* Bande compacte Thomas/Julie (editor.js::renderCompactSummary()) — deux
    colonnes, toujours visibles sans défiler, au-dessus de l'assiette ET de la
