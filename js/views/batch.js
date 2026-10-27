@@ -221,7 +221,9 @@ function gamellesDetailBlock(sess, startWeekday) {
                   .map((e) =>
                     e.free
                       ? `<li>${esc(e.name)} — ${esc(e.quantity || 'au goût')}</li>`
-                      : `<li>${grams(e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${e.bonus > 0 ? `<span class="tag">+${grams(e.bonus)} (surplus à servir)</span>` : ''}</li>`
+                      : `<li>${grams(e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${e.bonus > 0 ? `<span class="tag">+${grams(e.bonus)} (surplus à servir)</span>` : ''}
+                          ${e.ingredients?.length ? `<ul style="margin:2px 0 0;padding-left:16px">${e.ingredients.map(ingredientLine).join('')}</ul>` : ''}
+                        </li>`
                   )
                   .join('') || '<li class="muted">rien</li>'}
               </ul>

@@ -748,10 +748,21 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
         meal.items
           .map((it) => {
             if (it.recipeId || it.preparationId) {
-              const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipesById[it.recipeId]?.name;
+              const recipe = it.recipeId ? recipesById[it.recipeId] : null;
+              const label = it.preparationId ? preparationsById[it.preparationId]?.label : recipe?.name;
               const qty = it.qty?.[person] || 0;
               if (!label || !qty) return null;
-              return { free: false, food: null, name: label, category: 'assemble', grams: qty, cooked: false };
+              return {
+                free: false, food: null, name: label, category: 'assemble', grams: qty, cooked: false,
+                // Une préparation est un stock déjà réellement cuisiné à l'avance
+                // — rien à détailler ici. Une recette référencée directement
+                // (sans préparation) ne l'est pas forcément : certains repas se
+                // composent assiette par assiette, directement dans la gamelle, à
+                // partir des ingrédients bruts (retour utilisateur) — d'où ce
+                // détail mis à l'échelle de CETTE portion précise (qty), pas de
+                // la recette totale de la session (cf. recipesToPrepare ci-dessus).
+                ingredients: recipe ? recipeIngredientsScaledTo(recipe, qty, foodsById) : null,
+              };
             }
             if (!it.foodId) {
               return it.free ? { free: true, name: it.free.name, quantity: it.free.quantity, category: 'free' } : null;

@@ -2502,6 +2502,14 @@ check('« Skyr Flocons Test » apparaît avec son détail d’ingrédients, asse
 check('ingrédient mis à l’échelle affiché (4 portions × 330 g = 1,32 kg de Steak haché, pas la recette seule)',
   !!skyrLi && /1,32\s*kg.*Steak haché|Steak haché.*1,32\s*kg/.test(skyrLi.textContent.replace(/\s+/g, ' ')));
 
+console.log('\n— Écran batch : même détail d’ingrédients dans « Détail des gamelles de cette session » (retour utilisateur : certains repas se composent assiette par assiette, directement dans le tupp, pas via une préparation globale ensuite répartie)');
+const gamellesDetailHeading = $$('h3').find((h) => /Détail des gamelles de cette session/.test(h.textContent));
+check('bloc « Détail des gamelles de cette session » présent', !!gamellesDetailHeading);
+const skyrGamelleLi = $$('.meal-card li').find((li) => li.querySelector('ul') && /Skyr Flocons Test/.test(li.textContent));
+check('« Skyr Flocons Test » apparaît aussi dans le détail des gamelles, pas seulement dans « à assembler le jour même »', !!skyrGamelleLi);
+check('ingrédient mis à l’échelle à la portion réelle de CETTE gamelle (1,32 kg pour Thomas), pas la recette seule',
+  !!skyrGamelleLi && /1,32\s*kg.*Steak haché|Steak haché.*1,32\s*kg/.test(skyrGamelleLi.textContent.replace(/\s+/g, ' ')));
+
 console.log('\n— Batch cooking : vrai glisser-déposer entre le pool « Gamelles à préparer » et les sessions, dans la popup dédiée');
 // Demande explicite de l'utilisateur : « un vrai DnD entre gamelles à
 // préparer, et session de batch », puis « il faut ouvrir l'interface DnD
