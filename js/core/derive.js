@@ -805,14 +805,26 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
   // ---- suggestion d'affichage : répartir le surplus de batch (« Je prépare »
   // > besoin, ou rendement mesuré meilleur qu'attendu) entre les gamelles de
   // la session qui consomment ce composant, au prorata de leur part déjà
-  // prévue. NE MODIFIE JAMAIS `meal.items` (cf. en-tête de fichier) : ajoute
-  // seulement `bonus`/`adjustedGrams` sur les entrées de `gamelles`
-  // fraîchement construites ci-dessus, à titre de suggestion de service.
-  // Mesure réelle (measuredCooked) prioritaire sur l'estimation théorique
-  // (preparedCooked) — si tu as pesé plus que prévu, la suggestion en tient
-  // compte. Un déficit (surplus négatif) n'est jamais répercuté ici : les
-  // gamelles gardent leur quantité planifiée, seul un VRAI surplus est
-  // proposé en plus (jamais une réduction silencieuse d'une portion).
+  // prévue. NE MODIFIE JAMAIS `meal.items` NI `recipe.items` (cf. en-tête de
+  // fichier) : ajoute seulement `bonus`/`adjustedGrams` (ou `adjustedQty`
+  // pour un ingrédient de recette) sur les entrées fraîchement construites
+  // ci-dessus, à titre de suggestion de service. Mesure réelle
+  // (measuredCooked) prioritaire sur l'estimation théorique (preparedCooked)
+  // — si tu as pesé plus que prévu, la suggestion en tient compte. Un déficit
+  // (surplus négatif) n'est jamais répercuté ici : les gamelles gardent leur
+  // quantité planifiée, seul un VRAI surplus est proposé en plus (jamais une
+  // réduction silencieuse d'une portion).
+  // Même aliment consommé aussi comme INGRÉDIENT d'une recette assemblée
+  // directement dans une gamelle (jamais une recette "à préparer en batch" —
+  // seule la fiche aliment l'est, ex. le bœuf des Wraps burrito) : la
+  // suggestion doit s'y appliquer tout autant (retour utilisateur, « on
+  // augmente la viande hachée du burrito pour ne pas avoir de reste ») —
+  // `entries` mélange donc des entrées directes (`e`) et des lignes
+  // d'ingrédient (`ing`, via `e.ingredients`), chacune avec sa propre base de
+  // répartition (`basis`) et sa façon d'écrire son bonus (`apply`). Seule une
+  // ligne déjà convertie post-cuisson (`labelState === 'cuit'`, cf.
+  // recipeIngredientsScaledTo()) est éligible : c'est la même grandeur
+  // (grammes cuits) que `c.requiredCooked`/`surplus`, jamais un poids cru.
   for (const c of components) {
     const available = c.measuredCooked ?? c.preparedCooked;
     const surplus = available - c.requiredCooked;
@@ -821,18 +833,25 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
     for (const g of gamelles) {
       for (const person of PERSONS) {
         for (const e of g.persons[person]) {
-          if (!e.free && e.category === 'batch' && e.food?.id === c.food.id) entries.push(e);
+          if (e.free) continue;
+          if (e.category === 'batch' && e.food?.id === c.food.id) {
+            entries.push({ basis: e.grams, apply: (bonus) => { e.bonus = bonus; e.adjustedGrams = e.grams + bonus; } });
+          }
+          for (const ing of e.ingredients || []) {
+            if (ing.labelState === 'cuit' && ing.food?.id === c.food.id) {
+              entries.push({ basis: ing.qty, apply: (bonus) => { ing.bonus = bonus; ing.adjustedQty = ing.qty + bonus; } });
+            }
+          }
         }
       }
     }
     if (!entries.length) continue;
     let assigned = 0;
-    entries.forEach((e, i) => {
+    entries.forEach((entry, i) => {
       const isLast = i === entries.length - 1;
-      const bonus = isLast ? Math.max(0, surplus - assigned) : Math.round(surplus * (e.grams / c.requiredCooked));
+      const bonus = isLast ? Math.max(0, surplus - assigned) : Math.round(surplus * (entry.basis / c.requiredCooked));
       assigned += bonus;
-      e.bonus = bonus;
-      e.adjustedGrams = e.grams + bonus;
+      entry.apply(bonus);
     });
   }
 

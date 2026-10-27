@@ -2617,6 +2617,59 @@ test('écran batch — le détail des ingrédients suit la quantité réellement
     Math.abs(r.ingredients[0].qty - 600) < 0.01, `${r.ingredients[0].qty}`);
 });
 
+test('Batch — suggestion de répartition du surplus : s’étend à un ingrédient de recette assemblée en gamelle (retour utilisateur : « augmenter la viande hachée du burrito pour ne pas avoir de reste »)', () => {
+  const boeuf = F('Steak haché'); // batchAllowed, cookedFactor 0,75
+  // Recette NON batchAllowed (assemblée directement dans la gamelle, jamais
+  // « à préparer en batch » en tant que recette — comme les Wraps burrito du
+  // retour utilisateur) : 100 g de bœuf cru pour 100 g de recette (ratio 1:1,
+  // pour des chiffres ronds).
+  const recipe = newRecipe('Wraps burrito maison', 'weight');
+  recipe.items = [newRecipeItem(boeuf.id, 100, 'cru')];
+  recipe.baseGrams = 100;
+  const recipesById = { [recipe.id]: recipe };
+
+  // Un repas consomme le bœuf DIRECTEMENT (200 g crus, 100/100) ; un autre le
+  // consomme UNIQUEMENT via le burrito (100 g de recette chacun → 100 g de
+  // bœuf cru chacun, scale 1:1) — même session, deux façons de consommer le
+  // même aliment batchable.
+  const directMeal = mkMeal(0, 'lunch', [item(boeuf, 0, { thomas: 100, julie: 100 })]);
+  const burritoMeal = mkMeal(0, 'dinner', [recipeItemInMeal(recipe.id, 100)]);
+  const key = `0:${boeuf.id}`;
+  // besoin total : 200 g (direct) + 200 g (100+100 déployés depuis la
+  // recette) = 400 g crus -> 300 g cuits ; préparé 500 g crus -> 375 g cuits
+  // théoriques -> surplus de 75 g cuits (aucune mesure "cuit obtenu" saisie).
+  const st = batchTestState([directMeal, burritoMeal], { batch: { overrides: { [key]: 500 }, sessions: [{ id: '0', label: 'S', mealIds: [directMeal.id, burritoMeal.id] }] } });
+  const plan = buildBatchPlan(st, byId, recipesById, {});
+  const sess = plan.sessions[0];
+  const c = sess.components.find((x) => x.food.id === boeuf.id);
+  check('besoin total agrégé : 400 g crus (200 direct + 200 déployés depuis le burrito)', c.requiredRaw === 400, `${c.requiredRaw}`);
+  check('surplus cuit de 75 g (375 g préparés théoriques − 300 g requis)', c.preparedCooked - c.requiredCooked === 75);
+
+  const directEntries = [];
+  const ingredientEntries = [];
+  for (const g of sess.gamelles) {
+    for (const p of PERSONS) {
+      for (const e of g.persons[p]) {
+        if (!e.free && e.category === 'batch' && e.food?.id === boeuf.id) directEntries.push(e);
+        for (const ing of e.ingredients || []) if (ing.food?.id === boeuf.id) ingredientEntries.push(ing);
+      }
+    }
+  }
+  check('2 entrées directes (Thomas + Julie) et 2 lignes d’ingrédient (Thomas + Julie, dans le burrito)',
+    directEntries.length === 2 && ingredientEntries.length === 2,
+    `direct=${directEntries.length} ingrédient=${ingredientEntries.length}`);
+
+  const totalBonus = [...directEntries, ...ingredientEntries].reduce((sum, e) => sum + (e.bonus || 0), 0);
+  check('le surplus réparti correspond exactement au surplus cuit, qu’il soit direct ou dans une recette (75 g)',
+    totalBonus === 75, `${totalBonus}`);
+  check('chaque ingrédient de burrito reçoit lui aussi une suggestion de bonus (jamais ignoré au seul motif qu’il est niché dans une recette)',
+    ingredientEntries.every((ing) => ing.bonus > 0));
+  check('adjustedQty = qty + bonus pour l’ingrédient, même convention que adjustedGrams pour une entrée directe',
+    ingredientEntries.every((ing) => ing.adjustedQty === ing.qty + ing.bonus));
+  check('ni la recette (recipe.items) ni le repas (meal.items) ne sont modifiés par cette suggestion',
+    recipe.items[0].qty === 100 && burritoMeal.items[0].qty.thomas === 100 && burritoMeal.items[0].qty.julie === 100);
+});
+
 test('écran batch — répartition vers les gamelles de la session (le "global" : total préparé -> distribué)', () => {
   const boeuf = F('Steak haché');
   const recipe = newRecipe('Chili', 'weight');

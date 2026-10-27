@@ -445,8 +445,14 @@ function ingredientLine(ing) {
   // poids déjà cuit (rendement non homogène pièce par pièce) — seul un poids
   // encore dans l'état saisi dans la recette (jamais cuit) peut s'afficher
   // en unités, comme partout ailleurs dans l'application.
-  const qtyText = labelState === 'cuit' ? grams(ing.qty) : formatFoodQty(ing.food, ing.qty);
-  return `<li>${qtyText} ${esc(ing.food.name)}${labelState ? ` (${esc(labelState)})` : ''}${warn}</li>`;
+  // Suggestion de surplus (retour utilisateur : augmenter la viande hachée
+  // du burrito plutôt que d'avoir du cuit en trop) — même mécanisme que les
+  // entrées directes de gamelle ci-dessus (buildSessionPlan()/derive.js),
+  // jamais une modification de la recette elle-même, juste un affichage.
+  const shownQty = ing.bonus > 0 ? ing.adjustedQty : ing.qty;
+  const qtyText = labelState === 'cuit' ? grams(shownQty) : formatFoodQty(ing.food, shownQty);
+  const bonusTag = ing.bonus > 0 ? ` <span class="tag">+${grams(ing.bonus)} (surplus à servir)</span>` : '';
+  return `<li>${qtyText} ${esc(ing.food.name)}${labelState ? ` (${esc(labelState)})` : ''}${bonusTag}${warn}</li>`;
 }
 
 /**
