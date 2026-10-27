@@ -303,8 +303,16 @@ function componentsBlock(sess) {
   if (!sess.components.length) return '';
   const cards = sess.components
     .map((c) => {
-      const surplus = c.preparedRaw - c.requiredRaw;
-      const coverage = c.requiredRaw > 0 ? (c.preparedRaw / c.requiredRaw) * 100 : 100;
+      // Surplus RÉEL face au besoin, pas un simple delta de ce qui a été
+      // préparé en cru (retour utilisateur) — même grandeur, cuite, que celle
+      // qui alimente déjà « surplus à servir » dans le détail des gamelles
+      // (buildSessionPlan()/derive.js) : la carte reste ainsi cohérente avec
+      // ce qui est réellement distribué en dessous. Mesure réelle
+      // (measuredCooked) prioritaire sur l'estimation théorique
+      // (preparedCooked) dès qu'elle existe.
+      const available = c.measuredCooked ?? c.preparedCooked;
+      const surplus = available - c.requiredCooked;
+      const coverage = c.requiredCooked > 0 ? (available / c.requiredCooked) * 100 : 100;
       const method = [
         c.method ? `méthode : ${esc(c.method)}` : null,
         c.temperature ? `${num(c.temperature, 0)} °C` : null,
@@ -350,7 +358,11 @@ function componentsBlock(sess) {
           </div>
           <div class="batch-item__metric batch-item__metric--${surplus >= 0 ? 'ok' : 'warn'}">
             <span class="batch-item__metric-label">Surplus</span>
-            <span class="batch-item__metric-value">${surplus >= 0 ? `+ ${formatFoodQty(c.food, surplus)}` : `manque ${formatFoodQty(c.food, -surplus)}`}</span>
+            <!-- Toujours en grammes, jamais en unités, même règle que « Cuit
+                 nécessaire »/« Cuit attendu » ci-dessus : c'est désormais un
+                 écart en poids CUIT, qui ne se recompte pas proprement en
+                 pièces crues. -->
+            <span class="batch-item__metric-value">${surplus >= 0 ? `+ ${grams(surplus)}` : `manque ${grams(-surplus)}`}</span>
             <span class="tag">${num(coverage, 0)} %</span>
           </div>
         </div>

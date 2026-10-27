@@ -1562,6 +1562,32 @@ check('confirmation : rendement enregistré mis à jour sur la fiche aliment',
 check('rendement théorique désormais aligné sur la mesure : plus d’écart, plus de bouton',
   !$$('[data-adjust-yield]').some((b) => b.dataset.adjustYield === batchKey));
 
+console.log('\n— Batch : la colonne « Surplus » reflète le cuit obtenu face au cuit nécessaire, pas un delta en cru (retour utilisateur)');
+// Retour utilisateur : « Surplus » doit être la différence entre le cuit
+// obtenu (ou, à défaut de mesure, le cuit attendu) et le cuit NÉCESSAIRE —
+// la même grandeur que celle qui alimente déjà « surplus à servir » dans le
+// détail des gamelles (buildSessionPlan()/derive.js) — jamais un delta entre
+// « Je prépare » et « À sortir » (en cru, insensible à ce qui est mesuré).
+const cAfterAdjust = derive.buildBatchPlan(store.getState(), store.foodsById(), store.recipesById(), store.preparationsById())
+  .sessions[0].components.find((c) => c.key === batchKey);
+check('mesure prise en compte dans le composant recalculé', cAfterAdjust.measuredCooked === farMeasured, `${cAfterAdjust.measuredCooked}`);
+const expectedSurplus = cAfterAdjust.measuredCooked - cAfterAdjust.requiredCooked;
+// re-requêter à partir du DOM courant : render() reconstruit tout le DOM à
+// chaque update() (même motif que le reste du fichier) — cookedInput,
+// capturé avant les clics d'ajustement du rendement ci-dessus, est désormais
+// détaché et refléterait un état PÉRIMÉ (cookedFactor pas encore ajusté).
+const freshCookedInput = $$('[data-cooked]').find((el) => el.dataset.cooked === batchKey);
+const surplusCard = freshCookedInput.closest('.batch-item');
+const surplusMetric = [...surplusCard.querySelectorAll('.batch-item__metric')]
+  .find((m) => /^Surplus$/.test(m.querySelector('.batch-item__metric-label')?.textContent.trim() || ''));
+const surplusValueText = surplusMetric.querySelector('.batch-item__metric-value').textContent.trim();
+const expectedSurplusText = expectedSurplus >= 0 ? `+ ${util.grams(expectedSurplus)}` : `manque ${util.grams(-expectedSurplus)}`;
+// util.grams() ne produit jamais de texte en unités (steaks, tranches…) :
+// cette égalité prouve à la fois la bonne formule ET l'absence de
+// conversion en unités pour ce delta en poids cuit.
+check('« Surplus » affiché = cuit obtenu − cuit nécessaire, en grammes, jamais « je prépare » − « à sortir » (en cru) ni en unités',
+  surplusValueText === expectedSurplusText, `affiché="${surplusValueText}" attendu="${expectedSurplusText}"`);
+
 console.log('\n— Batch : « cuit obtenu » absent (lecture seule) pour un aliment dont les valeurs ne sont PAS à l’état cru');
 // Retour utilisateur : un aliment "nécessite une cuisson" avec des valeurs
 // nutritionnelles à l'état "prêt à consommer" (ex. plat surgelé à réchauffer
