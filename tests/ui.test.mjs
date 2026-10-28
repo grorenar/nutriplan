@@ -1052,6 +1052,35 @@ check('toast de confirmation', /Recette enregistrée/.test(document.getElementBy
 check('la recette apparaît dans la liste', /Riz aux légumes/.test($('#view').textContent));
 check('type et référence affichés', /Au poids/.test($('#view').textContent) && /800 g/.test($('#view').textContent));
 
+console.log('\n— Écran Recettes : valeurs nutritionnelles d’une recette « portion » = le total d’UNE portion entière, jamais un ramené à 100 g de la portion (retour utilisateur : « 1 wrap fait déjà 178,8 kcal à lui seul, largement plus que les 193 kcal affichés pour toute la recette »)');
+const wrapFood = store.getState().foods.find((f) => /Tortilla.*wrap|wrap froment/i.test(f.name));
+const rizBasmati = store.getState().foods.find((f) => /Riz basmati/.test(f.name));
+check('aliments de seed nécessaires au scénario disponibles', !!wrapFood && !!rizBasmati);
+const wrapQty = 62; // = 1 wrap (gramsPerUnit)
+const rizQty = 200; // volontairement généreux : grossit le poids de la portion loin de 100 g, pour rendre le bug (ramené à 100 g de la portion plutôt qu'à la portion) flagrant si jamais il revenait
+const expectedPortionKcal = (wrapFood.kcal * wrapQty + rizBasmati.kcal * rizQty) / 100;
+let portionRecipeId;
+store.update((s) => {
+  const recipe = store.newRecipe('Wraps burrito UI Test', 'portion');
+  recipe.items = [store.newRecipeItem(wrapFood.id, wrapQty, 'pret'), store.newRecipeItem(rizBasmati.id, rizQty, 'cru')];
+  s.recipes.push(recipe);
+  portionRecipeId = recipe.id;
+});
+await wait();
+click($(`[data-edit="${portionRecipeId}"]`));
+await wait();
+const portionKcalBadge = Number($('.macro-badge[data-macro="kcal"] b')?.textContent.replace(',', '.'));
+check('badge « Valeurs nutritionnelles » = total de la portion entière (pas un ramené à 100 g de la portion)',
+  Math.abs(portionKcalBadge - expectedPortionKcal) < 1, `affiché=${portionKcalBadge} attendu≈${expectedPortionKcal.toFixed(1)}`);
+check('la légende précise bien « pour 1 portion entière », jamais « pour 100 »',
+  /pour 1 portion entière/i.test($('.drawer__body').textContent) && !/pour 100(?! g)/i.test($('.drawer__body').textContent));
+click($('[data-form-cancel]'));
+await wait();
+const portionListRow = $$('tbody tr').find((tr) => /Wraps burrito UI Test/.test(tr.textContent));
+const listKcalText = portionListRow?.children[3]?.textContent.trim() || '';
+check('même total affiché dans la liste des recettes, suffixé « / portion » (jamais confondu avec un « / 100 g »)',
+  listKcalText === `${Math.round(expectedPortionKcal)} / portion`, `"${listKcalText}"`);
+
 console.log('\n— Écran Recettes : filtres de recherche d’ingrédients (catégories/favoris/récents), harmonisés avec l’éditeur de repas');
 click($('[data-new]'));
 await wait();

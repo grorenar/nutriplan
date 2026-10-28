@@ -62,7 +62,7 @@ function renderFull(root, s, byId) {
           <div class="table-scroll">
             <table>
               <thead><tr>
-                <th>Recette</th><th>Type</th><th class="nums">Référence</th><th class="nums">kcal / 100</th>
+                <th>Recette</th><th>Type</th><th class="nums">Référence</th><th class="nums" title="kcal pour 100 g (recette au poids) ou pour une portion entière (recette portion)">kcal</th>
                 <th class="nums">Temps</th><th>Ingrédients</th><th></th>
               </tr></thead>
               <tbody>
@@ -96,6 +96,32 @@ function refreshDrawerBody(root, s, byId) {
 }
 
 /**
+ * Macros affichées à l'utilisateur pour UNE recette — jamais `recipeMacrosPer100g()`
+ * brut. Cette dernière ramène toujours à une base de 100 (g pour `weight`,
+ * mais 100 UNITÉS VIRTUELLES DE LA PORTION pour `portion`, utile uniquement
+ * en interne pour `recipeAsVirtualFood()`/`macrosFor()`) : pour une recette
+ * `portion` dont la portion ne pèse pas 100 g (343 g ici), ce "per 100" ne
+ * correspond PAS aux calories d'une portion — bug réel signalé par
+ * l'utilisateur (« 1 wrap fait déjà 178,8 kcal à lui seul, largement plus que
+ * les 193 kcal affichés pour toute la recette ») : la recette affichait en
+ * réalité ses macros ramenées à 100 g DE PORTION (343 g), soit environ 1/3,43
+ * de ce qu'une portion contient VRAIMENT. Une recette `portion` affiche donc
+ * ici le total d'UNE portion entière (ce que la composition décrit déjà,
+ * d'après son propre libellé « la composition ci-dessous décrit UNE
+ * portion ») ; une recette `weight` garde le classique « pour 100 g ».
+ */
+function recipeDisplayMacros(r, byId) {
+  const per100 = recipeMacrosPer100g(r, byId);
+  if (r.kind !== 'portion') return per100;
+  const scale = portionGramsOf(r) / 100;
+  return {
+    kcal: per100.kcal * scale, protein: per100.protein * scale,
+    carbs: per100.carbs * scale, fat: per100.fat * scale, fiber: per100.fiber * scale,
+    unconvertible: per100.unconvertible,
+  };
+}
+
+/**
  * Aperçu du contenu d'une recette dans la liste, trié par quantité
  * décroissante — plus parlant qu'un simple compte ("4 ingrédients") pour se
  * représenter la recette sans l'ouvrir : on voit tout de suite ce qui domine.
@@ -110,7 +136,7 @@ function ingredientSummary(r, byId) {
 }
 
 function rowOf(r, s, byId) {
-  const per100 = recipeMacrosPer100g(r, byId);
+  const macros = recipeDisplayMacros(r, byId);
   const usedByPreparations = s.preparations.some((p) => p.recipeId === r.id);
   const portionBase = portionGramsOf(r);
   const totalTime = (Number(r.prepTime) || 0) + (Number(r.cookingTime) || 0);
@@ -118,7 +144,7 @@ function rowOf(r, s, byId) {
     <td><strong>${esc(r.name || '(sans nom)')}</strong></td>
     <td>${r.kind === 'weight' ? 'Au poids' : 'Portion'}</td>
     <td class="nums">${r.kind === 'weight' ? `${num(r.baseGrams, 0)} g` : `${num(portionBase, 0)} g / portion`}</td>
-    <td class="nums">${num(per100.kcal, 0)}</td>
+    <td class="nums">${num(macros.kcal, 0)}${r.kind === 'portion' ? ' / portion' : ''}</td>
     <td class="nums">${totalTime > 0 ? `⏱ ${totalTime} min` : '—'}</td>
     <td>${ingredientSummary(r, byId)}${usedByPreparations ? ` <span class="tag" title="Une préparation de batch cooking existe encore pour cette recette : elle ne peut pas être supprimée tant que cette préparation n'est pas supprimée elle-même.">🔒 non supprimable (préparation existante)</span>` : ''}</td>
     <td style="text-align:right;white-space:nowrap"><button class="btn btn--sm" data-edit="${r.id}">Modifier</button></td>
@@ -257,7 +283,7 @@ function formPanel(s, byId) {
 
 /** Contenu de .drawer__body — réutilisé tel quel par refreshDrawerBody(). */
 function formBodyHtml(r, s, byId) {
-  const per100 = recipeMacrosPer100g(r, byId);
+  const macros = recipeDisplayMacros(r, byId);
   const portionBase = portionGramsOf(r);
 
   const ingredientRows = r.items.length
@@ -339,12 +365,12 @@ function formBodyHtml(r, s, byId) {
     <div class="form-section">
       <div class="form-section__head"><span class="ico" aria-hidden="true">🔥</span><h3>Valeurs nutritionnelles</h3></div>
       <div class="macros">
-        <span class="macro-badge" data-macro="kcal"><b>${num(per100.kcal, 0)}</b> kcal</span>
-        <span class="macro-badge" data-macro="protein"><b>${num(per100.protein, 1)}</b> g P</span>
-        <span class="macro-badge" data-macro="carbs"><b>${num(per100.carbs, 1)}</b> g G</span>
-        <span class="macro-badge" data-macro="fat"><b>${num(per100.fat, 1)}</b> g L</span>
+        <span class="macro-badge" data-macro="kcal"><b>${num(macros.kcal, 0)}</b> kcal</span>
+        <span class="macro-badge" data-macro="protein"><b>${num(macros.protein, 1)}</b> g P</span>
+        <span class="macro-badge" data-macro="carbs"><b>${num(macros.carbs, 1)}</b> g G</span>
+        <span class="macro-badge" data-macro="fat"><b>${num(macros.fat, 1)}</b> g L</span>
       </div>
-      <small style="display:block;margin-top:6px">Pour 100${r.kind === 'weight' ? ' g' : ' (base = 1 portion)'} — calculées automatiquement depuis la composition, jamais stockées.</small>
+      <small style="display:block;margin-top:6px">${r.kind === 'weight' ? 'Pour 100 g' : `Pour 1 portion entière (${num(portionBase, 0)} g)`} — calculées automatiquement depuis la composition, jamais stockées.</small>
     </div>
 
     <div class="form-section">
