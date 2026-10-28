@@ -250,7 +250,7 @@ function gamellesDetailBlock(sess, startWeekday) {
                   .map((e) =>
                     e.free
                       ? `<li>${esc(e.name)} — ${esc(e.quantity || 'au goût')}</li>`
-                      : `<li>${gamelleQty(e, e.bonus > 0 ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${e.bonus > 0 ? `<span class="tag">+${gamelleQty(e, e.bonus)} (surplus à servir)</span>` : ''}
+                      : `<li>${gamelleQty(e, e.bonus ? e.adjustedGrams : e.grams)} ${esc(e.name)}${e.cooked ? ' cuit' : ''} <span class="tag">${esc(shortCat(e.category))}</span>${bonusTag(e.bonus, gamelleQty(e, Math.abs(e.bonus || 0)))}
                           ${e.ingredients?.length ? `<ul style="margin:2px 0 0;padding-left:16px">${e.ingredients.map(ingredientLine).join('')}</ul>` : ''}
                         </li>`
                   )
@@ -275,6 +275,21 @@ const shortCat = (category) =>
  * grammes seuls dans ce cas — même règle que ingredientLine() ci-dessous.
  */
 const gamelleQty = (e, qty) => (e.cooked ? grams(qty) : formatFoodQty(e.food, qty));
+
+/**
+ * Pastille d'écart entre la quantité planifiée et la quantité réellement
+ * disponible pour CE composant (buildSessionPlan()/derive.js) — surplus
+ * (bonus > 0, ajouté en plus) ou déficit (bonus < 0, retranché — retour
+ * utilisateur : une gamelle n'affiche jamais plus que ce qui est réellement
+ * disponible). Jamais affichée pour un écart nul. `formattedAbs` est déjà le
+ * texte formaté de |bonus| (grammes ou unités selon le contexte d'appel).
+ */
+const bonusTag = (bonus, formattedAbs) => {
+  if (!bonus) return '';
+  return bonus > 0
+    ? ` <span class="tag">+${formattedAbs} (surplus à servir)</span>`
+    : ` <span class="tag sync-error">−${formattedAbs} (manque — quantité réduite)</span>`;
+};
 
 /* ---------------------------------------------------- à préparer en batch */
 
@@ -489,10 +504,10 @@ function ingredientLine(ing) {
   // du burrito plutôt que d'avoir du cuit en trop) — même mécanisme que les
   // entrées directes de gamelle ci-dessus (buildSessionPlan()/derive.js),
   // jamais une modification de la recette elle-même, juste un affichage.
-  const shownQty = ing.bonus > 0 ? ing.adjustedQty : ing.qty;
+  const shownQty = ing.bonus ? ing.adjustedQty : ing.qty;
   const qtyText = labelState === 'cuit' ? grams(shownQty) : formatFoodQty(ing.food, shownQty);
-  const bonusTag = ing.bonus > 0 ? ` <span class="tag">+${grams(ing.bonus)} (surplus à servir)</span>` : '';
-  return `<li>${qtyText} ${esc(ing.food.name)}${labelState ? ` (${esc(labelState)})` : ''}${bonusTag}${warn}</li>`;
+  const bonusHtml = bonusTag(ing.bonus, grams(Math.abs(ing.bonus || 0)));
+  return `<li>${qtyText} ${esc(ing.food.name)}${labelState ? ` (${esc(labelState)})` : ''}${bonusHtml}${warn}</li>`;
 }
 
 /**

@@ -2575,6 +2575,51 @@ const skyrGamelleIngredientLi = skyrGamelleLi?.querySelector('ul li');
 check('ingrédient mis à l’échelle à la portion réelle de CETTE gamelle PUIS converti post-cuisson (990 g pour Thomas), pas 1,32 kg crus',
   !!skyrGamelleIngredientLi && /^990 g Steak haché/.test(skyrGamelleIngredientLi.textContent.trim()), skyrGamelleIngredientLi?.textContent.trim());
 
+console.log('\n— Batch : suggestion de RÉDUCTION des gamelles en cas de déficit (cuit obtenu < cuit nécessaire) — retour utilisateur : « j’ai 1408 g de purée crue, pourquoi la recette ne s’adapte pas en conséquence plus bas ? Les quantités données me donnent 1542 g de purée que je n’ai pas »');
+// Aliment dédié (cloné depuis un aliment déjà batchable/cuisiné dans ce
+// fichier, cookedFactor connu réécrit) : jamais consommé ailleurs dans le
+// cycle, pour que requiredRaw/requiredCooked de ce composant soient
+// entièrement déterminés par CE SEUL item de test, sans dépendre du reste
+// du scénario déjà construit plus haut.
+let deficitFoodId;
+store.update((s) => {
+  const base = s.foods.find((f) => f.id === measuredFoodId);
+  const f = { ...base, id: 'food_deficit_test', name: 'Purée Déficit Test', cookedFactor: 0.9 };
+  deficitFoodId = f.id;
+  s.foods.push(f);
+  const meal = s.meals.find((m) => m.dayIndex === 2 && m.mealType === 'dinner');
+  meal.items.push({
+    id: 'it_deficit_test', foodId: deficitFoodId, free: null, state: 'cru',
+    qty: { thomas: 300, julie: 300 }, locked: { thomas: false, julie: false },
+  });
+});
+await wait();
+click($('[data-view="batch"]'));
+await wait();
+
+// requis cru = 300 + 300 = 600 g ; requis cuit = 600 × 0,9 = 540 g
+const deficitPrepInput = $$('[data-prep]').find((el) => el.dataset.prep.endsWith(`:${deficitFoodId}`));
+check('composant de test trouvé, « je prépare » prérempli au besoin exact (600 g)', deficitPrepInput?.value === '600', deficitPrepInput?.value);
+const deficitKey = deficitPrepInput.dataset.prep;
+const deficitCookedInput = $$('[data-cooked]').find((el) => el.dataset.cooked === deficitKey);
+check('champ « cuit obtenu » disponible pour ce composant', !!deficitCookedInput);
+// mesuré 400 g cuits < 540 g cuits nécessaires → déficit de 140 g
+change(deficitCookedInput, '400');
+await wait();
+
+const deficitLis = $$('.meal-card li').filter((li) => new RegExp(`Purée Déficit Test`).test(li.textContent) && !li.querySelector('ul'));
+check('les 2 gamelles consommant ce composant (Thomas + Julie) sont présentes dans le détail', deficitLis.length === 2, `${deficitLis.length}`);
+check('chaque gamelle affiche sa quantité RÉDUITE (270 g théoriques − 70 g = 200 g), jamais la quantité planifiée intacte',
+  deficitLis.every((li) => /^200 g Purée Déficit Test/.test(li.textContent.trim())),
+  deficitLis.map((li) => li.textContent.trim()));
+check('la pastille de manque est affichée avec le bon écart, jamais la mention « surplus à servir »',
+  deficitLis.every((li) => /−70 g \(manque — quantité réduite\)/.test(li.textContent)) &&
+  deficitLis.every((li) => !/surplus à servir/.test(li.textContent)),
+  deficitLis.map((li) => li.textContent.trim()));
+check('ni le repas ni la fiche aliment ne sont modifiés par cette seule suggestion d’affichage',
+  store.getState().meals.find((m) => m.dayIndex === 2 && m.mealType === 'dinner').items.find((it) => it.foodId === deficitFoodId).qty.thomas === 300 &&
+  store.getState().foods.find((f) => f.id === deficitFoodId).cookedFactor === 0.9);
+
 console.log('\n— Batch cooking : vrai glisser-déposer entre le pool « Gamelles à préparer » et les sessions, dans la popup dédiée');
 // Demande explicite de l'utilisateur : « un vrai DnD entre gamelles à
 // préparer, et session de batch », puis « il faut ouvrir l'interface DnD

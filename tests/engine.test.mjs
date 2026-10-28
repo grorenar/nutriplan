@@ -1187,12 +1187,35 @@ test('Batch — suggestion de répartition du surplus entre les gamelles (affich
   for (const g of sess.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === F('Riz basmati').id) rizEntries.push(e);
   check('aucun bonus inventé pour un aliment sans surplus', rizEntries.every((e) => e.bonus === undefined));
 
-  // un déficit (préparé < besoin) ne réduit jamais une gamelle
-  const sDeficit = batchState({ [key]: 500 }); // < 1160 g requis
+  // un déficit (préparé < besoin, ex. rendement de cuisson décevant) RÉDUIT
+  // désormais chaque gamelle au prorata — retour utilisateur explicite :
+  // « que uniquement la purée s'ajuste à la baisse (ou à la hausse) sans
+  // toucher aux autres proportions » (même mécanisme bidirectionnel que le
+  // surplus, jamais sur les autres ingrédients d'une même gamelle).
+  const sDeficit = batchState({ [key]: 500 }); // 500 g crus × 0,70 = 350 g cuits, < 812 g requis cuits → déficit de 462 g
   const sessDeficit = buildBatchPlan(sDeficit, byId).sessions[0];
   const deficitEntries = [];
   for (const g of sessDeficit.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === poulet.id) deficitEntries.push(e);
-  check('déficit : aucune réduction silencieuse d’une gamelle', deficitEntries.every((e) => e.bonus === undefined && e.adjustedGrams === undefined));
+  const totalDeficitBonus = deficitEntries.reduce((sum, e) => sum + (e.bonus || 0), 0);
+  check('le déficit réparti correspond exactement au déficit cuit (−462 g)', totalDeficitBonus === -462, `${totalDeficitBonus}`);
+  check('la somme des quantités ajustées = quantité réellement disponible (350 g), jamais le besoin théorique (812 g)',
+    Math.abs(deficitEntries.reduce((sum, e) => sum + e.adjustedGrams, 0) - 350) < 0.01);
+  check('réduction proportionnelle à la part déjà prévue (126 g → −72 g), même logique que le surplus',
+    deficitEntries[0].bonus === -72 && deficitEntries[0].adjustedGrams === deficitEntries[0].grams - 72,
+    `${deficitEntries[0].bonus} g`);
+  check('aucune quantité ajustée négative, même en déficit sévère (500 g crus pour 1160 g requis)',
+    deficitEntries.every((e) => e.adjustedGrams >= 0));
+
+  // un déficit si sévère qu'une réduction proportionnelle stricte ferait
+  // passer une (petite) entrée sous 0 : elle est clampée à 0, jamais négative
+  // — le reliquat non absorbable reste simplement non réparti plutôt que de
+  // forcer une valeur absurde (cf. commentaire dans buildSessionPlan()).
+  const sExtreme = batchState({ [key]: 10 }); // 10 g crus × 0,70 = 7 g cuits : quasiment rien de préparé
+  const sessExtreme = buildBatchPlan(sExtreme, byId).sessions[0];
+  const extremeEntries = [];
+  for (const g of sessExtreme.gamelles) for (const p of PERSONS) for (const e of g.persons[p]) if (e.food?.id === poulet.id) extremeEntries.push(e);
+  check('déficit extrême : jamais une quantité ajustée négative pour une entrée',
+    extremeEntries.every((e) => e.adjustedGrams >= 0), JSON.stringify(extremeEntries.map((e) => e.adjustedGrams)));
 
   // la mesure réelle ("cuit obtenu") prime sur l'estimation théorique pour le surplus proposé
   const sMeasured = batchState({ [key]: 1500 }, { [key]: 1300 }); // mesuré 1300 g cuits (> 1050 g théoriques)

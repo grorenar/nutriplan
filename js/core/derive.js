@@ -802,18 +802,22 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
     ),
   }));
 
-  // ---- suggestion d'affichage : répartir le surplus de batch (« Je prépare »
-  // > besoin, ou rendement mesuré meilleur qu'attendu) entre les gamelles de
-  // la session qui consomment ce composant, au prorata de leur part déjà
-  // prévue. NE MODIFIE JAMAIS `meal.items` NI `recipe.items` (cf. en-tête de
-  // fichier) : ajoute seulement `bonus`/`adjustedGrams` (ou `adjustedQty`
-  // pour un ingrédient de recette) sur les entrées fraîchement construites
-  // ci-dessus, à titre de suggestion de service. Mesure réelle
-  // (measuredCooked) prioritaire sur l'estimation théorique (preparedCooked)
-  // — si tu as pesé plus que prévu, la suggestion en tient compte. Un déficit
-  // (surplus négatif) n'est jamais répercuté ici : les gamelles gardent leur
-  // quantité planifiée, seul un VRAI surplus est proposé en plus (jamais une
-  // réduction silencieuse d'une portion).
+  // ---- suggestion d'affichage : répartir l'ÉCART entre ce qui est
+  // réellement disponible (« Je prépare »/rendement mesuré) et le besoin
+  // théorique, entre les gamelles de la session qui consomment ce composant,
+  // au prorata de leur part déjà prévue — dans LES DEUX SENS : un surplus
+  // (davantage préparé/obtenu que nécessaire) ajoute, un déficit (moins
+  // obtenu que prévu, ex. rendement de cuisson décevant) retire, mais
+  // TOUJOURS uniquement sur ce même aliment — jamais sur les autres
+  // ingrédients d'une même gamelle/recette (retour utilisateur : « que
+  // uniquement la purée s'ajuste à la baisse (ou à la hausse) sans toucher
+  // aux autres proportions »). NE MODIFIE JAMAIS `meal.items` NI
+  // `recipe.items` (cf. en-tête de fichier) : ajoute seulement
+  // `bonus`/`adjustedGrams` (ou `adjustedQty` pour un ingrédient de recette)
+  // sur les entrées fraîchement construites ci-dessus, à titre de suggestion
+  // de service — jamais négatif en-dessous de 0 pour une entrée donnée (cf.
+  // clamp par entrée plus bas). Mesure réelle (measuredCooked) prioritaire
+  // sur l'estimation théorique (preparedCooked) dans les deux sens.
   // Même aliment consommé aussi comme INGRÉDIENT d'une recette assemblée
   // directement dans une gamelle (jamais une recette "à préparer en batch" —
   // seule la fiche aliment l'est, ex. le bœuf des Wraps burrito) : la
@@ -828,7 +832,7 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
   for (const c of components) {
     const available = c.measuredCooked ?? c.preparedCooked;
     const surplus = available - c.requiredCooked;
-    if (!(surplus > 0.5) || !(c.requiredCooked > 0)) continue;
+    if (!(Math.abs(surplus) > 0.5) || !(c.requiredCooked > 0)) continue;
     const entries = [];
     for (const g of gamelles) {
       for (const person of PERSONS) {
@@ -849,7 +853,12 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
     let assigned = 0;
     entries.forEach((entry, i) => {
       const isLast = i === entries.length - 1;
-      const bonus = isLast ? Math.max(0, surplus - assigned) : Math.round(surplus * (entry.basis / c.requiredCooked));
+      let bonus = isLast ? surplus - assigned : Math.round(surplus * (entry.basis / c.requiredCooked));
+      // jamais une quantité résultante négative pour UNE entrée, même en cas
+      // de déficit sévère (une gamelle disparaît du service, elle ne se
+      // retranche jamais en-dessous de rien) : le reliquat non absorbable
+      // reste simplement non réparti plutôt que de forcer une valeur absurde.
+      bonus = Math.max(bonus, -entry.basis);
       assigned += bonus;
       entry.apply(bonus);
     });
