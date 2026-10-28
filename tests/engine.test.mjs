@@ -2693,6 +2693,47 @@ test('Batch — suggestion de répartition du surplus : s’étend à un ingréd
     recipe.items[0].qty === 100 && burritoMeal.items[0].qty.thomas === 100 && burritoMeal.items[0].qty.julie === 100);
 });
 
+test('Batch — suggestion de répartition : s’étend aussi à un ingrédient de recette assemblée qui ne nécessite AUCUNE cuisson (retour utilisateur : « ne fonctionne pas visiblement pour un aliment sans cuisson », ex. Comté dans un hachis parmentier)', () => {
+  const haricots = F('Haricots rouges'); // batchAllowed, referenceState 'egoutte', requiresCooking FALSE (aucune cuisson)
+  check('aliment de test sans cuisson, comme attendu', haricots.requiresCooking === false && haricots.referenceState === 'egoutte');
+  const recipe = newRecipe('Chili sans cuisson maison', 'weight');
+  recipe.items = [newRecipeItem(haricots.id, 100, 'egoutte')];
+  recipe.baseGrams = 100;
+  const recipesById = { [recipe.id]: recipe };
+
+  const directMeal = mkMeal(0, 'lunch', [item(haricots, 0, { thomas: 100, julie: 100 })]);
+  const assembledMeal = mkMeal(0, 'dinner', [recipeItemInMeal(recipe.id, 100)]);
+  const key = `0:${haricots.id}`;
+  // besoin : 200 g (direct) + 200 g (déployés depuis la recette) = 400 g — aucune conversion cru/cuit ici, requiredCooked === requiredRaw.
+  const st = batchTestState([directMeal, assembledMeal], { batch: { overrides: { [key]: 500 }, sessions: [{ id: '0', label: 'S', mealIds: [directMeal.id, assembledMeal.id] }] } });
+  const plan = buildBatchPlan(st, byId, recipesById, {});
+  const sess = plan.sessions[0];
+  const c = sess.components.find((x) => x.food.id === haricots.id);
+  check('requiredCooked === requiredRaw (aucune cuisson, aucune conversion)', c.requiredCooked === c.requiredRaw && c.requiredCooked === 400, `${c.requiredCooked}`);
+  check('surplus de 100 g (500 g préparés − 400 g requis, sans conversion)', c.preparedCooked - c.requiredCooked === 100);
+
+  const directEntries = [];
+  const ingredientEntries = [];
+  for (const g of sess.gamelles) {
+    for (const p of PERSONS) {
+      for (const e of g.persons[p]) {
+        if (!e.free && e.category === 'batch' && e.food?.id === haricots.id) directEntries.push(e);
+        for (const ing of e.ingredients || []) if (ing.food?.id === haricots.id) ingredientEntries.push(ing);
+      }
+    }
+  }
+  check('2 entrées directes et 2 lignes d’ingrédient trouvées', directEntries.length === 2 && ingredientEntries.length === 2,
+    `direct=${directEntries.length} ingrédient=${ingredientEntries.length}`);
+  check('labelState de la ligne d’ingrédient N’EST PAS "cuit" (aucune cuisson) — c’est justement le cas qui ne doit plus être ignoré',
+    ingredientEntries.every((ing) => ing.labelState !== 'cuit'), ingredientEntries.map((ing) => ing.labelState));
+  const totalBonus = [...directEntries, ...ingredientEntries].reduce((sum, e) => sum + (e.bonus || 0), 0);
+  check('le surplus est bien réparti, y compris sur l’ingrédient sans cuisson (100 g au total)', totalBonus === 100, `${totalBonus}`);
+  check('chaque ligne d’ingrédient sans cuisson reçoit elle aussi une suggestion de bonus',
+    ingredientEntries.every((ing) => ing.bonus > 0), ingredientEntries.map((ing) => ing.bonus));
+  check('ni la recette ni le repas ne sont modifiés par cette suggestion',
+    recipe.items[0].qty === 100 && assembledMeal.items[0].qty.thomas === 100 && assembledMeal.items[0].qty.julie === 100);
+});
+
 test('écran batch — répartition vers les gamelles de la session (le "global" : total préparé -> distribué)', () => {
   const boeuf = F('Steak haché');
   const recipe = newRecipe('Chili', 'weight');

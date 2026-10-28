@@ -825,10 +825,17 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
   // augmente la viande hachée du burrito pour ne pas avoir de reste ») —
   // `entries` mélange donc des entrées directes (`e`) et des lignes
   // d'ingrédient (`ing`, via `e.ingredients`), chacune avec sa propre base de
-  // répartition (`basis`) et sa façon d'écrire son bonus (`apply`). Seule une
-  // ligne déjà convertie post-cuisson (`labelState === 'cuit'`, cf.
-  // recipeIngredientsScaledTo()) est éligible : c'est la même grandeur
-  // (grammes cuits) que `c.requiredCooked`/`surplus`, jamais un poids cru.
+  // répartition (`basis`) et sa façon d'écrire son bonus (`apply`). TOUTE
+  // ligne d'ingrédient référençant cet aliment est éligible, pas seulement
+  // celles converties post-cuisson (`labelState === 'cuit'`) — correction
+  // d'un oubli réel (retour utilisateur : « ne fonctionne pas visiblement
+  // pour un aliment sans cuisson », ex. Comté, consommé prêt à l'emploi dans
+  // un hachis parmentier) : `ing.qty` (recipeIngredientsScaledTo()) et
+  // `c.requiredCooked` (composant ci-dessus) appliquent TOUJOURS exactement
+  // la même condition de conversion cru→cuit (`needsCooking(food) &&
+  // food.referenceState === 'cru'`) — quand elle ne s'applique pas (aliment
+  // sans cuisson, ou déjà à un autre état de référence), les deux restent
+  // dans la même unité « telle qu'entrée », jamais un mélange cru/cuit.
   for (const c of components) {
     const available = c.measuredCooked ?? c.preparedCooked;
     const surplus = available - c.requiredCooked;
@@ -842,7 +849,7 @@ function buildSessionPlan(sess, meals, state, foodsById, recipesById, preparatio
             entries.push({ basis: e.grams, apply: (bonus) => { e.bonus = bonus; e.adjustedGrams = e.grams + bonus; } });
           }
           for (const ing of e.ingredients || []) {
-            if (ing.labelState === 'cuit' && ing.food?.id === c.food.id) {
+            if (ing.food?.id === c.food.id) {
               entries.push({ basis: ing.qty, apply: (bonus) => { ing.bonus = bonus; ing.adjustedQty = ing.qty + bonus; } });
             }
           }
